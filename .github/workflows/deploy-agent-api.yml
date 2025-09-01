@@ -1,0 +1,45 @@
+name: Deploy Agent API
+
+on:
+  push:
+    branches: [main]
+    paths: ['services/agent-api/**']
+  workflow_dispatch:
+
+env:
+  SERVICE_NAME: gamer-agent-api
+  REGION: us-central1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Google Cloud CLI
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        export_default_credentials: true
+    
+    - name: Configure Docker for GCP
+      run: gcloud auth configure-docker
+    
+    - name: Build and Push Docker Image
+      run: |
+        cd services/agent-api
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+    
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+          --platform managed \
+          --region ${{ env.REGION }} \
+          --allow-unauthenticated \
+          --set-env-vars="ROMM_API_URL=${{ secrets.ROMM_API_URL }},ROMM_API_TOKEN=${{ secrets.ROMM_API_TOKEN }},GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }}" \
+          --memory 1Gi \
+          --cpu 1

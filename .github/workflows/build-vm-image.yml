@@ -1,0 +1,36 @@
+name: Build VM Image
+
+on:
+  push:
+    branches: [main]
+    paths: ['infrastructure/vm-image/**']
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: gamer-vm-image
+  REGION: us-central1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Google Cloud CLI
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        export_default_credentials: true
+    
+    - name: Configure Docker for GCP
+      run: gcloud auth configure-docker
+    
+    - name: Build and Push VM Image
+      run: |
+        cd infrastructure/vm-image
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest .
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest

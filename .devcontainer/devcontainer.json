@@ -1,6 +1,6 @@
 {
-  "name": "Base Development",
-  "image": "us-central1-docker.pkg.dev/coder-nt/workspace-images/base-dev:latest",
+  "name": "Fullstack Development",
+  "image": "us-central1-docker.pkg.dev/coder-nt/workspace-images/fullstack-dev:latest",
   "features": {},
   "customizations": {
     "vscode": {

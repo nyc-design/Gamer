@@ -1,0 +1,45 @@
+name: Deploy Web App
+
+on:
+  push:
+    branches: [main]
+    paths: ['services/web-app/**']
+  workflow_dispatch:
+
+env:
+  SERVICE_NAME: gamer-web-app
+  REGION: us-central1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Google Cloud CLI
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        export_default_credentials: true
+    
+    - name: Configure Docker for GCP
+      run: gcloud auth configure-docker
+    
+    - name: Build and Push Docker Image
+      run: |
+        cd services/web-app
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+    
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+          --platform managed \
+          --region ${{ env.REGION }} \
+          --allow-unauthenticated \
+          --set-env-vars="NEXT_PUBLIC_PROVISIONER_API_URL=${{ secrets.PROVISIONER_API_URL }},NEXT_PUBLIC_AGENT_API_URL=${{ secrets.AGENT_API_URL }}" \
+          --memory 1Gi \
+          --cpu 1

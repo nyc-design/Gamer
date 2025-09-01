@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  web-app:
+    build:
+      context: ./services/web-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_PROVISIONER_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_AGENT_API_URL=http://localhost:8002
+    depends_on:
+      - provisioner-api
+      - agent-api
+
+  provisioner-api:
+    build:
+      context: ./services/provisioner-api
+    ports:
+      - "8001:8000"
+    environment:
+      - TENSORDOCK_API_KEY=your-tensordock-api-key
+      - GCS_BUCKET_NAME=your-gcs-bucket-name
+
+  agent-api:
+    build:
+      context: ./services/agent-api
+    ports:
+      - "8002:8000"
+    environment:
+      - ROMM_API_URL=http://localhost:8080
+      - ROMM_API_TOKEN=your-romm-api-token
+      - GCS_BUCKET_NAME=your-gcs-bucket-name
+
+  # Optional: Local RomM instance for development
+  romm:
+    image: ghcr.io/rommapp/romm:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/romm:/romm
+    environment:
+      - DB_HOST=romm-db
+      - DB_NAME=romm
+      - DB_USER=romm
+      - DB_PASS=romm
+
+  romm-db:
+    image: mariadb:latest
+    environment:
+      - MYSQL_ROOT_PASSWORD=romm-root
+      - MYSQL_DATABASE=romm
+      - MYSQL_USER=romm
+      - MYSQL_PASSWORD=romm
+    volumes:
+      - ./data/db:/var/lib/mysql
