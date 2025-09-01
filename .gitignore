@@ -1,0 +1,15 @@
+# Logs
+*.log
+
+# Docker
+*.dockerignore
+docker-compose.override.yml
+
+# Git
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.temp
