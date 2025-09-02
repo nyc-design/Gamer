@@ -305,3 +305,45 @@ Each service deploys independently with GitHub Actions:
 - Save state management
 - Achievement integration
 - Social features and game sharing
+
+## Documentation Requirements
+
+**CRITICAL**: Every service folder MUST have a comprehensive README.md file that documents:
+- Purpose and overview of the folder/service
+- Detailed explanation of each function in every file
+- Input parameters, return values, and error handling for each function
+- Interaction patterns between functions and services
+- API endpoints with request/response examples
+- Configuration requirements and environment variables
+- Usage examples and common patterns
+
+**When to update READMEs**:
+- Immediately after adding, modifying, or removing functions
+- When changing API signatures or behavior
+- When adding new files or restructuring folders
+- When updating configuration or environment requirements
+
+**README Structure**:
+```markdown
+# [Service/Folder Name]
+
+## Overview
+Brief description of purpose and responsibilities
+
+## Files and Functions
+### filename.py
+#### function_name(parameters) -> return_type
+Detailed explanation of what the function does, parameters, returns, exceptions
+
+## API Endpoints (if applicable)
+### POST /endpoint
+Request/response examples and behavior
+
+## Configuration
+Environment variables and settings
+
+## Usage Examples
+Common patterns and example code
+```
+
+This documentation requirement applies to ALL services and must be maintained by every agent working on this project.

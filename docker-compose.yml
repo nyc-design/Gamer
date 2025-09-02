@@ -28,9 +28,11 @@ services:
     ports:
       - "8002:8000"
     environment:
-      - ROMM_API_URL=http://localhost:8080
+      - ROMM_API_URL=http://romm:8080
       - ROMM_API_TOKEN=your-romm-api-token
       - GCS_BUCKET_NAME=your-gcs-bucket-name
+    depends_on:
+      - romm
 
   # Optional: Local RomM instance for development
   romm:
@@ -44,6 +46,8 @@ services:
       - DB_NAME=romm
       - DB_USER=romm
       - DB_PASS=romm
+    depends_on:
+      - romm-db
 
   romm-db:
     image: mariadb:latest

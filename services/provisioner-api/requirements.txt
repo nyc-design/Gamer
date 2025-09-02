@@ -7,3 +7,6 @@ google-cloud-storage==2.10.0
 python-multipart==0.0.6
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+pymongo==4.6.1
+git+https://github.com/ryan-huang1/tensordock-python-sdk.git
+geopy==2.4.1
