@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.routers import vms, config, launch, billing, vm_specs, gcp_regions
+from app.routers import vms, config, launch, billing, vm_specs, gcp_regions, instances, console_config
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.core.sync_database import connect_sync_mongo, close_sync_mongo_connection
@@ -37,6 +37,8 @@ app.include_router(launch.router, prefix="/launch", tags=["game-launch"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
 app.include_router(vm_specs.router, prefix="/vm-specs", tags=["vm-specs"])
 app.include_router(gcp_regions.router, prefix="/gcp-regions", tags=["gcp-regions"])
+app.include_router(instances.router, prefix="/instances", tags=["instances"])
+app.include_router(console_config.router, prefix="/console-config", tags=["console-config"])
 
 @app.get("/")
 async def root():

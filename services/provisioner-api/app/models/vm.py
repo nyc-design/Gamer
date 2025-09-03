@@ -45,66 +45,37 @@ class VMCreateRequest(BaseModel):
     user_id: Optional[str] = None
     user_location: Optional[Dict[str, float]] = None  # {"latitude": float, "longitude": float}
 
+# Simplified VM model - only essential fields
 class VMDocument(BaseModel):
     id: Optional[ObjectId] = Field(None, alias="_id")
-    vm_id: str = Field(..., description="Unique VM identifier")
+    vm_id: str
     status: VMStatus
-    preset: VMPreset
     console_type: ConsoleType
     provider: CloudProvider
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    # Connection details
+    provider_instance_id: Optional[str] = None  # Provider's internal VM ID
     ip_address: Optional[str] = None
-    wolf_port: int = 47999
-    ssh_port: int = 22
-    ssh_private_key: Optional[str] = None
-    
-    # Configuration
-    auto_stop_timeout: int = 900
     user_id: Optional[str] = None
-    
-    # Provider-specific data
-    provider_instance_id: Optional[str] = None  # TensorDock/CloudyPad instance ID
-    provider_metadata: Dict[str, Any] = {}
-    
-    # Gaming setup
-    gaming_environment_ready: bool = False
-    cloudypad_configured: bool = False
-    games_mounted: bool = False
-    
-    # Activity tracking
+    created_at: datetime = Field(default_factory=datetime.utcnow)
     last_activity: Optional[datetime] = None
-    last_moonlight_connection: Optional[datetime] = None
-    user_location: Optional[Dict[str, float]] = None  # {"latitude": float, "longitude": float}
     
     class Config:
         populate_by_name = True
         arbitrary_types_allowed = True
-        json_encoders = {
-            ObjectId: str
-        }
+        json_encoders = {ObjectId: str}
 
+# Simplified response model
 class VMResponse(BaseModel):
     vm_id: str
     status: VMStatus
-    preset: VMPreset
     console_type: ConsoleType
     provider: CloudProvider
-    created_at: datetime
-    updated_at: datetime
     ip_address: Optional[str] = None
-    wolf_port: int = 47999
-    ssh_port: int = 22
-    auto_stop_timeout: int
-    gaming_environment_ready: bool = False
+    created_at: datetime
     last_activity: Optional[datetime] = None
 
+# Simple status response
 class VMStatusResponse(BaseModel):
     vm_id: str
     status: VMStatus
     ip_address: Optional[str] = None
-    uptime_seconds: Optional[int] = None
     last_activity: Optional[datetime] = None
-    gaming_environment_ready: bool = False
