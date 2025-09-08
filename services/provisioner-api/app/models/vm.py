@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from enum import Enum
 from datetime import datetime
 from bson import ObjectId
@@ -69,8 +69,11 @@ class VMResponse(BaseModel):
     status: VMStatus
     console_type: ConsoleType
     provider: CloudProvider
-    ip_address: Optional[str] = None
+    instance_type: Union[TensorDockVMType, GCPVMType]
+    hourly_price: decimal
     created_at: datetime
+    instance_lat: float
+    instance_long: float
     last_activity: Optional[datetime] = None
 
 # Simple status response
@@ -79,3 +82,16 @@ class VMStatusResponse(BaseModel):
     status: VMStatus
     ip_address: Optional[str] = None
     last_activity: Optional[datetime] = None
+
+class TensorDockVMType(str, Enum):
+    RTX5090: "RTX5090"
+    RTX4090: "RTX4090"
+    RTX3090: "RTX3090"
+    RTXA4000: "RTXA4000"
+    NOGPU: ""
+
+class GCPVMType(str, Enum):
+    E2-STANDARD-4: "e2-standard-4"
+    G2-STANDARD-4: "g2-standard-4"
+    G2-STANDARD-8: "g2-standard-8"
+    N1-STANDARD-4: "n1-standard-4"
