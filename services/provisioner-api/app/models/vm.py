@@ -14,6 +14,7 @@ class VMStatus(str, Enum):
     RUNNING = "running"
     STOPPED = "stopped"
     ERROR = "error"
+    DESTROYING = "destroying"
     TERMINATED = "terminated"
     CONFIGURING = "configuring"  # Setting up gaming environment
 
@@ -37,31 +38,53 @@ class ConsoleType(str, Enum):
     WII = "wii"
     SWITCH = "switch"
 
+class VMAvailableResponse(BaseModel):
+    console_type: ConsoleType
+    provider: CloudProvider
+    hourly_price: decimal
+    instance_lat: float
+    instance_long: float
+    gpu: str
+    num_cpus: int
+    num_ram: int
+    num_disk: int = 20
+    auto_stop_timeout: int = 9000
+
 class VMCreateRequest(BaseModel):
     console_type: ConsoleType
-    game_id: Optional[str] = None  # For automatic VM selection
-    provider: Optional[CloudProvider] = None  # Auto-select if None
-    auto_stop_timeout: int = 900  # 15 minutes default
+    provider: CloudProvider
+    instance_lat: float
+    instance_long: float
+    os: str = "Ubuntu"
+    gpu: str
+    num_cpus: int
+    num_ram: int
+    num_disk: int = 20
+    auto_stop_timeout: int = 9000
     user_id: Optional[str] = None
-    user_location: Optional[Dict[str, float]] = None  # {"latitude": float, "longitude": float}
 
 # Simplified VM model - only essential fields
 class VMDocument(BaseModel):
     id: Optional[ObjectId] = Field(None, alias="_id")
     vm_id: str
     status: VMStatus
-    console_type: ConsoleType
+    console_types: List[ConsoleType]
     provider: CloudProvider
-    provider_instance_id: Optional[str] = None  # Provider's internal VM ID
+    provider_instance_id: Optional[str] = None
+    instance_type: Union[TensorDockVMType, GCPVMType]
+    instance_lat: float
+    instance_long: float
+    hourly_price: decimal
+    os: str
+    gpu: str
+    num_cpus: int
+    num_ram: int
+    num_disk: int
+    auto_stop_timeout: int
     ip_address: Optional[str] = None
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_activity: Optional[datetime] = None
-    
-    class Config:
-        populate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
 
 # Simplified response model
 class VMResponse(BaseModel):

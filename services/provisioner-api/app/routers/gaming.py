@@ -23,7 +23,7 @@ CONSOLE_CONFIGS = {
 }
 
 # List available instances across all providers
-@router.get("/instances/available")
+@router.get("/instances/available", response_model=VMResponse)
 async def list_available_instances(console_type: ConsoleType, user_lat: Optional[float] = None, user_lng: Optional[float] = None):
 # Take console type, and call MongoDB database function to get config for that console
 
