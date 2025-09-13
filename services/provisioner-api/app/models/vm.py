@@ -38,28 +38,38 @@ class ConsoleType(str, Enum):
     WII = "wii"
     SWITCH = "switch"
 
-class VMAvailableResponse(BaseModel):
+class ConsoleConfigDocument(BaseModel):
     console_type: ConsoleType
+    supported_instance_types: Dict[str, List[str]]
+    min_cpus: int
+    min_ram: int
+    min_disk: int
+
+class VMAvailableResponse(BaseModel):
     provider: CloudProvider
+    instance_type: Union[TensorDockVMType, GCPVMType]
+    provider_id: Optional[str]
     hourly_price: decimal
     instance_lat: float
     instance_long: float
+    distance_to_user: float
     gpu: str
-    num_cpus: int
-    num_ram: int
-    num_disk: int = 20
-    auto_stop_timeout: int = 9000
+    avail_cpus: int
+    avail_ram: int
+    avail_disk: int
 
 class VMCreateRequest(BaseModel):
     console_type: ConsoleType
     provider: CloudProvider
+    instance_type: Union[TensorDockVMType, GCPVMType]
+    provider_id: Optional[str]
+    provider_instance_name: str
     instance_lat: float
     instance_long: float
     os: str = "Ubuntu"
-    gpu: str
-    num_cpus: int
-    num_ram: int
-    num_disk: int = 20
+    num_cpus: Optional[int] = None
+    num_ram: Optional[int] = None
+    num_disk: Optional[int] = None
     auto_stop_timeout: int = 9000
     user_id: Optional[str] = None
 
@@ -71,6 +81,7 @@ class VMDocument(BaseModel):
     console_types: List[ConsoleType]
     provider: CloudProvider
     provider_instance_id: Optional[str] = None
+    provider_instance_name: str
     instance_type: Union[TensorDockVMType, GCPVMType]
     instance_lat: float
     instance_long: float
@@ -81,6 +92,8 @@ class VMDocument(BaseModel):
     num_ram: int
     num_disk: int
     auto_stop_timeout: int
+    ssh_key: str
+    instance_password: str
     ip_address: Optional[str] = None
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -118,3 +131,17 @@ class GCPVMType(str, Enum):
     G2-STANDARD-4: "g2-standard-4"
     G2-STANDARD-8: "g2-standard-8"
     N1-STANDARD-4: "n1-standard-4"
+
+class TensorDockCreateRequest(BaseModel):
+    password: str
+    ssh_key: str
+    vm_name: str = Field(alias="provider_instance_name")
+    gpu_count: int = 1
+    gpu_model: TensorDockVMType = Field(alias="instance_type")
+    vcpus: int = Field(alias="num_cpus")
+    ram: int = Field(alias="num_ram")
+    external_ports: int = # Have to list out ports needed for Gamer
+    internal_ports: int = # Not sure what this is for
+    hostnode: str = Field(alias="provider_instance_id")
+    storage: int = Field(alias="num_disk")
+    operating_system: str = Field(alias="os")
