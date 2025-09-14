@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union
 from enum import Enum
 from datetime import datetime
+from decimal import Decimal
 from bson import ObjectId
 
 class VMPreset(str, Enum):
@@ -49,7 +50,7 @@ class VMAvailableResponse(BaseModel):
     provider: CloudProvider
     instance_type: Union[TensorDockVMType, GCPVMType]
     provider_id: Optional[str]
-    hourly_price: decimal
+    hourly_price: Decimal
     instance_lat: float
     instance_long: float
     distance_to_user: float
@@ -85,7 +86,7 @@ class VMDocument(BaseModel):
     instance_type: Union[TensorDockVMType, GCPVMType]
     instance_lat: float
     instance_long: float
-    hourly_price: decimal
+    hourly_price: Decimal
     os: str
     gpu: str
     num_cpus: int
@@ -106,7 +107,7 @@ class VMResponse(BaseModel):
     console_type: ConsoleType
     provider: CloudProvider
     instance_type: Union[TensorDockVMType, GCPVMType]
-    hourly_price: decimal
+    hourly_price: Decimal
     created_at: datetime
     instance_lat: float
     instance_long: float
@@ -120,17 +121,17 @@ class VMStatusResponse(BaseModel):
     last_activity: Optional[datetime] = None
 
 class TensorDockVMType(str, Enum):
-    RTX5090: "RTX5090"
-    RTX4090: "RTX4090"
-    RTX3090: "RTX3090"
-    RTXA4000: "RTXA4000"
-    NOGPU: ""
+    RTX5090 = "RTX5090"
+    RTX4090 = "RTX4090"
+    RTX3090 = "RTX3090"
+    RTXA4000 = "RTXA4000"
+    NOGPU = ""
 
 class GCPVMType(str, Enum):
-    E2-STANDARD-4: "e2-standard-4"
-    G2-STANDARD-4: "g2-standard-4"
-    G2-STANDARD-8: "g2-standard-8"
-    N1-STANDARD-4: "n1-standard-4"
+    E2_STANDARD_4 = "e2-standard-4"
+    G2_STANDARD_4 = "g2-standard-4"
+    G2_STANDARD_8 = "g2-standard-8"
+    N1_STANDARD_4 = "n1-standard-4"
 
 class TensorDockCreateRequest(BaseModel):
     password: str
@@ -140,8 +141,21 @@ class TensorDockCreateRequest(BaseModel):
     gpu_model: TensorDockVMType = Field(alias="instance_type")
     vcpus: int = Field(alias="num_cpus")
     ram: int = Field(alias="num_ram")
-    external_ports: int = # Have to list out ports needed for Gamer
-    internal_ports: int = # Not sure what this is for
+    external_ports: List[int] = [47984, 47989, 48010, 47998, 47999, 22, 443]  # Wolf/Moonlight + SSH + HTTPS
+    internal_ports: List[int] = [47984, 47989, 48010, 47998, 47999, 22, 443]  # Same as external for direct mapping
     hostnode: str = Field(alias="provider_instance_id")
     storage: int = Field(alias="num_disk")
     operating_system: str = Field(alias="os")
+
+class CloudyPadCreateRequest(BaseModel):
+    name: str = Field(alias="provider_instance_name")
+    instance_type: str = Field(alias="instance_type")
+    disk_size: int = Field(alias="num_disk")
+    public_ip_type: str = "static"
+    region: str = Field(alias="provider_instance_id")
+    spot: bool = True
+    streaming_server: str = "wolf"
+    cost_alert: int = 10
+    cost_limit: int = 40
+    cost_notification_email: str = "neil@tapiavala.com"
+

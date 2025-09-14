@@ -33,7 +33,7 @@ class TensorDockService:
 
 
     async def create_vm(self, create_request: TensorDockCreateRequest, instance_doc: VMDocument):
-        # call deploy VM from tensordock sdk with create_request
+        # call deploy VM from tensordock sdk with create_request, await
 
         # Map response fields to update VMDocument
 
@@ -41,13 +41,13 @@ class TensorDockService:
 
         # Call mongodb function to update VMDocument in database
 
-        # Call async cloudypad ssh function to deploy image with ssh key for instance
+        # Call async cloudypad ssh function to deploy image with ssh key for instance, await
 
         # Return VMDocument
 
     
     async def start_vm(self, instance_id: str):
-        # call tensordock sdk to start vm with instance_id
+        # call tensordock sdk to start vm with instance_ids
 
     
     async def stop_vm(self, instance_id: str):

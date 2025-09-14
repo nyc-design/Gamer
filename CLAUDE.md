@@ -347,3 +347,30 @@ Common patterns and example code
 ```
 
 This documentation requirement applies to ALL services and must be maintained by every agent working on this project.
+
+## Code Implementation Guidelines
+
+**CRITICAL**: When implementing scaffolded functions that contain detailed comment outlines, NEVER delete the comments. Instead, place each code implementation directly below its corresponding comment. This preserves the original scaffolding structure and makes the code self-documenting.
+
+**Example of CORRECT implementation**:
+```python
+def example_function():
+    # Step 1: Get data from database
+    data = database.collection.find_one({"id": user_id})
+    
+    # Step 2: Process the data
+    processed = process_data(data)
+    
+    # Step 3: Return result
+    return processed
+```
+
+**Example of INCORRECT implementation** (DO NOT DO THIS):
+```python
+def example_function():
+    data = database.collection.find_one({"id": user_id})
+    processed = process_data(data)
+    return processed
+```
+
+This guideline ensures that future agents can understand both the original intent (comments) and the implementation (code) when maintaining or modifying functions.
