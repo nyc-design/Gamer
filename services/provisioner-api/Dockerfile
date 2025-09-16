@@ -20,12 +20,25 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /
 # Install Docker CLI
 RUN apt-get update && apt-get install -y docker-ce-cli && rm -rf /var/lib/apt/lists/*
 
+# Install Google Cloud SDK
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - && \
+    apt-get update && apt-get install -y google-cloud-cli && rm -rf /var/lib/apt/lists/*
+
 # Install CloudyPad CLI using the official installation script
 RUN curl -fsSL https://raw.githubusercontent.com/PierreBeucher/cloudypad/master/install.sh | bash
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Poetry
+RUN pip install poetry
+
+# Configure Poetry: no venv (we're already in container), no interaction
+RUN poetry config virtualenvs.create false
+
+# Copy Poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Install dependencies (production only)
+RUN poetry install --only=main
 
 # Copy application code
 COPY . .

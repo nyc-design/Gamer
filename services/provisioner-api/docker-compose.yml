@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  provisioner-api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount gcloud config for authentication
+      - /home/coder/.config/gcloud:/root/.config/gcloud:ro
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app

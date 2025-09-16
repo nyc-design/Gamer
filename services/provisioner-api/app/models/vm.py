@@ -13,19 +13,21 @@ class VMPreset(str, Enum):
 class VMStatus(str, Enum):
     CREATING = "creating"
     RUNNING = "running"
+    STARTING = "starting"
+    STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
     DESTROYING = "destroying"
-    TERMINATED = "terminated"
+    DESTROYED = "destroyed"
     CONFIGURING = "configuring"  # Setting up gaming environment
 
 class CloudProvider(str, Enum):
     TENSORDOCK = "tensordock"
-    CLOUDYPAD_GCP = "cloudypad_gcp"
-    CLOUDYPAD_AWS = "cloudypad_aws" 
-    CLOUDYPAD_AZURE = "cloudypad_azure"
-    CLOUDYPAD_PAPERSPACE = "cloudypad_paperspace"
-    CLOUDYPAD_SCALEWAY = "cloudypad_scaleway"
+    GCP = "gcp"
+    AWS = "aws" 
+    AZURE = "azure"
+    PAPERSPACE = "paperspace"
+    SCALEWAY = "scaleway"
 
 class ConsoleType(str, Enum):
     NES = "nes"
@@ -67,7 +69,7 @@ class VMCreateRequest(BaseModel):
     provider_instance_name: str
     instance_lat: float
     instance_long: float
-    os: str = "Ubuntu"
+    os: str = "ubuntu2404"
     num_cpus: Optional[int] = None
     num_ram: Optional[int] = None
     num_disk: Optional[int] = None
@@ -121,10 +123,10 @@ class VMStatusResponse(BaseModel):
     last_activity: Optional[datetime] = None
 
 class TensorDockVMType(str, Enum):
-    RTX5090 = "RTX5090"
-    RTX4090 = "RTX4090"
-    RTX3090 = "RTX3090"
-    RTXA4000 = "RTXA4000"
+    RTX5090 = "rtx5090"
+    RTX4090 = "rtx4090"
+    RTX3090 = "rtx3090"
+    RTXA4000 = "rtxa4000"
     NOGPU = ""
 
 class GCPVMType(str, Enum):
@@ -136,23 +138,22 @@ class GCPVMType(str, Enum):
 class TensorDockCreateRequest(BaseModel):
     password: str
     ssh_key: str
-    vm_name: str = Field(alias="provider_instance_name")
+    name: str = Field(alias="provider_instance_name")
     gpu_count: int = 1
     gpu_model: TensorDockVMType = Field(alias="instance_type")
-    vcpus: int = Field(alias="num_cpus")
-    ram: int = Field(alias="num_ram")
-    external_ports: List[int] = [47984, 47989, 48010, 47998, 47999, 22, 443]  # Wolf/Moonlight + SSH + HTTPS
-    internal_ports: List[int] = [47984, 47989, 48010, 47998, 47999, 22, 443]  # Same as external for direct mapping
-    hostnode: str = Field(alias="provider_instance_id")
-    storage: int = Field(alias="num_disk")
-    operating_system: str = Field(alias="os")
+    vcpu_count: int = Field(alias="num_cpus")
+    ram_gb: int = Field(alias="num_ram")
+    portforwards: List[int] = [47984, 47989, 48010, 47998, 47999, 22, 443]  # Wolf/Moonlight + SSH + HTTPS
+    location_id: str = Field(alias="provider_id")
+    storage_gb: int = Field(alias="num_disk")
+    image: str = Field(alias="os")
 
 class CloudyPadCreateRequest(BaseModel):
     name: str = Field(alias="provider_instance_name")
     instance_type: str = Field(alias="instance_type")
     disk_size: int = Field(alias="num_disk")
     public_ip_type: str = "static"
-    region: str = Field(alias="provider_instance_id")
+    region: str = Field(alias="provider_id")
     spot: bool = True
     streaming_server: str = "wolf"
     cost_alert: int = 10

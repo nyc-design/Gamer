@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     database_name: str = "gamer"
     
     # Cloud Provider Settings
-    tensordock_api_key: Optional[str] = None
     tensordock_api_token: Optional[str] = None
     gcs_bucket_name: Optional[str] = None
     gcp_project_id: Optional[str] = None

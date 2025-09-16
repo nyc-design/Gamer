@@ -94,23 +94,12 @@ async def create_instance(console_type: ConsoleType, create_request: VMCreateReq
         td_request = TensorDockCreateRequest(
             password=password,
             ssh_key=ssh_key,
-            provider_instance_name=create_request.provider_instance_name,
-            instance_type=create_request.instance_type,
-            num_cpus=create_request.num_cpus or 4,
-            num_ram=create_request.num_ram or 8,
-            provider_instance_id=create_request.provider_id,
-            num_disk=create_request.num_disk or 50,
-            os=create_request.os
+            **create_request.dict()
         )
         background_tasks.add_task(tensordock_service.create_vm, td_request, vm_doc)
     else:
         # If gcp or others, map to CloudyPadCreateRequest model and pass to cloudypad service create function as async
-        cp_request = CloudyPadCreateRequest(
-            provider_instance_name=create_request.provider_instance_name,
-            instance_type=create_request.instance_type,
-            num_disk=create_request.num_disk or 50,
-            provider_instance_id=create_request.provider_id
-        )
+        cp_request = CloudyPadCreateRequest(**create_request.dict())
         background_tasks.add_task(cloudypad_service.create_vm, cp_request, vm_doc)
 
     # pass back confirmation response to user
@@ -118,12 +107,8 @@ async def create_instance(console_type: ConsoleType, create_request: VMCreateReq
         vm_id=vm_id,
         status=VMStatus.CREATING,
         console_type=console_type,
-        provider=create_request.provider,
-        instance_type=create_request.instance_type,
-        hourly_price=create_request.hourly_price,
         created_at=vm_doc.created_at,
-        instance_lat=create_request.instance_lat,
-        instance_long=create_request.instance_long
+        **create_request.dict(exclude={'provider_id', 'provider_instance_name', 'os', 'num_cpus', 'num_ram', 'num_disk', 'auto_stop_timeout', 'user_id'})
     )
 
 
@@ -157,73 +142,57 @@ async def list_existing_instances(console_type: ConsoleType, user_id: Optional[s
     # Pass back as list of VMResponse model
     return [
         VMResponse(
-            vm_id=instance['vm_id'],
-            status=instance['status'],
             console_type=console_type,
-            provider=instance['provider'],
-            instance_type=instance['instance_type'],
-            hourly_price=instance['hourly_price'],
-            created_at=instance['created_at'],
-            instance_lat=instance['instance_lat'],
-            instance_long=instance['instance_long'],
-            last_activity=instance.get('last_activity')
+            **{k: v for k, v in instance.items() if k in ['vm_id', 'status', 'provider', 'instance_type', 'hourly_price', 'created_at', 'instance_lat', 'instance_long', 'last_activity']}
         )
         for instance in filtered_instances
     ]
 
 
 @router.post("/instances/{vm_id}/start")
-async def start_instance(vm_id: str):
+async def start_instance(vm_id: str, background_tasks: BackgroundTasks):
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
         raise HTTPException(status_code=404, detail="VM instance not found")
 
-    # Call MongoDB status update to update status to "starting" and return updated doc
-    updated_instance = set_instance_status(vm_id, VMStatus.RUNNING)
-
-    # Grab provider instance ID from update doc
-    provider = instance['provider']
-    provider_instance_id = instance.get('provider_instance_id')
+    # Call MongoDB status update to update status to "starting"
+    set_instance_status(vm_id, VMStatus.STARTING)
 
     # If provider is tensordock, pass to tensordock start function with tensordock vm id with async
-    if provider == CloudProvider.TENSORDOCK:
-        await tensordock_service.start_vm(provider_instance_id)
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.start_vm, instance['provider_instance_id'], instance['vm_id'])
     else:
         # If provider is GCP or other, pass to cloudypad start function with instance name with async
-        await cloudypad_service.start_vm(instance['provider_instance_name'])
+        background_tasks.add_task(cloudypad_service.start_vm, instance['provider_instance_name'], instance['vm_id'])
 
     # Pass back confirmation response to user
-    return {"status": "starting", "vm_id": vm_id}
+    return {"status": VMStatus.STARTING, "vm_id": instance['vm_id']}
 
 
 @router.post("/instances/{vm_id}/stop")
-async def stop_instance(vm_id: str):
+async def stop_instance(vm_id: str, background_tasks: BackgroundTasks):
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
         raise HTTPException(status_code=404, detail="VM instance not found")
 
     # Call MongoDB status update to update status to "stopping"
-    set_instance_status(vm_id, VMStatus.STOPPED)
+    set_instance_status(vm_id, VMStatus.STOPPING)
 
-    # Grab provider info for API calls
-    provider = instance['provider']
-    provider_instance_id = instance.get('provider_instance_id')
-
-    # If provider is tensordock, pass to tensordock stop function with tensordock vm id with async
-    if provider == CloudProvider.TENSORDOCK:
-        await tensordock_service.stop_vm(provider_instance_id)
+    # If provider is tensordock, pass to tensordock start function with tensordock vm id with async
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.stop_vm, instance['provider_instance_id'], instance['vm_id'])
     else:
-        # If provider is GCP or other, pass to cloudypad stop function with instance name with async
-        await cloudypad_service.stop_vm(instance['provider_instance_name'])
+        # If provider is GCP or other, pass to cloudypad start function with instance name with async
+        background_tasks.add_task(cloudypad_service.stop_vm, instance['provider_instance_name'], instance['vm_id'])
 
     # Pass back confirmation response to user
-    return {"status": "stopping", "vm_id": vm_id}
+    return {"status": VMStatus.STOPPING, "vm_id": instance['vm_id']}
 
 
 @router.delete("/instances/{vm_id}/destroy")
-async def destroy_instance(vm_id: str):
+async def destroy_instance(vm_id: str, background_tasks: BackgroundTasks):
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
@@ -232,19 +201,15 @@ async def destroy_instance(vm_id: str):
     # Call MongoDB status update to update status to "destroying"
     set_instance_status(vm_id, VMStatus.DESTROYING)
 
-    # Grab provider info for API calls
-    provider = instance['provider']
-    provider_instance_id = instance.get('provider_instance_id')
-
-    # If provider is tensordock, pass to tensordock terminate function with tensordock vm id with async
-    if provider == CloudProvider.TENSORDOCK:
-        await tensordock_service.terminate_vm(provider_instance_id)
+    # If provider is tensordock, pass to tensordock start function with tensordock vm id with async
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.destroy_vm, instance['provider_instance_id'], instance['vm_id'])
     else:
-        # If provider is GCP or other, pass to cloudypad terminate function with instance name with async
-        await cloudypad_service.terminate_vm(instance['provider_instance_name'])
+        # If provider is GCP or other, pass to cloudypad start function with instance name with async
+        background_tasks.add_task(cloudypad_service.destroy_vm, instance['provider_instance_name'], instance['vm_id'])
 
     # Pass back confirmation response to user
-    return {"status": "destroying", "vm_id": vm_id}
+    return {"status": VMStatus.DESTROYING, "vm_id": instance['vm_id']}
 
 
 @router.get("/billing")

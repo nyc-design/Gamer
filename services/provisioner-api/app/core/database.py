@@ -27,26 +27,25 @@ def get_console_config(console_type: ConsoleType):
 def set_instance_status(vm_id: str, status: VMStatus):
     # Find instance doc using vm_id
     # Set status of instance doc to specified status
-    result = database.instances.update_one(
-        {"vm_id": vm_id}, 
-        {"$set": {"status": status}}
-    )
-
     # Return updated instance doc
-    return database.instances.find_one({"vm_id": vm_id})
+    return database.instances.find_one_and_update(
+        {"vm_id": vm_id},
+        {"$set": {"status": status}},
+        return_document=True
+    )
 
 
 def update_instance_doc(vm_id: str, update_doc: VMDocument):
     # Find instance doc in instance collection
     # Update instance doc with latest VMDocument
     doc_dict = update_doc.dict(by_alias=True, exclude_none=True)
-    database.instances.update_one(
-        {"vm_id": vm_id},
-        {"$set": doc_dict}
-    )
 
     # Pass back update doc
-    return database.instances.find_one({"vm_id": vm_id})
+    return database.instances.find_one_and_update(
+        {"vm_id": vm_id},
+        {"$set": doc_dict},
+        return_document=True
+    )
 
 
 def add_new_instance(instance_doc: VMDocument, status: VMStatus):
