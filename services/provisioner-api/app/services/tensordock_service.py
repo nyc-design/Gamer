@@ -194,7 +194,7 @@ class TensorDockService:
 
         # Call async cloudypad ssh function to deploy image with ssh key for instance, await
         cloudypad_service = CloudyPadService()
-        await cloudypad_service.ssh_deploy(instance_doc.provider_instance_name, instance_doc.ssh_key)
+        await cloudypad_service.ssh_deploy(instance_doc.instance_name, instance_doc.ssh_key)
 
 
     async def start_vm(self, instance_id: str, vm_id: str):

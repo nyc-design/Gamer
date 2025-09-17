@@ -41,6 +41,10 @@ class ConsoleType(str, Enum):
     WII = "wii"
     SWITCH = "switch"
 
+class OperatingSystems(str, Enum):
+    Windows = "Windows"
+    Ubuntu = "Ubuntu"
+
 class ConsoleConfigDocument(BaseModel):
     console_type: ConsoleType
     supported_instance_types: Dict[str, List[str]]
@@ -50,13 +54,13 @@ class ConsoleConfigDocument(BaseModel):
 
 class VMAvailableResponse(BaseModel):
     provider: CloudProvider
-    instance_type: Union[TensorDockVMType, GCPVMType]
-    provider_id: Optional[str]
+    provider_id: str
+    instance_type: Optional[str]
     hourly_price: Decimal
     instance_lat: float
     instance_long: float
     distance_to_user: float
-    gpu: str
+    gpu: GPUTypes
     avail_cpus: int
     avail_ram: int
     avail_disk: int
@@ -64,12 +68,14 @@ class VMAvailableResponse(BaseModel):
 class VMCreateRequest(BaseModel):
     console_type: ConsoleType
     provider: CloudProvider
-    instance_type: Union[TensorDockVMType, GCPVMType]
-    provider_id: Optional[str]
-    provider_instance_name: str
+    provider_id: str
+    instance_name: str
+    instance_type: Optional[GCPVMType]
+    hourly_price: Decimal
     instance_lat: float
     instance_long: float
-    os: str = "ubuntu2404"
+    operating_system: OperatingSystems
+    gpu: GPUTypes
     num_cpus: Optional[int] = None
     num_ram: Optional[int] = None
     num_disk: Optional[int] = None
@@ -83,21 +89,21 @@ class VMDocument(BaseModel):
     status: VMStatus
     console_types: List[ConsoleType]
     provider: CloudProvider
-    provider_instance_id: Optional[str] = None
-    provider_instance_name: str
-    instance_type: Union[TensorDockVMType, GCPVMType]
+    provider_id: Optional[str] = None
+    instance_name: str
+    instance_type: Optional[GCPVMType]
+    hourly_price: Decimal
     instance_lat: float
     instance_long: float
-    hourly_price: Decimal
-    os: str
-    gpu: str
+    operating_system: str
+    gpu: GPUTypes
     num_cpus: int
     num_ram: int
     num_disk: int
     auto_stop_timeout: int
     ssh_key: str
     instance_password: str
-    ip_address: Optional[str] = None
+    ip_address: str
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_activity: Optional[datetime] = None
@@ -122,12 +128,12 @@ class VMStatusResponse(BaseModel):
     ip_address: Optional[str] = None
     last_activity: Optional[datetime] = None
 
-class TensorDockVMType(str, Enum):
+class GPUTypes(str, Enum):
     RTX5090 = "rtx5090"
     RTX4090 = "rtx4090"
     RTX3090 = "rtx3090"
     RTXA4000 = "rtxa4000"
-    NOGPU = ""
+    NoGPU = ""
 
 class GCPVMType(str, Enum):
     E2_STANDARD_4 = "e2-standard-4"
@@ -138,7 +144,7 @@ class GCPVMType(str, Enum):
 class TensorDockCreateRequest(BaseModel):
     password: str
     ssh_key: str
-    name: str = Field(alias="provider_instance_name")
+    name: str = Field(alias="instance_name")
     gpu_count: int = 1
     gpu_model: TensorDockVMType = Field(alias="instance_type")
     vcpu_count: int = Field(alias="num_cpus")
@@ -148,15 +154,21 @@ class TensorDockCreateRequest(BaseModel):
     storage_gb: int = Field(alias="num_disk")
     image: str = Field(alias="os")
 
-class CloudyPadCreateRequest(BaseModel):
-    name: str = Field(alias="provider_instance_name")
-    instance_type: str = Field(alias="instance_type")
-    disk_size: int = Field(alias="num_disk")
-    public_ip_type: str = "static"
-    region: str = Field(alias="provider_id")
-    spot: bool = True
-    streaming_server: str = "wolf"
-    cost_alert: int = 10
-    cost_limit: int = 40
-    cost_notification_email: str = "neil@tapiavala.com"
+class GCPCreateRequest(BaseModel):
+    name: str = Field(alias="instance_name")
+    machine_type: GCPVMType = Field(alias="instance_type")
+    zone: str = Field(alias="provider_id")
+    disk_size_gb: int = Field(alias="num_disk", default=100)
+    disk_type: str = "pd-ssd"  # Standard SSD for gaming
+    source_image: str = Field(alias="operating_system", default="projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts")
+    network: str = "global/networks/default"
+    external_ip: bool = True
+    preemptible: bool = True  # Spot pricing
+    ssh_key: str
+    tailscale_auth_key: Optional[str] = None
+    # GPU configuration for gaming VMs
+    gpu_type: Optional[str] = None  # e.g., "nvidia-tesla-t4"
+    gpu_count: int = 0
+    # Gaming-specific metadata
+    startup_script: Optional[str] = None
 
