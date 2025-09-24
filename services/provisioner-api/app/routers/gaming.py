@@ -75,11 +75,28 @@ async def list_existing_instances(console_type: ConsoleType, user_id: Optional[s
     List existing VM instances for a console type and optional user
 
     Implementation checklist:
-    [ ] Call MongoDB to get all existing instances
-    [ ] Filter by console type and user ID if provided
-    [ ] Return as list of VMResponse models
+    [x] Call MongoDB to get all existing instances
+    [x] Filter by console type and user ID if provided
+    [x] Return as list of VMResponse models
     """
-    pass
+    # Call MongoDB to get all existing instances
+    instances = get_instance()
+
+    # Filter by console type and user ID if provided
+    filtered_instances = []
+    for instance in instances:
+        if console_type in instance.get('console_types', []):
+            if user_id is None or instance.get('user_id') == user_id:
+                filtered_instances.append(instance)
+
+    # Return as list of VMResponse models
+    return [
+        VMResponse(
+            console_type=console_type,
+            **{k: v for k, v in instance.items() if k in ['vm_id', 'status', 'provider', 'instance_type', 'hourly_price', 'created_at', 'instance_lat', 'instance_long', 'last_activity']}
+        )
+        for instance in filtered_instances
+    ]
 
 
 @router.post("/instances/{vm_id}/start")
