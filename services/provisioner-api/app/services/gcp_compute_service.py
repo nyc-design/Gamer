@@ -10,6 +10,7 @@ from app.models.vm import (
 )
 import subprocess
 from app.services.geocoding_service import GeocodingService
+from app.services.startup_script_service import StartupScriptService
 from app.core.database import update_instance_doc, set_instance_status
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,18 @@ class GCPComputeService:
         self.billing_client = billing_v1.CloudCatalogClient()
         
     async def list_available_regions(self, console_config: ConsoleConfigDocument, user_location: Optional[Tuple[float, float]] = None):
+        """
+        List available GCP regions and machine types for console requirements
+
+        Implementation checklist:
+        [x] Get supported instance types from console config
+        [x] Use Google Cloud SDK to get machine types for each supported type
+        [x] Get all zones and machine type details for each zone
+        [x] Convert GCloud regions to city, country pairs
+        [x] Get hourly pricing for each instance type and region
+        [x] Use geocoding service to get coordinates for each region
+        [x] Create and return VMAvailableResponse list
+        """
         # grab supported instance types for each provider from console_config
         supported_types = console_config.supported_instance_types.get("gcp", [])
         available_instances = []
@@ -97,212 +110,189 @@ class GCPComputeService:
         
 
     async def create_vm(self, create_request: GCPCreateRequest, instance_doc: VMDocument):
-        # Create Compute Engine instance using Google Cloud Python SDK
-        instances_client = compute_v1.InstancesClient()
+        """
+        Create a GCP Compute Engine VM instance with gaming optimizations
 
-        # Configure instance properties
-        instance = compute_v1.Instance()
-        instance.name = create_request.name
-        instance.machine_type = f"zones/{create_request.zone}/machineTypes/{create_request.machine_type}"
+        Implementation checklist:
+        [x] Build metadata items with shared startup script
+        [x] Configure instance with machine type, disks, and networking
+        [x] Add GPU configuration if specified
+        [x] Set up scheduling for preemptible instances
+        [x] Create the instance using Google Cloud SDK
+        [x] Wait for operation completion and get instance details
+        [x] Extract IP address and update VM document
+        [x] Update database with final instance information
+        """
+        # Create Compute Engine instance using efficient Google Cloud Python SDK pattern
+        compute_client = compute_v1.InstancesClient()
 
-        # Boot disk configuration
-        disk = compute_v1.AttachedDisk()
-        disk.boot = True
-        disk.auto_delete = True
-        disk.initialize_params = compute_v1.AttachedDiskInitializeParams()
-        disk.initialize_params.source_image = create_request.source_image
-        disk.initialize_params.disk_size_gb = str(create_request.disk_size_gb)
-        disk.initialize_params.disk_type = f"zones/{create_request.zone}/diskTypes/{create_request.disk_type}"
-        instance.disks = [disk]
+        # Build metadata items with shared startup script
+        startup_script = StartupScriptService.get_gaming_vm_startup_script()
+        metadata_items = [
+            {'key': 'ssh-keys', 'value': f"ubuntu:{instance_doc.ssh_key}"},
+            {'key': 'startup-script', 'value': startup_script}
+        ]
 
-        # Network configuration
-        network_interface = compute_v1.NetworkInterface()
-        network_interface.network = f"projects/{self.project_id}/global/networks/{create_request.network.split('/')[-1]}"
-        if create_request.external_ip:
-            access_config = compute_v1.AccessConfig()
-            access_config.type_ = compute_v1.AccessConfig.Type.ONE_TO_ONE_NAT.name
-            access_config.name = "External NAT"
-            network_interface.access_configs = [access_config]
-        instance.network_interfaces = [network_interface]
+        # Instance configuration using dict format (more efficient)
+        config = {
+            'name': create_request.name,
+            'machine_type': f"zones/{create_request.zone}/machineTypes/{create_request.machine_type}",
+            'disks': [{
+                'boot': True,
+                'auto_delete': True,
+                'initialize_params': {
+                    'source_image': create_request.source_image,
+                    'disk_size_gb': str(create_request.disk_size_gb),
+                    'disk_type': f"zones/{create_request.zone}/diskTypes/{create_request.disk_type}"
+                }
+            }],
+            'network_interfaces': [{
+                'network': f"projects/{self.project_id}/global/networks/default",
+                'access_configs': [{
+                    'type': 'ONE_TO_ONE_NAT',
+                    'name': 'External NAT'
+                }] if create_request.external_ip else []
+            }],
+            'metadata': {
+                'items': metadata_items
+            }
+        }
 
-        # GPU configuration if specified
+        # Add GPU configuration if specified
         if create_request.gpu_type and create_request.gpu_count > 0:
-            accelerator = compute_v1.AcceleratorConfig()
-            accelerator.accelerator_type = f"zones/{create_request.zone}/acceleratorTypes/{create_request.gpu_type}"
-            accelerator.accelerator_count = create_request.gpu_count
-            instance.guest_accelerators = [accelerator]
+            config['guest_accelerators'] = [{
+                'accelerator_type': f"zones/{create_request.zone}/acceleratorTypes/{create_request.gpu_type}",
+                'accelerator_count': create_request.gpu_count
+            }]
 
-        # Scheduling for preemptible instances
+        # Add scheduling for preemptible instances
         if create_request.preemptible:
-            instance.scheduling = compute_v1.Scheduling()
-            instance.scheduling.preemptible = True
-
-        # Metadata for SSH keys and startup script
-        instance.metadata = compute_v1.Metadata()
-        metadata_items = []
-
-        # Add SSH key
-        ssh_key_item = compute_v1.Items()
-        ssh_key_item.key = "ssh-keys"
-        ssh_key_item.value = f"ubuntu:{instance_doc.ssh_key}"
-        metadata_items.append(ssh_key_item)
-
-        # Add startup script if provided
-        if create_request.startup_script:
-            startup_item = compute_v1.Items()
-            startup_item.key = "startup-script"
-            startup_item.value = create_request.startup_script
-            metadata_items.append(startup_item)
-
-        # Add Tailscale auth key if provided
-        if create_request.tailscale_auth_key:
-            tailscale_item = compute_v1.Items()
-            tailscale_item.key = "tailscale-auth-key"
-            tailscale_item.value = create_request.tailscale_auth_key
-            metadata_items.append(tailscale_item)
-
-        instance.metadata.items = metadata_items
+            config['scheduling'] = {'preemptible': True}
 
         # Create the instance
-        request = compute_v1.InsertInstanceRequest(
+        operation = compute_client.insert(
             project=self.project_id,
             zone=create_request.zone,
-            instance_resource=instance
+            instance_resource=config
         )
 
-        operation = instances_client.insert(request=request)
+        # Wait for operation completion and get result
+        result = operation.result()
 
-        # Wait for operation to complete
-        zone_operations_client = compute_v1.ZoneOperationsClient()
-        while operation.status != compute_v1.Operation.Status.DONE:
-            await asyncio.sleep(2)
-            operation = zone_operations_client.get(
-                project=self.project_id,
-                zone=create_request.zone,
-                operation=operation.name
-            )
-
-        if operation.error:
-            logger.error(f"Failed to create instance: {operation.error}")
-            instance_doc.status = VMStatus.ERROR
-        else:
+        if result:
             # Get instance details for IP address
-            instance_result = instances_client.get(
+            instance_result = compute_client.get(
                 project=self.project_id,
                 zone=create_request.zone,
                 instance=create_request.name
             )
 
             # Extract IP address
-            if instance_result.network_interfaces and instance_result.network_interfaces[0].access_configs:
+            if (instance_result.network_interfaces and
+                instance_result.network_interfaces[0].access_configs):
                 instance_doc.ip_address = instance_result.network_interfaces[0].access_configs[0].nat_i_p
 
             instance_doc.provider_instance_id = f"{create_request.zone}/{create_request.name}"
             instance_doc.status = VMStatus.RUNNING
+        else:
+            logger.error(f"Failed to create instance {create_request.name}")
+            instance_doc.status = VMStatus.ERROR
 
         # Update database
         update_instance_doc(instance_doc.vm_id, instance_doc)
 
     
     async def start_vm(self, provider_instance_id: str, vm_id: str):
-        # Start GCP instance using Python SDK
-        instances_client = compute_v1.InstancesClient()
+        """
+        Start a stopped GCP VM instance
+
+        Implementation checklist:
+        [x] Parse zone and instance name from provider instance ID
+        [x] Start the instance using Google Cloud SDK
+        [x] Wait for operation completion
+        [x] Update database status to RUNNING or ERROR
+        """
+        # Start GCP instance using efficient Python SDK pattern
+        compute_client = compute_v1.InstancesClient()
 
         # Parse zone and instance name from provider_instance_id (format: "zone/instance_name")
         zone, instance_name = provider_instance_id.split('/', 1)
 
-        # Start the instance
-        request = compute_v1.StartInstanceRequest(
-            project=self.project_id,
-            zone=zone,
-            instance=instance_name
-        )
-
-        operation = instances_client.start(request=request)
-
-        # Wait for operation to complete
-        zone_operations_client = compute_v1.ZoneOperationsClient()
-        while operation.status != compute_v1.Operation.Status.DONE:
-            await asyncio.sleep(2)
-            operation = zone_operations_client.get(
+        try:
+            # Start the instance and wait for completion
+            operation = compute_client.start(
                 project=self.project_id,
                 zone=zone,
-                operation=operation.name
+                instance=instance_name
             )
-
-        if operation.error:
-            logger.error(f"Failed to start instance: {operation.error}")
-            set_instance_status(vm_id, VMStatus.ERROR)
-        else:
+            operation.result()  # Wait for completion
             set_instance_status(vm_id, VMStatus.RUNNING)
+        except Exception as e:
+            logger.error(f"Failed to start instance {instance_name}: {e}")
+            set_instance_status(vm_id, VMStatus.ERROR)
 
     
     async def stop_vm(self, provider_instance_id: str, vm_id: str):
-        # Stop GCP instance using Python SDK
-        instances_client = compute_v1.InstancesClient()
+        """
+        Stop a running GCP VM instance
+
+        Implementation checklist:
+        [x] Parse zone and instance name from provider instance ID
+        [x] Stop the instance using Google Cloud SDK
+        [x] Wait for operation completion
+        [x] Update database status to STOPPED or ERROR
+        """
+        # Stop GCP instance using efficient Python SDK pattern
+        compute_client = compute_v1.InstancesClient()
 
         # Parse zone and instance name from provider_instance_id (format: "zone/instance_name")
         zone, instance_name = provider_instance_id.split('/', 1)
 
-        # Stop the instance
-        request = compute_v1.StopInstanceRequest(
-            project=self.project_id,
-            zone=zone,
-            instance=instance_name
-        )
-
-        operation = instances_client.stop(request=request)
-
-        # Wait for operation to complete
-        zone_operations_client = compute_v1.ZoneOperationsClient()
-        while operation.status != compute_v1.Operation.Status.DONE:
-            await asyncio.sleep(2)
-            operation = zone_operations_client.get(
+        try:
+            # Stop the instance and wait for completion
+            operation = compute_client.stop(
                 project=self.project_id,
                 zone=zone,
-                operation=operation.name
+                instance=instance_name
             )
-
-        if operation.error:
-            logger.error(f"Failed to stop instance: {operation.error}")
-            set_instance_status(vm_id, VMStatus.ERROR)
-        else:
+            operation.result()  # Wait for completion
             set_instance_status(vm_id, VMStatus.STOPPED)
+        except Exception as e:
+            logger.error(f"Failed to stop instance {instance_name}: {e}")
+            set_instance_status(vm_id, VMStatus.ERROR)
     
 
     async def destroy_vm(self, provider_instance_id: str, vm_id: str):
-        # Delete GCP instance using Python SDK
-        instances_client = compute_v1.InstancesClient()
+        """
+        Permanently delete a GCP VM instance
+
+        Implementation checklist:
+        [x] Parse zone and instance name from provider instance ID
+        [x] Delete the instance using Google Cloud SDK
+        [x] Wait for operation completion
+        [x] Update database status to DESTROYED or ERROR
+        """
+        # Delete GCP instance using efficient Python SDK pattern
+        compute_client = compute_v1.InstancesClient()
 
         # Parse zone and instance name from provider_instance_id (format: "zone/instance_name")
         zone, instance_name = provider_instance_id.split('/', 1)
 
-        # Delete the instance
-        request = compute_v1.DeleteInstanceRequest(
-            project=self.project_id,
-            zone=zone,
-            instance=instance_name
-        )
-
-        operation = instances_client.delete(request=request)
-
-        # Wait for operation to complete
-        zone_operations_client = compute_v1.ZoneOperationsClient()
-        while operation.status != compute_v1.Operation.Status.DONE:
-            await asyncio.sleep(2)
-            operation = zone_operations_client.get(
+        try:
+            # Delete the instance and wait for completion
+            operation = compute_client.delete(
                 project=self.project_id,
                 zone=zone,
-                operation=operation.name
+                instance=instance_name
             )
-
-        if operation.error:
-            logger.error(f"Failed to destroy instance: {operation.error}")
-            set_instance_status(vm_id, VMStatus.ERROR)
-        else:
+            operation.result()  # Wait for completion
             set_instance_status(vm_id, VMStatus.DESTROYED)
+        except Exception as e:
+            logger.error(f"Failed to destroy instance {instance_name}: {e}")
+            set_instance_status(vm_id, VMStatus.ERROR)
 
     
+
 
 
     async def _get_instance_price(self, instance_type: str, region: str) -> float:
