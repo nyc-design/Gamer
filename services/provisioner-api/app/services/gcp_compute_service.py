@@ -176,30 +176,16 @@ class GCPComputeService:
             instance_resource=config
         )
 
-        # Wait for operation to complete and get result
-        try:
-            result = operation.result()
-            logger.info(f"GCP VM creation operation completed for {create_request.name}")
-        except Exception as e:
-            logger.error(f"GCP VM creation failed for {create_request.name}: {str(e)}")
-            instance_doc.status = VMStatus.ERROR
-            update_instance_doc(instance_doc.vm_id, instance_doc)
-            return
+        # Wait for operation completion and get result
+        result = operation.result()
 
         if result:
             # Get instance details for IP address
-            try:
-                instance_result = compute_client.get(
-                    project=self.project_id,
-                    zone=create_request.zone,
-                    instance=create_request.name
-                )
-                logger.info(f"Retrieved instance details for {create_request.name}")
-            except Exception as e:
-                logger.error(f"Failed to retrieve instance details for {create_request.name}: {str(e)}")
-                instance_doc.status = VMStatus.ERROR
-                update_instance_doc(instance_doc.vm_id, instance_doc)
-                return
+            instance_result = compute_client.get(
+                project=self.project_id,
+                zone=create_request.zone,
+                instance=create_request.name
+            )
 
             # Extract IP address
             if (instance_result.network_interfaces and

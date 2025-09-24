@@ -28,9 +28,7 @@ class StartupScriptService:
         try:
             with open(script_path, 'r') as f:
                 script_content = f.read()
-            logger.info(f"Successfully loaded startup script from {script_path}")
-        except FileNotFoundError as e:
-            logger.error(f"Gaming VM startup script not found at {script_path}")
+        except FileNotFoundError:
             raise FileNotFoundError(f"Gaming VM startup script not found at {script_path}")
 
         return script_content

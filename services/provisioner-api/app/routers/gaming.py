@@ -38,38 +38,19 @@ async def list_available_instances(console_type: ConsoleType, user_lat: Optional
     [x] Sort by distance and return as VMAvailableResponse models
     """
     # Take console type, and call MongoDB database function to get config for that console
-    try:
-        console_config = get_console_config(console_type)
-        if not console_config:
-            logger.warning(f"Console config not found for console type: {console_type}")
-            raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
-        logger.info(f"Retrieved console config for {console_type}")
-    except Exception as e:
-        logger.error(f"Database error retrieving console config for {console_type}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error retrieving console configuration")
+    console_config = get_console_config(console_type)
+    if not console_config:
+        raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
 
     # Take config and user lat / long and pass it to tensordock service function to find all instances, return as list
     user_location = (user_lat, user_lng) if user_lat and user_lng else None
-    logger.info(f"Fetching available instances for {console_type} with user_location: {user_location}")
-
-    try:
-        tensordock_instances = await tensordock_service.list_available_hostnodes(console_config, user_location)
-        logger.info(f"Found {len(tensordock_instances)} TensorDock instances")
-    except Exception as e:
-        logger.error(f"Error fetching TensorDock instances: {str(e)}")
-        tensordock_instances = []  # Continue with empty list if one provider fails
+    tensordock_instances = await tensordock_service.list_available_hostnodes(console_config, user_location)
 
     # Take config and user lat / long and pass it to gcp service function to find all instances, return as list
-    try:
-        gcp_instances = await gcp_service.list_available_regions(console_config, user_location)
-        logger.info(f"Found {len(gcp_instances)} GCP instances")
-    except Exception as e:
-        logger.error(f"Error fetching GCP instances: {str(e)}")
-        gcp_instances = []  # Continue with empty list if one provider fails
+    gcp_instances = await gcp_service.list_available_regions(console_config, user_location)
 
     # Combine all lists, then pass each instance to calculate_distance function from geocoding service to get distance to user
     all_instances = tensordock_instances + gcp_instances
-    logger.info(f"Total instances found: {len(all_instances)}")
 
     # Calculate distance to user for each instance if user location provided
     if user_location:
