@@ -26,20 +26,50 @@ geocoding_service = GeocodingService()
 
 @router.get("/instances/available", response_model=List[VMAvailableResponse])
 async def list_available_instances(console_type: ConsoleType, user_lat: Optional[float] = None, user_lng: Optional[float] = None):
+    """
+    List available VM instances for a specific console type
+
+    Implementation checklist:
+    [x] Take console type and get config from MongoDB
+    [x] Get available instances from TensorDock service
+    [x] Get available instances from GCP service
+    [x] Combine all instance lists
+    [x] Calculate distance to user if location provided
+    [x] Sort by distance and return as VMAvailableResponse models
+    """
     # Take console type, and call MongoDB database function to get config for that console
-    console_config = get_console_config(console_type)
-    if not console_config:
-        raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
+    try:
+        console_config = get_console_config(console_type)
+        if not console_config:
+            logger.warning(f"Console config not found for console type: {console_type}")
+            raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
+        logger.info(f"Retrieved console config for {console_type}")
+    except Exception as e:
+        logger.error(f"Database error retrieving console config for {console_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Database error retrieving console configuration")
 
     # Take config and user lat / long and pass it to tensordock service function to find all instances, return as list
     user_location = (user_lat, user_lng) if user_lat and user_lng else None
-    tensordock_instances = await tensordock_service.list_available_hostnodes(console_config, user_location)
+    logger.info(f"Fetching available instances for {console_type} with user_location: {user_location}")
+
+    try:
+        tensordock_instances = await tensordock_service.list_available_hostnodes(console_config, user_location)
+        logger.info(f"Found {len(tensordock_instances)} TensorDock instances")
+    except Exception as e:
+        logger.error(f"Error fetching TensorDock instances: {str(e)}")
+        tensordock_instances = []  # Continue with empty list if one provider fails
 
     # Take config and user lat / long and pass it to gcp service function to find all instances, return as list
-    gcp_instances = await gcp_service.list_available_regions(console_config, user_location)
+    try:
+        gcp_instances = await gcp_service.list_available_regions(console_config, user_location)
+        logger.info(f"Found {len(gcp_instances)} GCP instances")
+    except Exception as e:
+        logger.error(f"Error fetching GCP instances: {str(e)}")
+        gcp_instances = []  # Continue with empty list if one provider fails
 
     # Combine all lists, then pass each instance to calculate_distance function from geocoding service to get distance to user
     all_instances = tensordock_instances + gcp_instances
+    logger.info(f"Total instances found: {len(all_instances)}")
 
     # Calculate distance to user for each instance if user location provided
     if user_location:
@@ -57,6 +87,18 @@ async def list_available_instances(console_type: ConsoleType, user_lat: Optional
 
 @router.post("/instances/create", response_model=VMResponse)
 async def create_instance(console_type: ConsoleType, create_request: VMCreateRequest, user_id: Optional[str] = None, background_tasks: BackgroundTasks = None):
+    """
+    Create a new gaming VM instance
+
+    Implementation checklist:
+    [x] Get console config for validation and defaults
+    [x] Generate secure credentials (password and SSH key)
+    [x] Apply console config defaults for missing values
+    [x] Determine compatible console types for this configuration
+    [x] Create VM document in database with CREATING status
+    [x] Route to appropriate provider service (TensorDock/GCP)
+    [x] Return confirmation response to user
+    """
     # Get console config for default values and compatibility check
     console_config = get_console_config(console_type)
     if not console_config:
@@ -134,6 +176,13 @@ async def create_instance(console_type: ConsoleType, create_request: VMCreateReq
 
 @router.get("/instances/{vm_id}/status", response_model=VMStatusResponse)
 async def get_instance_status(vm_id: str):
+    """
+    Get status of a specific VM instance
+
+    Implementation checklist:
+    [x] Take VM ID and check status in MongoDB document
+    [x] Return status response or 404 if not found
+    """
     # Take VM_ID and check status in mongodb document
     instance = get_instance(vm_id)
     if not instance:
@@ -149,9 +198,16 @@ async def get_instance_status(vm_id: str):
 
 @router.get("/instances", response_model=List[VMResponse])
 async def list_existing_instances(console_type: ConsoleType, user_id: Optional[str] = None):
+    """
+    List existing VM instances for a console type and optional user
+
+    Implementation checklist:
+    [x] Call MongoDB to get all existing instances
+    [x] Filter by console type and user ID if provided
+    [x] Return as list of VMResponse models
+    """
     # Call MongoDB for all existing instances
     instances = get_instance()  # Get all active instances
-    
     # Filter by console type and user_id if provided
     filtered_instances = []
     for instance in instances:
@@ -171,6 +227,15 @@ async def list_existing_instances(console_type: ConsoleType, user_id: Optional[s
 
 @router.post("/instances/{vm_id}/start")
 async def start_instance(vm_id: str, background_tasks: BackgroundTasks):
+    """
+    Start a stopped VM instance
+
+    Implementation checklist:
+    [x] Get instance document from MongoDB
+    [x] Update status to STARTING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
+    """
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
@@ -194,6 +259,15 @@ async def start_instance(vm_id: str, background_tasks: BackgroundTasks):
 
 @router.post("/instances/{vm_id}/stop")
 async def stop_instance(vm_id: str, background_tasks: BackgroundTasks):
+    """
+    Stop a running VM instance
+
+    Implementation checklist:
+    [x] Get instance document from MongoDB
+    [x] Update status to STOPPING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
+    """
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
@@ -217,6 +291,15 @@ async def stop_instance(vm_id: str, background_tasks: BackgroundTasks):
 
 @router.delete("/instances/{vm_id}/destroy")
 async def destroy_instance(vm_id: str, background_tasks: BackgroundTasks):
+    """
+    Permanently destroy a VM instance
+
+    Implementation checklist:
+    [x] Get instance document from MongoDB
+    [x] Update status to DESTROYING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
+    """
     # Call MongoDB to get instance doc
     instance = get_instance(vm_id)
     if not instance:
@@ -240,6 +323,14 @@ async def destroy_instance(vm_id: str, background_tasks: BackgroundTasks):
 
 @router.get("/billing")
 async def get_billing(user_id: Optional[str] = None):
+    """
+    Calculate billing information for user's instances
+
+    Implementation checklist:
+    [x] Get user's instances from MongoDB for billing calculation
+    [x] Calculate total costs from provider pricing
+    [x] Return billing breakdown by provider and instance list
+    """
     # Get user's instances for billing calculation
     instances = get_instance()
     user_instances = [i for i in instances if user_id is None or i.get('user_id') == user_id]
