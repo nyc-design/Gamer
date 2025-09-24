@@ -116,12 +116,29 @@ async def start_instance(vm_id: str, background_tasks: BackgroundTasks):
     Start a stopped VM instance
 
     Implementation checklist:
-    [ ] Get instance document from MongoDB
-    [ ] Update status to STARTING in database
-    [ ] Route to appropriate provider service based on provider type
-    [ ] Return confirmation response to user
+    [x] Get instance document from MongoDB
+    [x] Update status to STARTING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
     """
-    pass
+    # Get instance document from MongoDB
+    instance = get_instance(vm_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM instance not found")
+
+    # Update status to STARTING in database
+    set_instance_status(vm_id, VMStatus.STARTING)
+
+    # Route to appropriate provider service based on provider type
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.start_vm, instance['provider_instance_id'], instance['vm_id'])
+    elif instance['provider'] == CloudProvider.GCP:
+        background_tasks.add_task(gcp_service.start_vm, instance['provider_instance_id'], instance['vm_id'])
+    else:
+        raise HTTPException(status_code=400, detail=f"Provider {instance['provider']} not supported for start operation")
+
+    # Return confirmation response to user
+    return {"status": VMStatus.STARTING, "vm_id": instance['vm_id']}
 
 
 @router.post("/instances/{vm_id}/stop")
@@ -130,12 +147,29 @@ async def stop_instance(vm_id: str, background_tasks: BackgroundTasks):
     Stop a running VM instance
 
     Implementation checklist:
-    [ ] Get instance document from MongoDB
-    [ ] Update status to STOPPING in database
-    [ ] Route to appropriate provider service based on provider type
-    [ ] Return confirmation response to user
+    [x] Get instance document from MongoDB
+    [x] Update status to STOPPING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
     """
-    pass
+    # Get instance document from MongoDB
+    instance = get_instance(vm_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM instance not found")
+
+    # Update status to STOPPING in database
+    set_instance_status(vm_id, VMStatus.STOPPING)
+
+    # Route to appropriate provider service based on provider type
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.stop_vm, instance['provider_instance_id'], instance['vm_id'])
+    elif instance['provider'] == CloudProvider.GCP:
+        background_tasks.add_task(gcp_service.stop_vm, instance['provider_instance_id'], instance['vm_id'])
+    else:
+        raise HTTPException(status_code=400, detail=f"Provider {instance['provider']} not supported for stop operation")
+
+    # Return confirmation response to user
+    return {"status": VMStatus.STOPPING, "vm_id": instance['vm_id']}
 
 
 @router.delete("/instances/{vm_id}/destroy")
@@ -144,12 +178,29 @@ async def destroy_instance(vm_id: str, background_tasks: BackgroundTasks):
     Permanently destroy a VM instance
 
     Implementation checklist:
-    [ ] Get instance document from MongoDB
-    [ ] Update status to DESTROYING in database
-    [ ] Route to appropriate provider service based on provider type
-    [ ] Return confirmation response to user
+    [x] Get instance document from MongoDB
+    [x] Update status to DESTROYING in database
+    [x] Route to appropriate provider service based on provider type
+    [x] Return confirmation response to user
     """
-    pass
+    # Get instance document from MongoDB
+    instance = get_instance(vm_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM instance not found")
+
+    # Update status to DESTROYING in database
+    set_instance_status(vm_id, VMStatus.DESTROYING)
+
+    # Route to appropriate provider service based on provider type
+    if instance['provider'] == CloudProvider.TENSORDOCK:
+        background_tasks.add_task(tensordock_service.destroy_vm, instance['provider_instance_id'], instance['vm_id'])
+    elif instance['provider'] == CloudProvider.GCP:
+        background_tasks.add_task(gcp_service.destroy_vm, instance['provider_instance_id'], instance['vm_id'])
+    else:
+        raise HTTPException(status_code=400, detail=f"Provider {instance['provider']} not supported for destroy operation")
+
+    # Return confirmation response to user
+    return {"status": VMStatus.DESTROYING, "vm_id": instance['vm_id']}
 
 
 @router.get("/billing")
@@ -158,8 +209,35 @@ async def get_billing(user_id: Optional[str] = None):
     Calculate billing information for user's instances
 
     Implementation checklist:
-    [ ] Get user's instances from MongoDB for billing calculation
-    [ ] Calculate total costs from provider pricing
-    [ ] Return billing breakdown by provider and instance list
+    [x] Get user's instances from MongoDB for billing calculation
+    [x] Calculate total costs from provider pricing
+    [x] Return billing breakdown by provider and instance list
     """
-    pass
+    # Get user's instances from MongoDB for billing calculation
+    instances = get_instance()
+    user_instances = [i for i in instances if user_id is None or i.get('user_id') == user_id]
+
+    # Calculate total costs from provider pricing
+    tensordock_total = 0.0
+    gcp_total = 0.0
+
+    for instance in user_instances:
+        if instance['provider'] == CloudProvider.TENSORDOCK:
+            tensordock_total += float(instance.get('hourly_price', 0))
+        else:
+            gcp_total += float(instance.get('hourly_price', 0))
+
+    # Return billing breakdown by provider and instance list
+    return {
+        "tensordock": {"total_cost": tensordock_total, "current_month": tensordock_total},
+        "gcp": {"total_cost": gcp_total, "current_month": gcp_total},
+        "instances": [
+            {
+                "vm_id": i['vm_id'],
+                "provider": i['provider'],
+                "hourly_price": i['hourly_price'],
+                "status": i['status']
+            }
+            for i in user_instances
+        ]
+    }
