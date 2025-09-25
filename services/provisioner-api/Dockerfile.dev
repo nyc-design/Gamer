@@ -1,4 +1,4 @@
-# Development Dockerfile - Includes dev tools but not heavy test dependencies
+# Development Dockerfile with test dependencies
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -9,12 +9,12 @@ RUN pip install poetry
 # Copy dependency files
 COPY pyproject.toml poetry.lock ./
 
-# Install production + dev dependencies (no test dependencies by default)
+# Install all dependencies including tests
 RUN poetry config virtualenvs.create false \
-    && poetry install --with dev --without test,integration,performance,reporting
+    && poetry install --with dev,test
 
 # Copy application code
 COPY . .
 
-# Development server with hot reload
+# Default command for development
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
