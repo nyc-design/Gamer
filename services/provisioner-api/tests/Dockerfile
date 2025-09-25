@@ -1,4 +1,4 @@
-# Development Dockerfile with test dependencies
+# Test Dockerfile - includes test dependencies
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -16,5 +16,5 @@ RUN poetry config virtualenvs.create false \
 # Copy application code
 COPY . .
 
-# Default command for development
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Default command for testing
+CMD ["pytest"]

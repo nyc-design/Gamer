@@ -8,7 +8,7 @@ This project uses pytest with essential testing dependencies for simple unit and
 
 ### Option 1: Direct pytest (if dependencies installed)
 ```bash
-# Run all tests
+# From project root
 pytest
 
 # Run specific test file
@@ -23,11 +23,12 @@ pytest tests/unit/test_get_instance_status.py::test_get_instance_status_success
 
 ### Option 2: Using Docker (recommended for consistent environment)
 ```bash
-# Build and run tests in container
+# From tests/ directory
+cd tests/
 ./test.sh
 
 # Or manually with docker-compose
-docker-compose -f docker-compose.test.yml run --rm provisioner-api-test
+docker-compose run --rm provisioner-api-test
 ```
 
 ## Test Structure
