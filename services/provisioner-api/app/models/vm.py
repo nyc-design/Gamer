@@ -45,6 +45,13 @@ class OperatingSystems(str, Enum):
     Windows = "Windows"
     Ubuntu = "Ubuntu"
 
+class GPUTypes(str, Enum):
+    RTX5090 = "rtx5090"
+    RTX4090 = "rtx4090"
+    RTX3090 = "rtx3090"
+    RTXA4000 = "rtxa4000"
+    NoGPU = ""
+
 class ConsoleConfigDocument(BaseModel):
     console_type: ConsoleType
     supported_gpus: List[GPUTypes]
@@ -125,13 +132,6 @@ class VMStatusResponse(BaseModel):
     status: VMStatus
     ip_address: Optional[str] = None
     last_activity: Optional[datetime] = None
-
-class GPUTypes(str, Enum):
-    RTX5090 = "rtx5090"
-    RTX4090 = "rtx4090"
-    RTX3090 = "rtx3090"
-    RTXA4000 = "rtxa4000"
-    NoGPU = ""
 
 class GCPVMType(str, Enum):
     E2_STANDARD_4 = "e2-standard-4"
