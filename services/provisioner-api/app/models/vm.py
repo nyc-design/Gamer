@@ -89,6 +89,8 @@ class VMCreateRequest(BaseModel):
 
 # Simplified VM model - only essential fields
 class VMDocument(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
     id: Optional[ObjectId] = Field(None, alias="_id")
     vm_id: str
     status: VMStatus
