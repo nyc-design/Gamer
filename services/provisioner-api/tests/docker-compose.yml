@@ -1,0 +1,12 @@
+services:
+  provisioner-api-test:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+    volumes:
+      - /home/coder/.config/.gcloud:/root/.config/gcloud
+      - ..:/app
+    environment:
+      - PYTHONPATH=/app
+    working_dir: /app
+    command: pytest
