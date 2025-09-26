@@ -4,6 +4,7 @@ services:
       context: ..
       dockerfile: tests/Dockerfile
     volumes:
+      - /home/coder/.config/.gcloud:/root/.config/gcloud
       - ..:/app
     environment:
       - PYTHONPATH=/app
