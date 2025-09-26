@@ -30,14 +30,42 @@ async def list_available_instances(console_type: ConsoleType, user_lat: Optional
     List available VM instances for a specific console type
 
     Implementation checklist:
-    [ ] Take console type and get config from MongoDB
-    [ ] Get available instances from TensorDock service
-    [ ] Get available instances from GCP service
-    [ ] Combine all instance lists
-    [ ] Calculate distance to user if location provided
-    [ ] Sort by distance and return as VMAvailableResponse models
+    [x] Take console type and get config from MongoDB
+    [x] Get available instances from TensorDock service
+    [x] Get available instances from GCP service
+    [x] Combine all instance lists
+    [x] Calculate distance to user if location provided
+    [x] Sort by distance and return as VMAvailableResponse models
     """
-    pass
+    # Take console type and get config from MongoDB
+    console_config = get_console_config(console_type)
+    if not console_config:
+        raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
+
+    # Get available instances from TensorDock service
+    user_location = (user_lat, user_lng) if user_lat is not None and user_lng is not None else None
+    tensordock_instances = await tensordock_service.list_available_hostnodes(console_config, user_location)
+
+    # Get available instances from GCP service
+    gcp_instances = await gcp_service.list_available_regions(console_config, user_location)
+
+    # Combine all instance lists
+    all_instances = tensordock_instances + gcp_instances
+
+    # Calculate distance to user if location provided
+    if user_location:
+        for instance in all_instances:
+            distance = geocoding_service.calculate_distance(
+                user_location[0], user_location[1],
+                instance.instance_lat, instance.instance_long
+            )
+            instance.distance_to_user = distance
+
+    # Sort by distance and return as VMAvailableResponse models
+    if user_location:
+        all_instances.sort(key=lambda x: x.distance_to_user)
+
+    return all_instances
 
 
 @router.post("/instances/create", response_model=VMResponse)

@@ -7,7 +7,6 @@ from app.models.vm import (
     VMDocument, TensorDockCreateRequest, VMAvailableResponse, CloudProvider, VMStatus
 )
 from app.services.geocoding_service import GeocodingService
-from app.services.cloudypad_service import CloudyPadService
 from app.core.database import update_instance_doc, set_instance_status
 from app.core.config import settings
 
