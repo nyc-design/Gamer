@@ -60,12 +60,29 @@ class GCPComputeService:
         Start a stopped GCP VM instance
 
         Implementation checklist:
-        [ ] Parse zone and instance name from provider instance ID
-        [ ] Start the instance using Google Cloud SDK
-        [ ] Wait for operation completion
-        [ ] Update database status to RUNNING or ERROR
+        [x] Parse zone and instance name from provider instance ID
+        [x] Start the instance using Google Cloud SDK
+        [x] Wait for operation completion
+        [x] Update database status to RUNNING or ERROR
         """
-        pass
+        # Parse zone and instance name from provider instance ID
+        compute_client = compute_v1.InstancesClient()
+        zone, instance_name = provider_instance_id.split('/', 1)
+
+        try:
+            # Start the instance using Google Cloud SDK
+            operation = compute_client.start(
+                project=self.project_id,
+                zone=zone,
+                instance=instance_name
+            )
+            # Wait for operation completion
+            operation.result()
+            # Update database status to RUNNING or ERROR
+            set_instance_status(vm_id, VMStatus.RUNNING)
+        except Exception as e:
+            logger.error(f"Failed to start instance {instance_name}: {e}")
+            set_instance_status(vm_id, VMStatus.ERROR)
 
     
     async def stop_vm(self, provider_instance_id: str, vm_id: str):
