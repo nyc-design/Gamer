@@ -86,12 +86,29 @@ class GCPComputeService:
         Permanently delete a GCP VM instance
 
         Implementation checklist:
-        [ ] Parse zone and instance name from provider instance ID
-        [ ] Delete the instance using Google Cloud SDK
-        [ ] Wait for operation completion
-        [ ] Update database status to DESTROYED or ERROR
+        [x] Parse zone and instance name from provider instance ID
+        [x] Delete the instance using Google Cloud SDK
+        [x] Wait for operation completion
+        [x] Update database status to DESTROYED or ERROR
         """
-        pass
+        # Parse zone and instance name from provider instance ID
+        compute_client = compute_v1.InstancesClient()
+        zone, instance_name = provider_instance_id.split('/', 1)
+
+        try:
+            # Delete the instance using Google Cloud SDK
+            operation = compute_client.delete(
+                project=self.project_id,
+                zone=zone,
+                instance=instance_name
+            )
+            # Wait for operation completion
+            operation.result()
+            # Update database status to DESTROYED or ERROR
+            set_instance_status(vm_id, VMStatus.DESTROYED)
+        except Exception as e:
+            logger.error(f"Failed to destroy instance {instance_name}: {e}")
+            set_instance_status(vm_id, VMStatus.ERROR)
 
     
 
