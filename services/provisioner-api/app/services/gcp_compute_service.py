@@ -102,11 +102,46 @@ class GCPComputeService:
         Get real-time pricing from Google Cloud Billing API for specific instance type and region
 
         Implementation checklist:
-        [ ] List services to find Compute Engine service
-        [ ] Get SKUs for the compute service filtered by machine type and region
-        [ ] Look for SKUs that match our instance type and region
-        [ ] Get preemptible/spot pricing from pricing info
-        [ ] Convert from nanos to dollars per hour
-        [ ] Return fallback price if no pricing found
+        [x] List services to find Compute Engine service
+        [x] Get SKUs for the compute service filtered by machine type and region
+        [x] Look for SKUs that match our instance type and region
+        [x] Get preemptible/spot pricing from pricing info
+        [x] Convert from nanos to dollars per hour
+        [x] Return fallback price if no pricing found
         """
-        return 0.1  # Fallback price
+        try:
+            # List services to find Compute Engine service
+            services = self.billing_client.list_services()
+            compute_service = None
+            for service in services:
+                if 'compute' in service.display_name.lower():
+                    compute_service = service
+                    break
+
+            if not compute_service:
+                return 0.1  # Fallback price
+
+            # Get SKUs for the compute service filtered by machine type and region
+            skus = self.billing_client.list_skus(parent=compute_service.name)
+
+            for sku in skus:
+                # Look for SKUs that match our instance type and region
+                if (instance_type in sku.description.lower() and
+                    region in sku.service_regions and
+                    'preemptible' in sku.description.lower()):
+
+                    # Get preemptible/spot pricing from pricing info
+                    if sku.pricing_info:
+                        pricing = sku.pricing_info[0]
+                        if pricing.pricing_expression.tiered_rates:
+                            rate = pricing.pricing_expression.tiered_rates[0]
+                            # Convert from nanos to dollars per hour
+                            hourly_price = float(rate.unit_price.nanos) / 1e9
+                            return round(hourly_price, 4)
+
+            # Return fallback price if no pricing found
+            return 0.1
+
+        except Exception as e:
+            logger.warning(f"Failed to get pricing for {instance_type} in {region}: {e}")
+            return 0.1
