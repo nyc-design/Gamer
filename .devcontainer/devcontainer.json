@@ -1,6 +1,6 @@
 {
   "name": "Fullstack Development",
-  "image": "us-central1-docker.pkg.dev/coder-nt/workspace-images/fullstack-dev:latest",
+  "image": "ghcr.io/nyc-design/workspace-images/fullstack-dev:latest",
   "features": {},
   "customizations": {
     "vscode": {
