@@ -6,11 +6,7 @@
     "vscode": {
       "settings": {
         "workbench.colorTheme": "Default Dark Modern"
-      },
-      "extensions": [
-        "GitHub.vscode-github-actions",
-        "Anthropic.claude-code"
-      ]
+      }
     }
   },
   "forwardPorts": [],
