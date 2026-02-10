@@ -5,7 +5,9 @@
   "customizations": {
     "vscode": {
       "settings": {
-        "workbench.colorTheme": "Default Dark Modern"
+        "workbench.colorTheme": "Default Dark Modern",
+        "typescript.preferences.quoteStyle": "double",
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
       }
     }
   },
