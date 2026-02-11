@@ -43,16 +43,89 @@ class GCPComputeService:
         Create a GCP Compute Engine VM instance with gaming optimizations
 
         Implementation checklist:
-        [ ] Build metadata items with shared startup script
-        [ ] Configure instance with machine type, disks, and networking
-        [ ] Add GPU configuration if specified
-        [ ] Set up scheduling for preemptible instances
-        [ ] Create the instance using Google Cloud SDK
-        [ ] Wait for operation completion and get instance details
-        [ ] Extract IP address and update VM document
-        [ ] Update database with final instance information
+        [x] Build metadata items with shared startup script
+        [x] Configure instance with machine type, disks, and networking
+        [x] Add GPU configuration if specified
+        [x] Set up scheduling for preemptible instances
+        [x] Create the instance using Google Cloud SDK
+        [x] Wait for operation completion and get instance details
+        [x] Extract IP address and update VM document
+        [x] Update database with final instance information
         """
-        pass
+        # Build metadata items with shared startup script
+        compute_client = compute_v1.InstancesClient()
+        startup_script = StartupScriptService.get_gaming_vm_startup_script()
+        metadata_items = [
+            {'key': 'ssh-keys', 'value': f"ubuntu:{instance_doc.ssh_key}"},
+            {'key': 'startup-script', 'value': startup_script}
+        ]
+
+        # Configure instance with machine type, disks, and networking
+        config = {
+            'name': create_request.name,
+            'machine_type': f"zones/{create_request.zone}/machineTypes/{create_request.machine_type}",
+            'disks': [{
+                'boot': True,
+                'auto_delete': True,
+                'initialize_params': {
+                    'source_image': create_request.source_image,
+                    'disk_size_gb': str(create_request.disk_size_gb),
+                    'disk_type': f"zones/{create_request.zone}/diskTypes/{create_request.disk_type}"
+                }
+            }],
+            'network_interfaces': [{
+                'network': f"projects/{self.project_id}/global/networks/default",
+                'access_configs': [{
+                    'type': 'ONE_TO_ONE_NAT',
+                    'name': 'External NAT'
+                }] if create_request.external_ip else []
+            }],
+            'metadata': {
+                'items': metadata_items
+            }
+        }
+
+        # Add GPU configuration if specified
+        if create_request.gpu_type and create_request.gpu_count > 0:
+            config['guest_accelerators'] = [{
+                'accelerator_type': f"zones/{create_request.zone}/acceleratorTypes/{create_request.gpu_type}",
+                'accelerator_count': create_request.gpu_count
+            }]
+
+        # Set up scheduling for preemptible instances
+        if create_request.preemptible:
+            config['scheduling'] = {'preemptible': True}
+
+        # Create the instance using Google Cloud SDK
+        operation = compute_client.insert(
+            project=self.project_id,
+            zone=create_request.zone,
+            instance_resource=config
+        )
+
+        # Wait for operation completion and get instance details
+        result = operation.result()
+
+        if result:
+            instance_result = compute_client.get(
+                project=self.project_id,
+                zone=create_request.zone,
+                instance=create_request.name
+            )
+
+            # Extract IP address and update VM document
+            if (instance_result.network_interfaces and
+                instance_result.network_interfaces[0].access_configs):
+                instance_doc.ip_address = instance_result.network_interfaces[0].access_configs[0].nat_i_p
+
+            instance_doc.provider_instance_id = f"{create_request.zone}/{create_request.name}"
+            instance_doc.status = VMStatus.RUNNING
+        else:
+            logger.error(f"Failed to create instance {create_request.name}")
+            instance_doc.status = VMStatus.ERROR
+
+        # Update database with final instance information
+        update_instance_doc(instance_doc.vm_id, instance_doc)
 
     
     async def start_vm(self, provider_instance_id: str, vm_id: str):
