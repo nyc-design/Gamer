@@ -1,0 +1,92 @@
+// WatchParty-Link v2 — Architecture Specification
+// Defines element kinds, styles, and tags for the architecture model.
+
+specification {
+
+  element actor {
+    style {
+      shape person
+      color amber
+    }
+  }
+
+  element system {
+    style {
+      color primary
+    }
+  }
+
+  element webapp {
+    style {
+      shape browser
+      color sky
+    }
+  }
+
+  element service {
+    style {
+      color indigo
+    }
+  }
+
+  element api {
+    style {
+      color blue
+    }
+  }
+
+  element vm {
+    style {
+      color muted
+      shape rectangle
+    }
+  }
+
+  element script {
+    style {
+        color muted
+        shape document
+    }
+  }
+
+  element agent {
+    style {
+        color amber
+        shape queue
+    }
+  }
+
+  element database {
+    style {
+      shape storage
+      color slate
+    }
+  }
+
+  element collection {
+    style {
+      shape storage
+      color slate
+    }
+  }
+
+  element pydanticModel {
+    style {
+      color sky
+    }
+  }
+
+  element fn {
+    style {
+      shape rectangle
+      color secondary
+    }
+  }
+
+  element ext {
+    style {
+      color muted
+    }
+  }
+
+}

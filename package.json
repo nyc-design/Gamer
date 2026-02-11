@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "arch": "likec4 dev --host 0.0.0.0 --port 4010",
+    "arch:build": "likec4 build -o dist/arch"
+  },
+  "devDependencies": {
+    "likec4": "^1.48.0"
+  }
+}

@@ -1,0 +1,71 @@
+// Gamer — Architecture Model
+// Full system model: elements, hierarchy, and relationships.
+// Functions are modeled as nested `fn` elements inside their parent services.
+
+model {
+
+  // ━━━ Actors ━━━
+
+    user = actor 'User' {
+        description 'End user accessing via browser'
+    }
+    
+    g = system 'Gamer' {
+        description 'Cloud gaming platform'
+        
+        frontend = webapp 'Frontend' {
+            description 'Web application for end users'
+            link https://gamer.tapiavala.com
+
+            deploymentPage = fn 'Deployment Page' {
+                description 'Page for deploying gaming servers'
+            }
+
+            libraryPage = fn 'Game Library Page' {
+                description 'Page for selecting games to play'
+            }
+
+            gamePage = fn 'Game Details Page' {
+                description 'Page for playing a game'
+            }
+
+            emulatorPage = fn 'Emulator Page' {
+                description 'Page for playing games on web browser'
+            }
+
+            moonlightWeb = fn 'Moonlight Web' {
+                description 'Connectiont to Moonlight through web browser'
+            }
+        }
+
+        backend = service 'FastAPI Backend' {
+            description 'Backend for VM deployment, game management, and game play'
+            link https://gamer.tapiavala.com/api
+
+            deployment = api 'Deployment API' {
+                description 'API for deploying game servers'
+            }
+
+            games = api 'Games API' {
+                description 'API for managing games'
+            }
+        }
+    }
+
+    vm = vm 'VM' {
+        description 'Virtual machine for running game servers'
+
+        dockerfile = script 'Dockerfile' {
+            description 'Dockerfile for building VM image'
+        }
+
+        launch-agent = agent 'Launch Agent' {
+            description 'Agent for launching game servers'
+        }
+    }
+
+    user -> g.frontend 'User accesses web app'
+    g.frontend -> g.backend 'frontend accesses API'
+    g.backend -> vm 'backend spins up VM'
+    g.frontend -> vm 'frontend accesses VM'
+}
