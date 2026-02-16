@@ -33,15 +33,24 @@ if [ ! -f /home/retro/config/azahar-emu/qt-config.ini ]; then
     cp -r /defaults/config/azahar-emu/* /home/retro/config/azahar-emu/ 2>/dev/null || true
 fi
 
-# Determine ROM path
-ROM_PATH="/home/retro/roms/${ROM_FILENAME}"
-if [ ! -f "$ROM_PATH" ]; then
-    gow_log "ERROR: ROM not found at ${ROM_PATH}"
-    gow_log "Available ROMs:"
-    ls -la /home/retro/roms/ 2>/dev/null || echo "  (empty)"
-    # Keep container alive for debugging
+# Determine ROM path (optional for settings-only mode)
+ROM_PATH=""
+if [ -n "${ROM_FILENAME}" ]; then
+    ROM_PATH="/home/retro/roms/${ROM_FILENAME}"
+    if [ ! -f "$ROM_PATH" ]; then
+        gow_log "ERROR: ROM not found at ${ROM_PATH}"
+        gow_log "Available ROMs:"
+        ls -la /home/retro/roms/ 2>/dev/null || echo "  (empty)"
+        # Keep container alive for debugging
+        sleep 3600
+        exit 1
+    fi
+elif [ "${ROM_OPTIONAL:-0}" != "1" ]; then
+    gow_log "ERROR: ROM_FILENAME is not set and ROM_OPTIONAL is not enabled"
     sleep 3600
     exit 1
+else
+    gow_log "ROM_OPTIONAL=1: launching Azahar without a ROM (settings mode)"
 fi
 
 # Symlink Azahar config to expected location
@@ -57,9 +66,25 @@ if [ -d /home/retro/firmware/3ds/sysdata ]; then
     ln -sfn /home/retro/firmware/3ds/sysdata /home/retro/config/azahar-emu/sysdata
 fi
 
-gow_log "Launching Azahar with ROM: ${ROM_PATH}"
+if [ -n "$ROM_PATH" ]; then
+    gow_log "Launching Azahar with ROM: ${ROM_PATH}"
+else
+    gow_log "Launching Azahar without ROM"
+fi
 
 # Launch via Sway compositor (required for Wayland rendering)
 # The `launcher` function from launch-comp.sh handles Sway/Gamescope setup
 source /opt/gow/launch-comp.sh
-launcher /Applications/azahar.AppImage --appimage-extract-and-run -f "${ROM_PATH}"
+
+# Keep stream surface stable by default:
+# - AZAHAR_FULLSCREEN=1 -> start in fullscreen (gameplay mode)
+# - AZAHAR_FULLSCREEN=0 -> windowed (settings/config mode)
+AZAHAR_ARGS=()
+if [ "${AZAHAR_FULLSCREEN:-1}" = "1" ]; then
+    AZAHAR_ARGS+=("-f")
+fi
+if [ -n "$ROM_PATH" ]; then
+    AZAHAR_ARGS+=("${ROM_PATH}")
+fi
+
+launcher /Applications/azahar.AppImage --appimage-extract-and-run "${AZAHAR_ARGS[@]}"

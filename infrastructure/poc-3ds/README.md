@@ -91,7 +91,7 @@ Edit `wolf/config.toml` and set the ROM filename in the env section:
 
 ```toml
 env = [
-    "ROM_FILENAME=your-game.3ds",   # ← Change this
+    "ROM_FILENAME=your-game.3ds",   # ← Change this (prefer simple filename without commas/parentheses)
     ...
 ]
 ```
@@ -123,6 +123,24 @@ docker compose up -d
 5. Enter the PIN in Moonlight
 6. Once paired, you'll see **"Azahar 3DS"** in the app list
 7. Tap it to start streaming
+
+## Azahar App Modes (recommended workflow)
+
+This PoC now defines two Azahar app entries:
+
+- **Azahar 3DS** — gameplay mode (starts fullscreen with ROM)
+- **Azahar 3DS (Settings)** — windowed settings mode (launches Azahar menu without ROM)
+
+Use **Settings** mode when you need to:
+- adjust controller bindings
+- change graphics/audio/UI options
+- use Azahar menu actions safely
+
+Then switch back to **Azahar 3DS** for gameplay.
+
+> Why: toggling Azahar fullscreen on/off *during* a stream can leave stale/frozen regions
+> in the captured output in Sway/Wolf. Using dedicated Settings vs Gameplay app modes
+> avoids this capture-resize artifact.
 
 ## File Structure
 
@@ -184,6 +202,29 @@ docker logs GamerAzahar
 # - GPU access: ensure NVIDIA Container Toolkit is configured
 # - Wayland: Sway may need --unsupported-gpu flag (already set in GOW base)
 ```
+
+If Wolf logs show:
+- `error 400 - {"message":"Duplicate mount point: /run/udev"}`
+
+remove any explicit `"/run/udev:/run/udev:ro"` mount from the app runner mounts.  
+Wolf already injects its own udev mount for app containers.
+
+If logs show errors like:
+- `cp: cannot create regular file '/usr/share/egl/...': Read-only file system`
+
+this comes from base-app's NVIDIA init script trying to copy EGL/Vulkan files
+into a read-only container rootfs. This PoC image includes a read-only-safe
+`/etc/cont-init.d/30-nvidia.sh` override that skips those copy operations and
+uses `/usr/nvidia/...` paths directly via env vars.
+
+If controller hotplug fails with errors around `fake-udev`, verify host path:
+
+```bash
+ls -l /etc/wolf/fake-udev
+file /etc/wolf/fake-udev
+```
+
+It must be an executable file (not a directory).
 
 ### Black screen after connecting
 ```bash

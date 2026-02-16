@@ -48,11 +48,29 @@ RUN mkdir -p /defaults/config/azahar-emu
 # Copy default Azahar config (optimized for streaming)
 COPY azahar-config/ /defaults/config/azahar-emu/
 
+# Ensure EGL platform config dirs are writable for nvidia driver volume setup
+# The GOW base image's 30-nvidia.sh init script copies EGL configs here at runtime
+RUN mkdir -p /usr/share/egl/egl_external_platform.d \
+             /usr/share/glvnd/egl_vendor.d \
+             /usr/share/vulkan/icd.d \
+             /usr/lib/x86_64-linux-gnu/gbm
+
 # Create ROM and save directories
 RUN mkdir -p /home/retro/roms /home/retro/saves /home/retro/config /home/retro/firmware
 
 # Copy the startup script that Wolf will invoke
 COPY startup-app.sh /opt/gow/startup-app.sh
 RUN chmod +x /opt/gow/startup-app.sh
+
+# Wolf starts app containers with a read-only rootfs.
+# Override base-app's 30-nvidia.sh (which copies files into /usr/share/*)
+# to avoid failing on read-only filesystem. We use NVIDIA paths directly via env vars.
+COPY 30-nvidia-readonly-safe.sh /etc/cont-init.d/30-nvidia.sh
+RUN chmod +x /etc/cont-init.d/30-nvidia.sh
+
+# Point EGL/Vulkan lookups to the mounted NVIDIA driver volume paths
+ENV __EGL_VENDOR_LIBRARY_DIRS=/usr/nvidia/share/glvnd/egl_vendor.d \
+    __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=/usr/nvidia/share/egl/egl_external_platform.d \
+    VK_ICD_FILENAMES=/usr/nvidia/share/vulkan/icd.d/nvidia_icd.json
 
 WORKDIR /home/retro
