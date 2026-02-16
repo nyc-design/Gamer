@@ -74,15 +74,82 @@ async def create_instance(console_type: ConsoleType, create_request: VMCreateReq
     Create a new gaming VM instance
 
     Implementation checklist:
-    [ ] Get console config for validation and defaults
-    [ ] Generate secure credentials (password and SSH key)
-    [ ] Apply console config defaults for missing values
-    [ ] Determine compatible console types for this configuration
-    [ ] Create VM document in database with CREATING status
-    [ ] Route to appropriate provider service (TensorDock/GCP)
-    [ ] Return confirmation response to user
+    [x] Get console config for validation and defaults
+    [x] Generate secure credentials (password and SSH key)
+    [x] Apply console config defaults for missing values
+    [x] Determine compatible console types for this configuration
+    [x] Create VM document in database with CREATING status
+    [x] Route to appropriate provider service (TensorDock/GCP)
+    [x] Return confirmation response to user
     """
-    pass
+    # Get console config for validation and defaults
+    console_config = get_console_config(console_type)
+    if not console_config:
+        raise HTTPException(status_code=404, detail=f"Console config not found for {console_type}")
+
+    # Generate secure credentials (password and SSH key)
+    password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ssh_key = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
+
+    # Apply console config defaults for missing values
+    num_cpus = create_request.num_cpus or console_config.min_cpus
+    num_ram = create_request.num_ram or console_config.min_ram
+    num_disk = create_request.num_disk or console_config.min_disk
+
+    # Determine compatible console types for this configuration
+    supported_console_types = [console_type]
+    for other_console_type in ConsoleType:
+        if other_console_type != console_type:
+            other_config = get_console_config(other_console_type)
+            if (other_config and
+                num_cpus >= other_config.min_cpus and
+                num_ram >= other_config.min_ram and
+                num_disk >= other_config.min_disk):
+                supported_console_types.append(other_console_type)
+
+    # Create VM document in database with CREATING status
+    vm_id = str(uuid.uuid4())
+    vm_doc = VMDocument(
+        **create_request.dict(),
+        vm_id=vm_id,
+        status=VMStatus.CREATING,
+        console_types=supported_console_types,
+        num_cpus=num_cpus,
+        num_ram=num_ram,
+        num_disk=num_disk,
+        auto_stop_timeout=create_request.auto_stop_timeout,
+        ssh_key=ssh_key,
+        instance_password=password,
+    )
+    add_new_instance(vm_doc, VMStatus.CREATING)
+
+    # Route to appropriate provider service (TensorDock/GCP)
+    if create_request.provider == CloudProvider.TENSORDOCK:
+        td_request = TensorDockCreateRequest(
+            password=password,
+            ssh_key=ssh_key,
+            **create_request.dict()
+        )
+        background_tasks.add_task(tensordock_service.create_vm, td_request, vm_doc)
+    elif create_request.provider == CloudProvider.GCP:
+        gcp_request = GCPCreateRequest(**create_request.dict())
+        background_tasks.add_task(gcp_service.create_vm, gcp_request, vm_doc)
+    else:
+        raise HTTPException(status_code=400, detail=f"Provider {create_request.provider} not yet supported")
+
+    # Return confirmation response to user
+    return VMResponse(
+        vm_id=vm_id,
+        status=VMStatus.CREATING,
+        console_type=console_type,
+        created_at=vm_doc.created_at,
+        **create_request.dict(exclude={'provider_id', 'instance_name', 'os', 'num_cpus', 'num_ram', 'num_disk', 'auto_stop_timeout', 'user_id'})
+    )
 
 
 @router.get("/instances/{vm_id}/status", response_model=VMStatusResponse)
