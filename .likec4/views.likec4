@@ -1,0 +1,169 @@
+// Gamer — Architecture Views
+// System context, container, and component drill-down views.
+
+views {
+
+  // ━━━ 1. System Context ━━━
+
+  view systemContext of gamer {
+    title '1. System Context'
+    description 'High-level view: user, platform, external services'
+
+    include
+      user,
+      gamer,
+      gamingVm,
+      r2,
+      gcs,
+      tensorDock,
+      gcpCompute
+
+    style gamer {
+      color primary
+    }
+  }
+
+  // ━━━ 2. Container Views ━━━
+
+  view gamerContainers of gamer {
+    title '2. Gamer Platform Containers'
+    description 'Web App, Main Server, MongoDB — the cloud-hosted services'
+
+    include
+      user,
+      gamer.*,
+      gamingVm,
+      r2,
+      gcs,
+      tensorDock,
+      gcpCompute
+  }
+
+  view vmContainers of gamingVm {
+    title '2. Gaming VM Containers'
+    description 'Gamer Agent, Wolf, moonlight-web-stream, emulator containers on each VM'
+
+    include
+      gamingVm.*,
+      gamer.mainServer,
+      user,
+      r2,
+      gcs
+  }
+
+  // ━━━ 3. Component Drill-Downs ━━━
+
+  view webAppComponents of gamer.webApp {
+    title '3. Client: Web App Components'
+    description 'Frontend modules: game library, save slots, ROM upload, streaming player'
+
+    include
+      gamer.webApp.*,
+      gamer.mainServer,
+      gamingVm.moonlightWebStream,
+      r2
+  }
+
+  view mainServerComponents of gamer.mainServer {
+    title '3. Service: Main Server Components'
+    description 'APIs and business logic: sessions, games, saves, ROMs, VM provisioning'
+
+    include
+      gamer.mainServer.*,
+      gamer.mongodb,
+      gamingVm.gamerAgent,
+      tensorDock,
+      gcpCompute,
+      gamer.webApp
+  }
+
+  view mongodbComponents of gamer.mongodb {
+    title '3. DB: MongoDB Collections'
+    description 'Games and saves metadata collections'
+
+    include
+      gamer.mongodb.*,
+      gamer.mainServer
+  }
+
+  view gamerAgentComponents of gamingVm.gamerAgent {
+    title '3. Service: Gamer Agent Components'
+    description 'VM-side agent: rclone mounts, Wolf config, save management, health'
+
+    include
+      gamingVm.gamerAgent.*,
+      gamer.mainServer.sessionApi,
+      gamingVm.wolf,
+      r2,
+      gcs
+  }
+
+  view wolfComponents of gamingVm.wolf {
+    title '3. Service: Wolf Components'
+    description 'Streaming server internals: compositor, encoder, input, Docker orchestration'
+
+    include
+      gamingVm.wolf.*,
+      gamingVm.moonlightWebStream,
+      gamingVm.emulatorContainers,
+      gamingVm.gamerAgent
+  }
+
+  view moonlightComponents of gamingVm.moonlightWebStream {
+    title '3. Service: moonlight-web-stream Components'
+    description 'WebSocket bridge internals: server, multi-client, input translation'
+
+    include
+      gamingVm.moonlightWebStream.*,
+      gamingVm.wolf,
+      user
+  }
+
+  view emulatorComponents of gamingVm.emulatorContainers {
+    title '3. Service: Emulator Containers'
+    description 'Per-emulator Docker images: melonDS, Dolphin, PPSSPP, Azahar, Ryujinx, Steam'
+
+    include
+      gamingVm.emulatorContainers.*,
+      gamingVm.wolf
+  }
+
+  // ━━━ Flow: Game Session ━━━
+
+  view gameSessionFlow {
+    title 'Flow: Game Session Lifecycle'
+    description 'User hits Play → VM provisioned → game streamed → session ends'
+
+    include
+      user,
+      gamer.webApp,
+      gamer.mainServer,
+      gamer.mongodb,
+      gamingVm,
+      gamingVm.gamerAgent,
+      gamingVm.wolf,
+      gamingVm.moonlightWebStream,
+      gamingVm.emulatorContainers,
+      r2,
+      gcs,
+      tensorDock,
+      gcpCompute
+  }
+
+  // ━━━ Flow: Storage ━━━
+
+  view storageFlow {
+    title 'Flow: Storage Architecture'
+    description 'R2 for ROMs (zero egress), GCS for saves/configs/firmware/steam'
+
+    include
+      gamer.webApp.romUpload,
+      gamer.mainServer.romsApi,
+      gamingVm.gamerAgent.rcloneSetup,
+      gamingVm.gamerAgent.saveSlotCopy,
+      gamingVm.emulatorContainers,
+      r2,
+      gcs
+  }
+
+}

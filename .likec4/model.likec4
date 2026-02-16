@@ -1,71 +1,275 @@
-// Gamer — Architecture Model
-// Full system model: elements, hierarchy, and relationships.
-// Functions are modeled as nested `fn` elements inside their parent services.
+// Gamer — Architecture Model (v3)
+// Module-level system model: elements, hierarchy, and relationships.
+// See ARCHITECTURE.md for detailed technical decisions.
 
 model {
 
   // ━━━ Actors ━━━
 
-    user = actor 'User' {
-        description 'End user accessing via browser'
-    }
-    
-    g = system 'Gamer' {
-        description 'Cloud gaming platform'
-        
-        frontend = webapp 'Frontend' {
-            description 'Web application for end users'
-            link https://gamer.tapiavala.com
+  user = actor 'User' {
+    description 'End user playing games via browser or native Moonlight client'
+  }
 
-            deploymentPage = fn 'Deployment Page' {
-                description 'Page for deploying gaming servers'
-            }
+  // ━━━ Gamer Platform ━━━
 
-            libraryPage = fn 'Game Library Page' {
-                description 'Page for selecting games to play'
-            }
+  gamer = system 'Gamer Platform' {
+    description 'Cloud-streamed emulator and PC gaming platform'
 
-            gamePage = fn 'Game Details Page' {
-                description 'Page for playing a game'
-            }
+    // ── Web App ──
 
-            emulatorPage = fn 'Emulator Page' {
-                description 'Page for playing games on web browser'
-            }
+    webApp = webapp 'Web App' {
+      description 'Next.js frontend: game library, save slots, ROM upload, streaming player'
+      technology 'Next.js, Tailwind, shadcn/ui, NextAuth'
 
-            moonlightWeb = fn 'Moonlight Web' {
-                description 'Connectiont to Moonlight through web browser'
-            }
-        }
+      gameLibrary = fn 'Game Library' {
+        description 'Browse games from MongoDB, display metadata and artwork'
+      }
 
-        backend = service 'FastAPI Backend' {
-            description 'Backend for VM deployment, game management, and game play'
-            link https://gamer.tapiavala.com/api
+      saveSlotManager = fn 'Save Slot Manager' {
+        description 'Create, rename, select save slots per game'
+      }
 
-            deployment = api 'Deployment API' {
-                description 'API for deploying game servers'
-            }
+      romUpload = fn 'ROM Upload' {
+        description 'Upload ROMs to Cloudflare R2 via presigned URLs'
+      }
 
-            games = api 'Games API' {
-                description 'API for managing games'
-            }
-        }
+      sessionLauncher = fn 'Session Launcher' {
+        description 'Hit Play: select game + save slot, trigger VM provisioning'
+      }
+
+      streamingPlayer = fn 'Streaming Player' {
+        description 'Embedded moonlight-web-stream TypeScript client (WebCodecs + Canvas)'
+      }
+
+      dualScreenMode = fn 'Dual-Screen Mode' {
+        description 'Two browser windows, each cropping to assigned DS/3DS screen'
+      }
     }
 
-    vm = vm 'VM' {
-        description 'Virtual machine for running game servers'
+    // ── Main Server ──
 
-        dockerfile = script 'Dockerfile' {
-            description 'Dockerfile for building VM image'
-        }
+    mainServer = service 'Main Server' {
+      description 'FastAPI backend: session lifecycle, VM provisioning, game/save CRUD'
+      technology 'FastAPI, Python 3.11+'
 
-        launch-agent = agent 'Launch Agent' {
-            description 'Agent for launching game servers'
-        }
+      sessionApi = api 'Session API' {
+        description 'Session manifest generation, start/stop, event handling from agent'
+      }
+
+      gamesApi = api 'Games API' {
+        description 'Game CRUD against MongoDB games collection'
+      }
+
+      savesApi = api 'Saves API' {
+        description 'Save slot CRUD against MongoDB saves collection'
+      }
+
+      romsApi = api 'ROMs API' {
+        description 'Generate R2 presigned upload URLs for ROM uploads'
+      }
+
+      vmProvisioner = fn 'VM Provisioner' {
+        description 'Provision/start/stop/destroy GPU VMs via TensorDock or GCP API'
+      }
+
+      vmHealthPoller = fn 'VM Health Poller' {
+        description 'Safety net: poll agent /health every 15min, enforce 8h cap, 48h destroy'
+      }
+
+      sessionManager = fn 'Session Manager' {
+        description 'Build session manifest, track session state, handle agent callbacks'
+      }
     }
 
-    user -> g.frontend 'User accesses web app'
-    g.frontend -> g.backend 'frontend accesses API'
-    g.backend -> vm 'backend spins up VM'
-    g.frontend -> vm 'frontend accesses VM'
+    // ── MongoDB ──
+
+    mongodb = database 'MongoDB Atlas' {
+      description 'Metadata-only database for games and saves'
+      technology 'MongoDB Atlas'
+
+      gamesCollection = collection 'games' {
+        description 'Game metadata: title, emulator, ROM path, config, firmware requirements'
+      }
+
+      savesCollection = collection 'saves' {
+        description 'Save slot metadata: game, user, GCS path, fake_time, play time'
+      }
+    }
+  }
+
+  // ━━━ Gaming VM ━━━
+
+  gamingVm = vm 'Gaming VM' {
+    description 'Ephemeral GPU VM provisioned per session with pre-baked image'
+    technology 'Ubuntu 22.04, NVIDIA, Docker'
+
+    // ── Gamer Agent ──
+
+    gamerAgent = agent 'Gamer Agent' {
+      description 'FastAPI on VM: session manifest, rclone mounts, Wolf config, health, save management'
+      technology 'FastAPI, Python 3.11+'
+
+      rcloneSetup = fn 'rclone Setup' {
+        description 'Mount R2 (ROMs) and GCS (saves, configs, firmware, steam) via rclone'
+      }
+
+      wolfConfigGen = fn 'Wolf Config Generator' {
+        description 'Generate Wolf config.toml from session manifest'
+      }
+
+      saveSlotCopy = fn 'Save Slot Copy' {
+        description 'Copy selected save slot to working dir before session, copy back after'
+      }
+
+      saveWatcher = fn 'Save Watcher' {
+        description 'inotify on save dir for fake_time games — report save events to main server'
+      }
+
+      healthEndpoint = fn 'Health Endpoint' {
+        description 'GET /health: status, connected clients, idle_since, GPU utilization'
+      }
+    }
+
+    // ── Wolf ──
+
+    wolf = streamServer 'Wolf' {
+      description 'Moonlight protocol server, Wayland compositor, NVENC encoding, Docker orchestration'
+      technology 'C++, GStreamer, Smithay'
+
+      compositor = fn 'Wayland Compositor' {
+        description 'Smithay-based headless Wayland micro-compositor (gst-wayland-display)'
+      }
+
+      encoder = fn 'Video Encoder' {
+        description 'GStreamer + NVENC H.264/HEVC/AV1 encoding pipeline'
+      }
+
+      inputtino = fn 'inputtino' {
+        description 'Virtual input devices: keyboard, mouse, gamepad (gyro/accel/touchpad), touch'
+      }
+
+      dockerOrch = fn 'Docker Orchestration' {
+        description 'Spawn/stop emulator containers with GPU passthrough'
+      }
+    }
+
+    // ── moonlight-web-stream ──
+
+    moonlightWebStream = streamServer 'moonlight-web-stream' {
+      description 'Rust WebSocket bridge: Moonlight RTP → H.264 NAL units → WebSocket → browser'
+      technology 'Rust (Helix fork)'
+
+      wsServer = fn 'WebSocket Server' {
+        description 'Extract H.264 NAL units from RTP, send as binary WebSocket frames'
+      }
+
+      multiClient = fn 'Multi-Client Support' {
+        description 'Fan-out to multiple browser clients (for dual-screen)'
+      }
+
+      inputTranslator = fn 'Input Translator' {
+        description 'Translate browser input events → Moonlight input protocol → Wolf'
+      }
+    }
+
+    // ── Emulator Containers ──
+
+    emulatorContainers = container 'Emulator Containers' {
+      description 'Per-emulator Docker images spawned by Wolf'
+      technology 'Docker, GOW base-app'
+
+      melonds = fn 'melonDS' {
+        description 'Nintendo DS emulator container'
+      }
+
+      dolphin = fn 'Dolphin' {
+        description 'GameCube/Wii emulator container'
+      }
+
+      ppsspp = fn 'PPSSPP' {
+        description 'PSP emulator container'
+      }
+
+      azahar = fn 'Azahar' {
+        description 'Nintendo 3DS emulator container'
+      }
+
+      ryujinx = fn 'Ryujinx' {
+        description 'Nintendo Switch emulator container'
+      }
+
+      steam = fn 'Steam' {
+        description 'Steam + Proton container for PC games'
+      }
+    }
+  }
+
+  // ━━━ External Services ━━━
+
+  r2 = ext 'Cloudflare R2' {
+    description 'ROM storage with zero egress fees'
+    technology 'S3-compatible, rclone'
+  }
+
+  gcs = ext 'Google Cloud Storage' {
+    description 'Saves, configs, firmware, Steam files (object versioning on saves)'
+    technology 'GCS, rclone'
+  }
+
+  tensorDock = ext 'TensorDock' {
+    description 'Primary GPU VM provider (RTX 3060+)'
+    technology 'TensorDock API'
+  }
+
+  gcpCompute = ext 'GCP Compute Engine' {
+    description 'Fallback GPU VM provider (T4, L4, A10G)'
+    technology 'GCP Compute API'
+  }
+
+  // ━━━ Relationships ━━━
+
+  // User → Web App
+  user -> gamer.webApp 'Browses games, manages saves, launches sessions, plays via stream'
+
+  // Web App → Main Server
+  gamer.webApp -> gamer.mainServer 'REST API: game/save CRUD, session start/stop, ROM upload URLs'
+
+  // Main Server → MongoDB
+  gamer.mainServer -> gamer.mongodb 'Read/write game and save metadata'
+
+  // Main Server → Cloud Providers (VM provisioning)
+  gamer.mainServer.vmProvisioner -> tensorDock 'Provision/start/stop/destroy GPU VMs'
+  gamer.mainServer.vmProvisioner -> gcpCompute 'Provision/start/stop/destroy GPU VMs (fallback)'
+
+  // Main Server → Gamer Agent
+  gamer.mainServer.vmHealthPoller -> gamingVm.gamerAgent.healthEndpoint 'Poll /health every 15min (safety net)'
+
+  // Gamer Agent → Main Server
+  gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'Fetch manifest, report started/save_event/idle/ended'
+
+  // Gamer Agent → Storage (rclone)
+  gamingVm.gamerAgent.rcloneSetup -> r2 'Mount ROMs (read-only, aggressive VFS cache)'
+  gamingVm.gamerAgent.rcloneSetup -> gcs 'Mount saves, configs, firmware, steam (read-write)'
+
+  // Gamer Agent → Wolf
+  gamingVm.gamerAgent -> gamingVm.wolf 'Write config.toml, start/stop Wolf container'
+
+  // Wolf → Emulator Containers
+  gamingVm.wolf.dockerOrch -> gamingVm.emulatorContainers 'Spawn emulator containers with GPU passthrough'
+
+  // Wolf → moonlight-web-stream
+  gamingVm.wolf -> gamingVm.moonlightWebStream 'Moonlight RTP stream (H.264 NAL units)'
+
+  // moonlight-web-stream → User (browser)
+  gamingVm.moonlightWebStream -> user 'WebSocket: H.264 video frames + input back-channel'
+
+  // User → moonlight-web-stream (input)
+  user -> gamingVm.moonlightWebStream 'Browser input: keyboard, mouse, touch, gamepad'
+
+  // Web App → R2 (ROM upload)
+  gamer.webApp.romUpload -> r2 'Upload ROMs via presigned URLs'
+
+  // Web App → moonlight-web-stream (streaming player)
+  gamer.webApp.streamingPlayer -> gamingVm.moonlightWebStream 'Connect WebSocket for streaming'
+
 }

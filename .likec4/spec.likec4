@@ -1,4 +1,4 @@
-// WatchParty-Link v2 — Architecture Specification
+// Gamer — Architecture Specification
 // Defines element kinds, styles, and tags for the architecture model.
 
 specification {
@@ -42,17 +42,10 @@ specification {
     }
   }
 
-  element script {
-    style {
-        color muted
-        shape document
-    }
-  }
-
   element agent {
     style {
-        color amber
-        shape queue
+      color amber
+      shape queue
     }
   }
 
@@ -70,9 +63,24 @@ specification {
     }
   }
 
-  element pydanticModel {
+  element storage {
     style {
-      color sky
+      shape storage
+      color green
+    }
+  }
+
+  element streamServer {
+    style {
+      color red
+      shape rectangle
+    }
+  }
+
+  element container {
+    style {
+      color secondary
+      shape rectangle
     }
   }
 
@@ -88,5 +96,14 @@ specification {
       color muted
     }
   }
+
+  element pydanticModel {
+    style {
+      color sky
+    }
+  }
+
+  tag future
+  tag v2
 
 }
