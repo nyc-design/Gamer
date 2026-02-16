@@ -91,10 +91,21 @@ async def get_instance_status(vm_id: str):
     Get status of a specific VM instance
 
     Implementation checklist:
-    [ ] Take VM ID and check status in MongoDB document
-    [ ] Return status response or 404 if not found
+    [x] Take VM ID and check status in MongoDB document
+    [x] Return status response or 404 if not found
     """
-    pass
+    # Take VM ID and check status in MongoDB document
+    instance = get_instance(vm_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM instance not found")
+
+    # Return status response or 404 if not found
+    return VMStatusResponse(
+        vm_id=instance['vm_id'],
+        status=instance['status'],
+        ip_address=instance.get('ip_address'),
+        last_activity=instance.get('last_activity')
+    )
 
 
 @router.get("/instances", response_model=List[VMResponse])
