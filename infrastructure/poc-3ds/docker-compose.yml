@@ -55,7 +55,7 @@ services:
     devices:
       - /dev/dri         # GPU render nodes
       - /dev/uinput      # Virtual input device creation
-      - /dev/uhid         # HID device creation (gamepad gyro/accel)
+      # /dev/uhid is optional — only needed for DualSense gyro/touchpad
     deploy:
       resources:
         reservations:
