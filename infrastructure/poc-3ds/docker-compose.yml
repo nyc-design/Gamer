@@ -39,16 +39,14 @@ services:
       # XDG_RUNTIME_DIR for PulseAudio and Wayland sockets
       - XDG_RUNTIME_DIR=/tmp/sockets
     volumes:
-      # Wolf state directory (config, pairing data, app state)
-      # config.toml is generated at startup from our template
-      - wolf-state:/etc/wolf
+      # Wolf state directory — contains cfg/config.toml, keys, app state
+      # We mount the entire wolf/ dir so Wolf can rename/migrate config files
+      - ./wolf:/etc/wolf/cfg
       # Wolf needs Docker socket to spawn app containers
       - /var/run/docker.sock:/var/run/docker.sock:rw
       # Device access for GPU, input, and udev
       - /dev/:/dev/:rw
       - /run/udev:/run/udev:rw
-      # Mount our config.toml into the cfg subdirectory
-      - ./wolf/config.toml:/etc/wolf/cfg/config.toml:rw
     device_cgroup_rules:
       - 'c 13:* rmw'    # Input devices
       - 'c 244:* rmw'   # NVIDIA devices
@@ -85,5 +83,3 @@ services:
     profiles:
       - build-only
 
-volumes:
-  wolf-state:
