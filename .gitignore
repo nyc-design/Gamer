@@ -68,3 +68,14 @@ logs/
 games/
 saves/
 roms/
+
+# ROM files — never commit these
+*.3ds
+*.cia
+*.nds
+*.iso
+*.xci
+*.nsp
+*.wad
+*.gcm
+*.cso

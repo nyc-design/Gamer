@@ -1,0 +1,89 @@
+###############################################################################
+# Gaming VM Docker Compose — PoC for 3DS Streaming
+#
+# Runs on a GPU VM (TensorDock, GCP, or any machine with NVIDIA GPU).
+# Wolf handles Moonlight protocol, video encoding, and spawns the Azahar
+# container when a user connects.
+#
+# Prerequisites on the host:
+#   - NVIDIA GPU with driver installed
+#   - Docker + NVIDIA Container Toolkit
+#   - Ports 47984-48010 open (Moonlight protocol)
+#   - ROMs placed in ~/roms/
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+#   # Then pair your iPhone Moonlight app to the VM's IP
+###############################################################################
+
+services:
+  ###########################################################################
+  # Wolf — Moonlight-compatible streaming server
+  #
+  # Handles: RTSP/RTP streaming, NVENC video encoding, PulseAudio capture,
+  # virtual input devices (gamepad, touch), Docker app orchestration.
+  #
+  # When a Moonlight client connects and selects "Azahar 3DS", Wolf spawns
+  # the azahar container with the correct GPU, audio, and display access.
+  ###########################################################################
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_VISIBLE_DEVICES=all
+      - WOLF_RENDER_NODE=/dev/dri/renderD128
+      # Where Wolf stores config and app state
+      - HOST_APPS_STATE_FOLDER=/etc/wolf
+      - WOLF_LOG_LEVEL=INFO
+      # XDG_RUNTIME_DIR for PulseAudio and Wayland sockets
+      - XDG_RUNTIME_DIR=/tmp/sockets
+    volumes:
+      # Wolf state directory (config, pairing data, app state)
+      # config.toml is generated at startup from our template
+      - wolf-state:/etc/wolf
+      # Wolf needs Docker socket to spawn app containers
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      # Device access for GPU, input, and udev
+      - /dev/:/dev/:rw
+      - /run/udev:/run/udev:rw
+      # Mount our config.toml into the cfg subdirectory
+      - ./wolf/config.toml:/etc/wolf/cfg/config.toml:rw
+    device_cgroup_rules:
+      - 'c 13:* rmw'    # Input devices
+      - 'c 244:* rmw'   # NVIDIA devices
+    devices:
+      - /dev/dri         # GPU render nodes
+      - /dev/uinput      # Virtual input device creation
+      - /dev/uhid         # HID device creation (gamepad gyro/accel)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    network_mode: host
+    restart: unless-stopped
+
+  ###########################################################################
+  # Azahar 3DS Emulator — pre-built image
+  #
+  # This is NOT started by docker compose. Wolf spawns it on-demand when
+  # a Moonlight client selects the "Azahar 3DS" app (defined in config.toml).
+  #
+  # We define it here only so `docker compose build` builds the image
+  # and tags it as "gamer/azahar:poc" which the Wolf config references.
+  ###########################################################################
+  azahar:
+    build:
+      context: ./azahar
+      dockerfile: Dockerfile
+    image: gamer/azahar:poc
+    # This container is managed by Wolf, not by compose.
+    # Setting profiles prevents `docker compose up` from starting it directly.
+    profiles:
+      - build-only
+
+volumes:
+  wolf-state:

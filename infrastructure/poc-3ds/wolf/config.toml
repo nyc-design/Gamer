@@ -1,0 +1,74 @@
+###############################################################################
+# Wolf config.toml — PoC for 3DS Streaming via Moonlight
+#
+# This config is placed at /etc/wolf/cfg/config.toml on the VM.
+# Wolf reads it at startup and registers the Azahar app.
+#
+# Moonlight pairing: On first connection from the iPhone Moonlight app,
+# Wolf will display a PIN. Enter it in Moonlight to pair. Wolf then
+# writes the client certificate into the [[paired_clients]] section
+# automatically.
+#
+# After pairing, the Azahar app appears in Moonlight's app list.
+###############################################################################
+
+hostname = "gamer-vm"
+config_version = 2
+
+# GPU encoding: enable HEVC for better quality at lower bandwidth (iPhone supports it)
+support_hevc = true
+
+# Paired clients are added automatically when you pair via Moonlight PIN.
+# You can also pre-populate this by extracting the client cert from Moonlight.
+# paired_clients = []
+
+###############################################################################
+# Profile: 3DS Gaming
+###############################################################################
+[[profiles]]
+id = "3ds-gaming"
+
+[[profiles.apps]]
+title = "Azahar 3DS"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzahar"
+image = "gamer/azahar:poc"
+mounts = [
+    # ROMs directory — place your .3ds/.cia files here on the host
+    "/home/gamer/roms:/home/retro/roms:ro",
+    # Saves directory — Azahar writes save files here
+    "/home/gamer/saves:/home/retro/saves:rw",
+    # Config persistence — user config survives container restarts
+    "/home/gamer/config:/home/retro/config:rw",
+    # 3DS firmware/system files (if you have them)
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+    # udev rules for input devices
+    "/run/udev:/run/udev:ro",
+]
+env = [
+    # ROM to launch — set this to your 3DS ROM filename
+    "ROM_FILENAME=Pokemon Alpha Sapphire (USA) (En,Ja,Fr,De,Es,It,Ko) (Rev 2).3ds",
+    # Use Sway compositor (required for Azahar's Wayland rendering)
+    "RUN_SWAY=1",
+    # NVIDIA GPU access
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    # GOW device access for input
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "HostConfig": {
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
