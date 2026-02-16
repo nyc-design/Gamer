@@ -65,6 +65,7 @@ ports = []
 base_create_json = """
 {
     "HostConfig": {
+        "Runtime": "nvidia",
         "IpcMode": "host",
         "NetworkMode": "host",
         "CapAdd": ["SYS_ADMIN", "NET_RAW", "MKNOD", "SYS_NICE"],
