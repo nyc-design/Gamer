@@ -1,12 +1,13 @@
 // Gamer — Architecture Views
-// System context, container, and component drill-down views.
+// Organized into folders via '/' in titles.
+// Static views for structure, dynamic views for flows.
 
 views {
 
-  // ━━━ 1. System Context ━━━
+  // ━━━ System Context ━━━
 
   view systemContext of gamer {
-    title '1. System Context'
+    title 'Context / System Context'
     description 'High-level view: user, platform, external services'
 
     include
@@ -23,10 +24,10 @@ views {
     }
   }
 
-  // ━━━ 2. Container Views ━━━
+  // ━━━ Container Views ━━━
 
   view gamerContainers of gamer {
-    title '2. Gamer Platform Containers'
+    title 'Containers / Gamer Platform'
     description 'Web App, Main Server, MongoDB — the cloud-hosted services'
 
     include
@@ -37,10 +38,23 @@ views {
       gcs,
       tensorDock,
       gcpCompute
+
+    include gamer.webApp with {
+      navigateTo webAppComponents
+    }
+    include gamer.mainServer with {
+      navigateTo mainServerComponents
+    }
+    include gamer.mongodb with {
+      navigateTo mongodbComponents
+    }
+    include gamingVm with {
+      navigateTo vmContainers
+    }
   }
 
   view vmContainers of gamingVm {
-    title '2. Gaming VM Containers'
+    title 'Containers / Gaming VM'
     description 'Gamer Agent, Wolf, moonlight-web-stream, emulator containers on each VM'
 
     include
@@ -49,12 +63,25 @@ views {
       user,
       r2,
       gcs
+
+    include gamingVm.gamerAgent with {
+      navigateTo gamerAgentComponents
+    }
+    include gamingVm.wolf with {
+      navigateTo wolfComponents
+    }
+    include gamingVm.moonlightWebStream with {
+      navigateTo moonlightComponents
+    }
+    include gamingVm.emulatorContainers with {
+      navigateTo emulatorComponents
+    }
   }
 
-  // ━━━ 3. Component Drill-Downs ━━━
+  // ━━━ Component Drill-Downs ━━━
 
   view webAppComponents of gamer.webApp {
-    title '3. Client: Web App Components'
+    title 'Components / Web App'
     description 'Frontend modules: game library, save slots, ROM upload, streaming player'
 
     include
@@ -65,7 +92,7 @@ views {
   }
 
   view mainServerComponents of gamer.mainServer {
-    title '3. Service: Main Server Components'
+    title 'Components / Main Server'
     description 'APIs and business logic: sessions, games, saves, ROMs, VM provisioning'
 
     include
@@ -78,7 +105,7 @@ views {
   }
 
   view mongodbComponents of gamer.mongodb {
-    title '3. DB: MongoDB Collections'
+    title 'Components / MongoDB'
     description 'Games and saves metadata collections'
 
     include
@@ -87,7 +114,7 @@ views {
   }
 
   view gamerAgentComponents of gamingVm.gamerAgent {
-    title '3. Service: Gamer Agent Components'
+    title 'Components / Gamer Agent'
     description 'VM-side agent: rclone mounts, Wolf config, save management, health'
 
     include
@@ -99,7 +126,7 @@ views {
   }
 
   view wolfComponents of gamingVm.wolf {
-    title '3. Service: Wolf Components'
+    title 'Components / Wolf'
     description 'Streaming server internals: compositor, encoder, input, Docker orchestration'
 
     include
@@ -110,7 +137,7 @@ views {
   }
 
   view moonlightComponents of gamingVm.moonlightWebStream {
-    title '3. Service: moonlight-web-stream Components'
+    title 'Components / moonlight-web-stream'
     description 'WebSocket bridge internals: server, multi-client, input translation'
 
     include
@@ -120,7 +147,7 @@ views {
   }
 
   view emulatorComponents of gamingVm.emulatorContainers {
-    title '3. Service: Emulator Containers'
+    title 'Components / Emulator Containers'
     description 'Per-emulator Docker images: melonDS, Dolphin, PPSSPP, Azahar, Ryujinx, Steam'
 
     include
@@ -128,42 +155,163 @@ views {
       gamingVm.wolf
   }
 
-  // ━━━ Flow: Game Session ━━━
+  // ━━━ Dynamic Views (Flows) ━━━
 
-  view gameSessionFlow {
-    title 'Flow: Game Session Lifecycle'
-    description 'User hits Play → VM provisioned → game streamed → session ends'
+  dynamic view gameSessionFlow {
+    title 'Flows / Game Session Lifecycle'
+    description 'User hits Play → VM provisioned → agent sets up → game streamed → session ends'
 
-    include
-      user,
-      gamer.webApp,
-      gamer.mainServer,
-      gamer.mongodb,
-      gamingVm,
-      gamingVm.gamerAgent,
-      gamingVm.wolf,
-      gamingVm.moonlightWebStream,
-      gamingVm.emulatorContainers,
-      r2,
-      gcs,
-      tensorDock,
-      gcpCompute
+    // 1. User launches session
+    user -> gamer.webApp 'selects game + save slot, hits Play'
+
+    // 2. Web App calls Main Server
+    gamer.webApp -> gamer.mainServer.sessionApi 'POST /api/sessions/start'
+
+    // 3. Main Server builds manifest and provisions VM
+    gamer.mainServer.sessionApi -> gamer.mainServer.sessionManager 'build session manifest'
+    gamer.mainServer.sessionManager -> gamer.mongodb.gamesCollection 'fetch game metadata'
+    gamer.mainServer.sessionManager -> gamer.mongodb.savesCollection 'fetch save slot metadata'
+    gamer.mainServer.vmProvisioner -> tensorDock 'provision GPU VM' {
+      navigateTo vmProvisioningFlow
+    }
+
+    // 4. VM boots, Agent fetches manifest
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'GET /api/session/{vm_token}'
+
+    // 5. Agent sets up mounts and copies save
+    parallel {
+      gamingVm.gamerAgent.rcloneSetup -> r2 'mount ROMs (read-only)'
+      gamingVm.gamerAgent.rcloneSetup -> gcs 'mount saves, configs, firmware'
+    }
+    gamingVm.gamerAgent.saveSlotCopy -> gcs 'copy selected save slot to /mnt/emusaves/'
+
+    // 6. Agent configures and starts Wolf
+    gamingVm.gamerAgent.wolfConfigGen -> gamingVm.wolf 'write config.toml, start Wolf'
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'POST /session/{id}/started'
+
+    // 7. Wolf spawns emulator container
+    gamingVm.wolf.dockerOrch -> gamingVm.emulatorContainers 'spawn emulator with GPU passthrough'
+
+    // 8. Streaming begins
+    gamingVm.wolf.encoder -> gamingVm.moonlightWebStream.wsServer 'Moonlight RTP (H.264 NAL units)'
+    gamingVm.moonlightWebStream.wsServer -> user 'WebSocket: H.264 video frames'
+
+    // 9. User plays — input flows back
+    user -> gamingVm.moonlightWebStream.inputTranslator 'keyboard, mouse, touch, gamepad'
+    gamingVm.moonlightWebStream.inputTranslator -> gamingVm.wolf.inputtino 'Moonlight input protocol'
+
+    // Include context elements for the diagram
+    include gamer, gamingVm
+
+    style gamer {
+      color primary
+      opacity 10%
+    }
+    style gamingVm {
+      color muted
+      opacity 10%
+    }
   }
 
-  // ━━━ Flow: Storage ━━━
+  dynamic view vmProvisioningFlow {
+    title 'Flows / VM Provisioning'
+    description 'Main Server provisions a GPU VM, agent boots and reports ready'
 
-  view storageFlow {
-    title 'Flow: Storage Architecture'
-    description 'R2 for ROMs (zero egress), GCS for saves/configs/firmware/steam'
+    // 1. Session API triggers provisioning
+    gamer.mainServer.sessionApi -> gamer.mainServer.vmProvisioner 'provision VM for session'
 
-    include
-      gamer.webApp.romUpload,
-      gamer.mainServer.romsApi,
-      gamingVm.gamerAgent.rcloneSetup,
-      gamingVm.gamerAgent.saveSlotCopy,
-      gamingVm.emulatorContainers,
-      r2,
-      gcs
+    // 2. Try primary provider, fallback to GCP
+    gamer.mainServer.vmProvisioner -> tensorDock 'create GPU VM (primary)'
+    gamer.mainServer.vmProvisioner -> gcpCompute 'create GPU VM (fallback)'
+
+    // 3. VM boots, agent starts
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'GET /api/session/{vm_token} — fetch manifest'
+
+    // 4. Agent reports ready
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'POST /session/{id}/started'
+
+    include gamer.mainServer, gamingVm
+  }
+
+  dynamic view sessionEndFlow {
+    title 'Flows / Session End'
+    description 'Idle detection → save backup → VM stopped → destroyed'
+
+    // 1. No clients connected for 10 minutes
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'POST /session/{id}/idle (no clients 10min)'
+
+    // 2. Server signals shutdown
+    gamer.mainServer.sessionApi -> gamingVm.gamerAgent 'shutdown signal'
+
+    // 3. Agent copies save back
+    gamingVm.gamerAgent.saveSlotCopy -> gcs 'copy save from /mnt/emusaves/ back to slot'
+
+    // 4. Agent reports ended
+    gamingVm.gamerAgent -> gamer.mainServer.sessionApi 'POST /session/{id}/ended'
+
+    // 5. Server stops VM
+    gamer.mainServer.vmProvisioner -> tensorDock 'stop VM'
+
+    include gamer.mainServer, gamingVm
+  }
+
+  dynamic view dualScreenFlow {
+    title 'Flows / Dual-Screen Streaming'
+    description 'DS/3DS: Wolf streams combined frame, two browsers each crop to their screen'
+
+    // 1. Emulator renders both screens
+    gamingVm.emulatorContainers -> gamingVm.wolf.compositor 'combined frame (top + bottom screens)'
+
+    // 2. Wolf encodes single stream
+    gamingVm.wolf.compositor -> gamingVm.wolf.encoder 'single framebuffer'
+
+    // 3. moonlight-web-stream fans out to both clients
+    gamingVm.wolf.encoder -> gamingVm.moonlightWebStream.wsServer 'RTP H.264 stream'
+    gamingVm.moonlightWebStream.multiClient -> user 'fan-out to Browser A (top crop) + Browser B (bottom crop)'
+
+    // 4. Input flows back from both devices
+    user -> gamingVm.moonlightWebStream.inputTranslator 'D-pad from iPad, touch from iPhone'
+    gamingVm.moonlightWebStream.inputTranslator -> gamingVm.wolf.inputtino 'translated input events'
+
+    include gamingVm
+    style gamingVm {
+      color muted
+      opacity 10%
+    }
+  }
+
+  dynamic view saveTimeTrackingFlow {
+    title 'Flows / Save + Time Tracking'
+    description 'inotify detects save → agent reports to server → accumulated time updated'
+
+    // 1. Emulator writes save file
+    gamingVm.emulatorContainers -> gamingVm.gamerAgent.saveWatcher 'IN_CLOSE_WRITE on save file'
+
+    // 2. Agent reports save event
+    gamingVm.gamerAgent.saveWatcher -> gamer.mainServer.sessionApi 'POST /session/{id}/save_event {wall_clock}'
+
+    // 3. Server updates accumulated time
+    gamer.mainServer.sessionApi -> gamer.mainServer.sessionManager 'compute elapsed since session start'
+    gamer.mainServer.sessionManager -> gamer.mongodb.savesCollection 'update accumulated_seconds, last_played'
+
+    include gamer.mainServer, gamingVm
+  }
+
+  dynamic view healthPollingFlow {
+    title 'Flows / VM Health Polling'
+    description 'Safety net: server polls agent every 15min, enforces caps'
+
+    // 1. Server polls agent health
+    gamer.mainServer.vmHealthPoller -> gamingVm.gamerAgent.healthEndpoint 'GET /health every 15min'
+
+    // 2. Agent returns status
+    gamingVm.gamerAgent.healthEndpoint -> gamer.mainServer.vmHealthPoller 'status, clients, idle_since, GPU util'
+
+    // 3. Server enforces limits if needed
+    gamer.mainServer.vmHealthPoller -> gamer.mainServer.vmProvisioner 'stop VM if idle > 10min or session > 8h'
+    gamer.mainServer.vmProvisioner -> tensorDock 'stop/destroy VM'
+
+    include gamer.mainServer
   }
 
 }
