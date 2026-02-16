@@ -53,6 +53,7 @@ services:
     devices:
       - /dev/dri         # GPU render nodes
       - /dev/uinput      # Virtual input device creation
+      - /dev/udmabuf     # DMA buffer allocation for Wayland compositor
       # /dev/uhid is optional — only needed for DualSense gyro/touchpad
     runtime: nvidia
     network_mode: host
