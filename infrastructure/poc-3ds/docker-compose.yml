@@ -30,8 +30,9 @@ services:
   wolf:
     image: ghcr.io/games-on-whales/wolf:stable
     environment:
-      - NVIDIA_DRIVER_CAPABILITIES=all
-      - NVIDIA_VISIBLE_DEVICES=all
+      # Use nvidia driver volume approach (per Wolf docs) — Wolf mounts this
+      # volume into spawned app containers for GPU access
+      - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
       - WOLF_RENDER_NODE=/dev/dri/renderD128
       # Where Wolf stores config and app state
       - HOST_APPS_STATE_FOLDER=/etc/wolf
@@ -47,6 +48,8 @@ services:
       # Device access for GPU, input, and udev
       - /dev/:/dev/:rw
       - /run/udev:/run/udev:rw
+      # NVIDIA driver volume — pre-populated with host's nvidia driver libs
+      - nvidia-driver-vol:/usr/nvidia:rw
     device_cgroup_rules:
       - 'c 13:* rmw'    # Input devices
       - 'c 244:* rmw'   # NVIDIA devices
@@ -54,9 +57,13 @@ services:
       - /dev/dri         # GPU render nodes
       - /dev/uinput      # Virtual input device creation
       - /dev/udmabuf     # DMA buffer allocation for Wayland compositor
-      # /dev/uhid is optional — only needed for DualSense gyro/touchpad
-    privileged: true
-    runtime: nvidia
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+      - /dev/nvidiactl
+      - /dev/nvidia0
+      - /dev/nvidia-modeset
     network_mode: host
     restart: unless-stopped
 
@@ -79,3 +86,6 @@ services:
     profiles:
       - build-only
 
+volumes:
+  nvidia-driver-vol:
+    external: true
