@@ -34,15 +34,12 @@ services:
       # volume into spawned app containers for GPU access
       - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
       - WOLF_RENDER_NODE=/dev/dri/renderD128
-      # Where Wolf stores config and app state
-      - HOST_APPS_STATE_FOLDER=/etc/wolf
       - WOLF_LOG_LEVEL=INFO
-      # XDG_RUNTIME_DIR for PulseAudio and Wayland sockets
-      - XDG_RUNTIME_DIR=/tmp/sockets
     volumes:
-      # Wolf state directory — contains cfg/config.toml, keys, app state
-      # We mount the entire wolf/ dir so Wolf can rename/migrate config files
-      - ./wolf:/etc/wolf/cfg
+      # Wolf state directory — MUST mount at /etc/wolf (not a subdirectory!)
+      # Wolf inspects its own Docker mounts to resolve host paths for spawned
+      # containers. It looks for a mount at /etc/wolf to pass config/state.
+      - /etc/wolf:/etc/wolf:rw
       # Wolf needs Docker socket to spawn app containers
       - /var/run/docker.sock:/var/run/docker.sock:rw
       # Device access for GPU, input, and udev
