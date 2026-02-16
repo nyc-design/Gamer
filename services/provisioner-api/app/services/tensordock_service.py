@@ -26,16 +26,103 @@ class TensorDockService:
         List available TensorDock host nodes for console requirements
 
         Implementation checklist:
-        [ ] Call TensorDock API for list of available locations
-        [ ] Get supported GPU types from console config
-        [ ] Filter locations that support dedicated IP (required for gaming)
-        [ ] Handle GPU-less instances if no GPU required
-        [ ] Handle GPU instances and check resource requirements
-        [ ] Calculate hourly pricing from GPU, CPU, RAM, and disk costs
-        [ ] Get coordinates for each location using geocoding service
-        [ ] Create and return VMAvailableResponse list
+        [x] Call TensorDock API for list of available locations
+        [x] Get supported GPU types from console config
+        [x] Filter locations that support dedicated IP (required for gaming)
+        [x] Handle GPU-less instances if no GPU required
+        [x] Handle GPU instances and check resource requirements
+        [x] Calculate hourly pricing from GPU, CPU, RAM, and disk costs
+        [x] Get coordinates for each location using geocoding service
+        [x] Create and return VMAvailableResponse list
         """
-        pass
+        # Call TensorDock API for list of available locations
+        tensordock_gpus = console_config.supported_instance_types.get("tensordock", [])
+
+        async with httpx.AsyncClient() as client:
+            params = {"token": self.api_token}
+            response = await client.get(f"{self.base_url}/locations", params=params)
+            response.raise_for_status()
+            locations_data = response.json()
+
+        # Get supported GPU types from console config
+        available_instances = []
+        for location in locations_data.get("data", {}).get("locations", []):
+            # Filter locations that support dedicated IP (required for gaming)
+            has_dedicated_ip = any(
+                gpu.get("network_features", {}).get("dedicated_ip_available", False)
+                for gpu in location.get("gpus", [])
+            )
+            if not has_dedicated_ip:
+                continue
+
+            # Handle GPU-less instances if no GPU required
+            if not tensordock_gpus:
+                location_coords = await self.geocoding_service.get_coordinates(
+                    location.get('city', ''),
+                    location.get('country', '')
+                )
+
+                # Calculate hourly pricing from GPU, CPU, RAM, and disk costs
+                base_gpu = location.get("gpus", [{}])[0] if location.get("gpus") else {}
+                pricing = base_gpu.get("pricing", {})
+                cpu_price = console_config.min_cpus * pricing.get("per_vcpu_hr", 0.003)
+                ram_price = console_config.min_ram * pricing.get("per_gb_ram_hr", 0.002)
+                disk_price = console_config.min_disk * pricing.get("per_gb_storage_hr", 0.00005)
+                hourly_price = cpu_price + ram_price + disk_price
+
+                available_instances.append(VMAvailableResponse(
+                    provider=CloudProvider.TENSORDOCK,
+                    instance_type="CPU-only",
+                    provider_id=location.get('id'),
+                    hourly_price=hourly_price,
+                    instance_lat=location_coords[0] if location_coords else 0.0,
+                    instance_long=location_coords[1] if location_coords else 0.0,
+                    distance_to_user=0.0,
+                    gpu="No GPU",
+                    avail_cpus=128,  # Max available from location
+                    avail_ram=300,   # Max available from location
+                    avail_disk=1000  # Max available from location
+                ))
+            else:
+                # Handle GPU instances and check resource requirements
+                for gpu_config in location.get("gpus", []):
+                    if not any(req_gpu in gpu_config.get("v0Name", "") for req_gpu in tensordock_gpus):
+                        continue
+
+                    resources = gpu_config.get("resources", {})
+                    if (resources.get("max_vcpus", 0) >= console_config.min_cpus and
+                        resources.get("max_ram_gb", 0) >= console_config.min_ram and
+                        resources.get("max_storage_gb", 0) >= console_config.min_disk):
+
+                        pricing = gpu_config.get("pricing", {})
+                        gpu_price = gpu_config.get("price_per_hr", 0)
+                        cpu_price = console_config.min_cpus * pricing.get("per_vcpu_hr", 0)
+                        ram_price = console_config.min_ram * pricing.get("per_gb_ram_hr", 0)
+                        disk_price = console_config.min_disk * pricing.get("per_gb_storage_hr", 0)
+                        hourly_price = gpu_price + cpu_price + ram_price + disk_price
+
+                        # Get coordinates for each location using geocoding service
+                        location_coords = await self.geocoding_service.get_coordinates(
+                            location.get('city', ''),
+                            location.get('country', '')
+                        )
+
+                        # Create and return VMAvailableResponse list
+                        available_instances.append(VMAvailableResponse(
+                            provider=CloudProvider.TENSORDOCK,
+                            instance_type=gpu_config.get("displayName", ""),
+                            provider_id=f"{location.get('id')}_{gpu_config.get('v0Name')}",
+                            hourly_price=hourly_price,
+                            instance_lat=location_coords[0] if location_coords else 0.0,
+                            instance_long=location_coords[1] if location_coords else 0.0,
+                            distance_to_user=0.0,
+                            gpu=gpu_config.get("displayName", "No GPU"),
+                            avail_cpus=resources.get("max_vcpus", 0),
+                            avail_ram=resources.get("max_ram_gb", 0),
+                            avail_disk=resources.get("max_storage_gb", 0)
+                        ))
+
+        return available_instances
 
 
     async def create_vm(self, create_request: TensorDockCreateRequest, instance_doc: VMDocument):
