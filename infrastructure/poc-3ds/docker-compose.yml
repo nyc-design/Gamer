@@ -55,6 +55,7 @@ services:
       - /dev/uinput      # Virtual input device creation
       - /dev/udmabuf     # DMA buffer allocation for Wayland compositor
       # /dev/uhid is optional — only needed for DualSense gyro/touchpad
+    privileged: true
     runtime: nvidia
     network_mode: host
     restart: unless-stopped
