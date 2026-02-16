@@ -39,7 +39,7 @@ GPU VM
 | **Storage** | 20GB+ SSD |
 | **Network** | 100Mbps+ with public IP |
 | **OS** | Ubuntu 22.04 or 24.04 LTS |
-| **Ports** | 47984, 47989, 48010 (TCP); 47998-48000 (UDP) |
+| **Ports** | 47984, 47989, 47999, 48010 (TCP); 47998-48010, 48100, 48200 (UDP) |
 
 ### Recommended Cloud Providers
 
@@ -57,7 +57,26 @@ GPU VM
 
 ### 1. Provision a GPU VM
 
-Spin up an Ubuntu VM with an NVIDIA GPU from your cloud provider.
+Spin up an Ubuntu VM with an NVIDIA GPU. For GCP:
+
+```bash
+gcloud compute instances create gamer-poc-3ds \
+    --project=YOUR_PROJECT \
+    --zone=us-central1-a \
+    --machine-type=g2-standard-4 \
+    --accelerator=count=1,type=nvidia-l4 \
+    --boot-disk-size=50GB \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --maintenance-policy=TERMINATE
+
+# Open Moonlight ports (GCP firewall)
+gcloud compute firewall-rules create allow-moonlight \
+    --project=YOUR_PROJECT \
+    --allow=tcp:47984,tcp:47989,tcp:47999,tcp:48010,udp:47998-48010,udp:48100,udp:48200 \
+    --target-tags=allow-moonlight
+gcloud compute instances add-tags gamer-poc-3ds --tags=allow-moonlight --zone=us-central1-a
+```
 
 ### 2. Clone and run setup
 
@@ -78,25 +97,62 @@ cd Gamer/infrastructure/poc-3ds
 sudo ./setup-vm.sh
 ```
 
-### 3. Add your 3DS ROM
+### 3. Create NVIDIA driver volume (critical)
+
+Wolf uses the "driver volume" approach to inject NVIDIA libraries into spawned containers. This must be done once after the NVIDIA driver is installed:
 
 ```bash
-# Copy your ROM to the roms directory
-cp /path/to/your-game.3ds /home/gamer/roms/
+# Get your driver version
+NV_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
+echo "Driver version: $NV_VERSION"
+
+# Build the driver extraction image and create volume
+curl -s "https://raw.githubusercontent.com/games-on-whales/wolf/stable/scripts/nvidia-driver-container/Dockerfile" | \
+    docker build -t gow/nvidia-driver:latest --build-arg NV_VERSION=$NV_VERSION -
+
+# Populate the volume
+docker volume create nvidia-driver-vol
+docker create --rm --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest sh
+
+# Verify it worked
+docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine ls /usr/nvidia/lib/
+# Should list: libnvidia-allocator.so, libnvidia-egl-wayland.so, etc.
 ```
 
-### 4. Configure the ROM filename
+> **Why this matters**: Without this volume, spawned app containers won't have GPU access. The driver volume approach is the Wolf-recommended method for NVIDIA — it avoids conflicts between host and container NVIDIA library versions.
+
+### 4. Enable nvidia_drm.modeset (for zero-copy pipeline)
+
+```bash
+# Check current status
+cat /sys/module/nvidia_drm/parameters/modeset
+# If it shows "N":
+echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf
+sudo update-initramfs -u
+sudo reboot
+```
+
+> Zero-copy pipeline (GStreamer CUDA DMA buffers) requires DRM/KMS via GBM. Without `modeset=1`, Wolf falls back to a slower copy-based pipeline.
+
+### 5. Add your 3DS ROM
+
+```bash
+# Copy your ROM to the roms directory (use a simple filename — avoid special chars)
+cp /path/to/your-game.3ds /home/gamer/roms/pokemon-alpha-sapphire.3ds
+```
+
+### 6. Configure the ROM filename
 
 Edit `wolf/config.toml` and set the ROM filename in the env section:
 
 ```toml
 env = [
-    "ROM_FILENAME=your-game.3ds",   # ← Change this (prefer simple filename without commas/parentheses)
+    "ROM_FILENAME=pokemon-alpha-sapphire.3ds",   # ← Change this
     ...
 ]
 ```
 
-### 5. (Optional) Add 3DS firmware
+### 7. (Optional) Add 3DS firmware
 
 If your game requires system files:
 
@@ -105,24 +161,32 @@ If your game requires system files:
 cp -r /path/to/sysdata/* /home/gamer/firmware/3ds/sysdata/
 ```
 
-### 6. Start Wolf
+### 8. Copy config and start Wolf
 
 ```bash
+# Wolf reads config from /etc/wolf/cfg/ — copy the repo config there
+sudo mkdir -p /etc/wolf/cfg
+sudo cp wolf/config.toml /etc/wolf/cfg/
+
+# Build the Azahar image and start Wolf
+docker compose build azahar
 docker compose up -d
 ```
 
-### 7. Pair your iPhone
+### 9. Pair your iPhone
 
 1. Open **Moonlight** on your iPhone
 2. Tap **+** (Add Host)
 3. Enter the VM's **public IP address**
-4. Check Wolf logs for the pairing PIN:
+4. Moonlight will prompt for a PIN
+5. Check Wolf logs for the pairing PIN and secret:
    ```bash
-   docker compose logs wolf | grep -i pin
+   docker compose logs wolf 2>&1 | grep -i 'pin'
    ```
-5. Enter the PIN in Moonlight
-6. Once paired, you'll see **"Azahar 3DS"** in the app list
-7. Tap it to start streaming
+   Look for a line like: `Please insert pin: 1234`
+6. Enter the PIN in Moonlight
+7. Once paired, you'll see **"Azahar 3DS"** and **"Azahar 3DS (Settings)"** in the app list
+8. Tap **"Azahar 3DS"** to start streaming
 
 ## Azahar App Modes (recommended workflow)
 
@@ -146,16 +210,17 @@ Then switch back to **Azahar 3DS** for gameplay.
 
 ```
 poc-3ds/
-├── docker-compose.yml          # Wolf + Azahar build definition
-├── setup-vm.sh                 # VM setup script (driver, Docker, dirs)
-├── README.md                   # This file
+├── docker-compose.yml              # Wolf + Azahar build definition
+├── setup-vm.sh                     # VM setup script (driver, Docker, dirs)
+├── README.md                       # This file
 ├── wolf/
-│   └── config.toml             # Wolf config with Azahar app registration
+│   └── config.toml                 # Wolf config with Azahar app registration
 └── azahar/
-    ├── Dockerfile              # Azahar emulator container (GOW base-app)
-    ├── startup-app.sh          # Entrypoint script Wolf invokes
+    ├── Dockerfile                  # Azahar emulator container (GOW base-app)
+    ├── startup-app.sh              # Entrypoint script Wolf invokes
+    ├── 30-nvidia-readonly-safe.sh  # Read-only-safe nvidia init (replaces base-app's)
     └── azahar-config/
-        └── qt-config.ini       # Default Azahar config (streaming-optimized)
+        └── qt-config.ini           # Default Azahar config (streaming-optimized)
 ```
 
 ## Directory Layout on VM
@@ -241,6 +306,80 @@ docker exec GamerAzahar cat /tmp/sway.log 2>/dev/null
 - In Moonlight settings: reduce resolution to 720p, increase bitrate
 - Ensure VM is geographically close to you
 - Check `nvidia-smi` for GPU encoding load
+
+## Key Technical Decisions & Lessons Learned
+
+These are hard-won insights from the initial bring-up. They document *why* things are configured the way they are.
+
+### Wolf volume mount MUST be `/etc/wolf:/etc/wolf`
+
+Wolf inspects its own Docker container mounts to resolve container-internal paths to host paths. It needs to resolve:
+- `/etc/wolf` → host path (for app state, config, fake-udev)
+- `XDG_RUNTIME_DIR` → host path (for Wayland socket passed to spawned containers)
+
+If you mount to a subdirectory (e.g., `./wolf:/etc/wolf/cfg`), Wolf logs:
+```
+ERROR | Unable to find docker mount for path: /etc/wolf
+ERROR | Unable to find docker mount for path: /tmp/sockets
+```
+...and spawned containers fail with "Can't connect to a Wayland display" because Wolf can't pass the Wayland socket mount correctly.
+
+### NVIDIA driver volume approach (not `runtime: nvidia` on Wolf)
+
+Wolf supports two NVIDIA approaches:
+1. **Container Toolkit** (`runtime: nvidia`, `--gpus=all`) — Wolf container itself runs with NVIDIA runtime
+2. **Driver Volume** (`NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol`) — Wolf mounts a pre-populated volume of NVIDIA libs into spawned containers
+
+We use approach 2 (driver volume) because:
+- Wolf's internal NVIDIA library discovery is more reliable with it
+- Avoids `libnvidia-egl-wayland.so` version mismatch errors between host and container
+- The Wolf docs recommend it as the primary NVIDIA approach
+- Zero-copy pipeline works correctly with it
+
+Note: `config.toml`'s `base_create_json` may still include `"Runtime": "nvidia"` for the spawned Azahar containers themselves — that's separate from Wolf's own container config.
+
+### Read-only rootfs in spawned containers
+
+Wolf starts app containers with a read-only root filesystem. The GOW `base-app:edge` image includes a `30-nvidia.sh` init script that tries to `cp` EGL/Vulkan config files into `/usr/share/egl/...`. This fails on read-only rootfs with:
+```
+cp: cannot create regular file '/usr/share/egl/egl_external_platform.d/10_nvidia_wayland.json': Read-only file system
+```
+
+Our fix: the Azahar Dockerfile replaces `30-nvidia.sh` with a read-only-safe version (`30-nvidia-readonly-safe.sh`) that skips the copy and sets environment variables to point EGL/Vulkan lookups directly to the driver volume paths:
+- `__EGL_VENDOR_LIBRARY_DIRS=/usr/nvidia/share/glvnd/egl_vendor.d`
+- `__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=/usr/nvidia/share/egl/egl_external_platform.d`
+- `VK_ICD_FILENAMES=/usr/nvidia/share/vulkan/icd.d/nvidia_icd.json`
+
+### Zero-copy pipeline requires libnvidia-allocator.so
+
+Wolf's zero-copy pipeline uses GStreamer CUDA DMA buffers via GBM (Generic Buffer Management). This requires:
+1. `nvidia_drm.modeset=1` kernel parameter
+2. `libnvidia-allocator.so` installed on the host
+3. GBM backend symlink: `/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so → ../libnvidia-allocator.so.1`
+
+Ubuntu's `-server` NVIDIA packages don't include `libnvidia-allocator.so`. If you see:
+```
+GsCUDABuf: Failed to create GBM device
+```
+You need to either install `libnvidia-gl-XXX` (non-server variant) or manually extract the library from the NVIDIA `.run` installer.
+
+The driver volume (`nvidia-driver-vol`) handles this for spawned containers, but the Wolf container itself also needs GBM on the host.
+
+### GCP-specific notes
+
+- **Machine type**: `g2-standard-4` with L4 GPU is the sweet spot for 3DS emulation
+- **No `/dev/uhid`**: GCP VMs don't have `/dev/uhid` — don't include it in Wolf's device list
+- **Firewall**: GCP requires explicit firewall rules (not just ufw). Use `gcloud compute firewall-rules create`
+- **Stopped VM cost**: A stopped GCP VM with an L4 GPU costs ~$2.40/day for the 50GB persistent disk only (no GPU/compute charges while stopped). The GPU reservation is released.
+
+### Wolf config auto-migration
+
+Wolf automatically migrates `config.toml` to newer versions. On first start it may:
+- Rename your file to `config.toml.v4.old` (or similar)
+- Create a new `config.toml` with `config_version = 6` (or latest)
+- Add default apps (like "Wolf UI" test ball)
+
+Your paired clients and custom apps are preserved during migration. Check `config_version` in the file to know which version Wolf created.
 
 ## How It Maps to End-State Architecture
 
