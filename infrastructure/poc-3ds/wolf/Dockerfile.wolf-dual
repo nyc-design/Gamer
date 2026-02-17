@@ -29,10 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The GStreamer base image has /usr/local/lib in LD path with libs linked
 # against libicuuc.so.76 which isn't installed. Install libicu-dev above
 # to provide it, then curl works normally.
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1 \
-    && . /root/.cargo/env \
-    && cargo install cargo-c
-ENV PATH="/root/.cargo/bin:${PATH}"
+    && /usr/local/cargo/bin/cargo install cargo-c
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 
 # Clone our fork with multi-output support
 ARG GST_WD_REPO=https://github.com/nyc-design/gst-wayland-display.git
