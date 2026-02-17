@@ -341,15 +341,19 @@ echo "  ✓ Directories ready at $GAMER_HOME/"
 echo "[Step 6/9] Wolf configuration..."
 
 mkdir -p /etc/wolf/cfg
-# Copy config.toml from repo — preserves any existing paired_clients if Wolf
-# already migrated the config to a newer version. Only copy if repo version
-# is newer or config doesn't exist yet.
-if [ ! -f /etc/wolf/cfg/config.toml ]; then
-    cp "$SCRIPT_DIR/wolf/config.toml" /etc/wolf/cfg/config.toml
-    echo "  ✓ Copied config.toml to /etc/wolf/cfg/"
+# Always apply app profile section from repo config, while preserving runtime
+# identity/pairing/gstreamer base from an existing Wolf-generated config.
+if [ -f /etc/wolf/cfg/config.toml ]; then
+    TMP_BASE="/tmp/wolf_cfg_base.toml"
+    TMP_APPS="/tmp/wolf_cfg_apps.toml"
+    awk 'BEGIN{found=0} /^\[\[profiles\]\]/{found=1} !found{print}' /etc/wolf/cfg/config.toml > "$TMP_BASE"
+    awk 'BEGIN{found=0} /^\[\[profiles\]\]/{found=1} found{print}' "$SCRIPT_DIR/wolf/config.toml" > "$TMP_APPS"
+    cat "$TMP_BASE" "$TMP_APPS" > /etc/wolf/cfg/config.toml
+    rm -f "$TMP_BASE" "$TMP_APPS"
+    echo "  ✓ Merged existing Wolf base config with repo app profiles"
 else
-    echo "  ✓ /etc/wolf/cfg/config.toml already exists (keeping existing — may have paired clients)"
-    echo "    To force update: sudo cp $SCRIPT_DIR/wolf/config.toml /etc/wolf/cfg/config.toml"
+    cp "$SCRIPT_DIR/wolf/config.toml" /etc/wolf/cfg/config.toml
+    echo "  ✓ Installed repo config.toml to /etc/wolf/cfg/"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

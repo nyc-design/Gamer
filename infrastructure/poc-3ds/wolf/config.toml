@@ -31,7 +31,7 @@ support_hevc = true
 # Profile: 3DS Gaming
 ###############################################################################
 [[profiles]]
-id = "3ds-gaming"
+id = "moonlight-profile-id"
 
 # ── Dual Screen: Primary (Top Screen) ─────────────────────────────────────
 # Launches Azahar with SeparateWindows mode. The custom gst-wayland-display
