@@ -119,16 +119,32 @@ fi
 ACTIVE_LAYOUT=$(grep -oP 'layout_option=\K\d+' /home/retro/config/azahar-emu/qt-config.ini 2>/dev/null || echo "0")
 gow_log "Active layout_option=${ACTIVE_LAYOUT}"
 
-# In dual-screen mode, prefer Gamescope over Sway by default.
-# Azahar's AppImage bundles Qt/XCB (and may not include a compatible Wayland
-# plugin), so pure direct-Wayland launch can fail. Gamescope provides the
-# required Xwayland path with much lower overhead than full Sway.
+# In dual-screen mode, decide whether to use Gamescope.
 #
-# HOWEVER: If RUN_GAMESCOPE was explicitly set to 0/false, respect that.
-# This allows Wolf's custom waylanddisplaysrc to see Azahar's windows directly.
-if [ "$ACTIVE_LAYOUT" = "4" ] && [ -z "${RUN_SWAY:-}" ] && [ -z "${RUN_GAMESCOPE:-}" ] && [ -z "${RUN_GAMESCOPE_DISABLED:-}" ]; then
-    export RUN_GAMESCOPE=1
-    gow_log "Dual-screen mode: enabling RUN_GAMESCOPE=1 (no RUN_SWAY)"
+# With wolf-dual (Xwayland-enabled compositor):
+#   - Don't need Gamescope: compositor has built-in Xwayland support
+#   - Each X11 window becomes a separate wl_surface
+#   - Wolf routes 1st window → primary output, 2nd → secondary output
+#   - Set USE_XWAYLAND=1 or RUN_GAMESCOPE=0 to use this mode
+#
+# Without Xwayland compositor (standard Wolf):
+#   - Need Gamescope to provide Xwayland for X11 apps
+#   - BUT Gamescope composites all windows into one surface
+#   - Dual-screen won't work properly (both screens in one stream)
+#
+# IMPORTANT: Azahar's AppImage bundles Qt/XCB only (no Wayland plugin),
+# so it REQUIRES either Gamescope or compositor Xwayland support.
+if [ "$ACTIVE_LAYOUT" = "4" ]; then
+    if [ "${USE_XWAYLAND:-0}" = "1" ] || [ -n "${RUN_GAMESCOPE_DISABLED:-}" ]; then
+        # Wolf has Xwayland support — don't use Gamescope
+        unset RUN_GAMESCOPE
+        unset RUN_SWAY
+        gow_log "Dual-screen mode: using compositor Xwayland (no Gamescope)"
+    elif [ -z "${RUN_SWAY:-}" ] && [ -z "${RUN_GAMESCOPE:-}" ]; then
+        # Fallback: enable Gamescope for Xwayland (but dual-screen won't work)
+        export RUN_GAMESCOPE=1
+        gow_log "Dual-screen mode: enabling RUN_GAMESCOPE=1 (WARNING: dual-screen may not work)"
+    fi
 fi
 
 # Launch via GOW compositor wrapper.

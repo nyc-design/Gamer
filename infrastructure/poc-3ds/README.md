@@ -189,6 +189,8 @@ cp -r /path/to/sysdata/* /home/gamer/firmware/3ds/sysdata/
 # Wolf reads config from /etc/wolf/cfg/ — copy the repo config there
 sudo mkdir -p /etc/wolf/cfg
 sudo cp wolf/config.toml /etc/wolf/cfg/
+sudo cp wolf/bottom-screen-keepalive.sh /etc/wolf/cfg/
+sudo chmod +x /etc/wolf/cfg/bottom-screen-keepalive.sh
 
 # Build the Azahar image and start Wolf
 docker compose build azahar
@@ -329,6 +331,23 @@ docker exec GamerAzahar cat /tmp/sway.log 2>/dev/null
 - Ensure VM is geographically close to you
 - Check `nvidia-smi` for GPU encoding load
 
+### Severe stutter in dual-screen (SeparateWindows)
+
+If stutter appears only in **Azahar 3DS (Dual Screen)**, verify the app env in
+`wolf/config.toml` uses:
+
+```toml
+"LAYOUT_OPTION=4"
+# RUN_SWAY must be omitted (do not set it to "0")
+```
+
+Dual-screen mode should render directly to Wolf's compositor. Running Sway
+inside the Azahar container in this mode introduces nested composition and can
+cause heavy frame pacing issues (especially after fullscreen toggles).
+
+Note: GOW's launcher enables Sway when `RUN_SWAY` is any non-empty string, so
+`RUN_SWAY=0` still enables Sway.
+
 ## Key Technical Decisions & Lessons Learned
 
 These are hard-won insights from the initial bring-up. They document *why* things are configured the way they are.
@@ -418,6 +437,68 @@ This PoC validates the core streaming pipeline from ARCHITECTURE.md:
 | No fake time | libfaketime integration (already in Dockerfile, just needs env var) |
 | Single screen | Dual-screen via moonlight-web-stream (browser client) |
 
+## Dual-Screen Streaming Architecture
+
+For 3DS games with two screens, we use a custom compositor that routes each screen to a separate Moonlight client.
+
+### How It Works
+
+The `wolf-dual` image includes a modified `gst-wayland-display` compositor with:
+1. **Xwayland support**: X11 apps (like Azahar) run without needing Gamescope
+2. **Multi-output routing**: First window → primary stream, second window → secondary stream
+3. **Separate GStreamer elements**: `waylanddisplaysrc` (top screen) + `waylanddisplaysecondary` (bottom screen)
+
+```
+Azahar (SeparateWindows mode)
+    ├── Top Screen X11 Window    → Xwayland → wl_surface → primary space   → HEADLESS-1 → waylanddisplaysrc
+    └── Bottom Screen X11 Window → Xwayland → wl_surface → secondary space → HEADLESS-2 → waylanddisplaysecondary
+                                                                                           ↓
+iPhone (Moonlight A) ←───────────────────────────────────────────────────────────── Top screen stream
+iPad (Moonlight B)   ←───────────────────────────────────────────────────────────── Bottom screen stream
+```
+
+### Building wolf-dual
+
+```bash
+# Build from the Xwayland-enabled fork
+docker build -f wolf/Dockerfile.wolf-dual -t wolf-dual .
+
+# Or pull pre-built (after CI builds it)
+docker pull ghcr.io/nyc-design/wolf-dual:latest
+```
+
+### Using Dual-Screen Mode
+
+1. Set Azahar to SeparateWindows layout:
+   ```toml
+   # In wolf/config.toml
+   env = [
+       "LAYOUT_OPTION=4",       # SeparateWindows
+       "USE_XWAYLAND=1",        # Use compositor Xwayland (no Gamescope)
+       ...
+   ]
+   ```
+
+2. Deploy wolf-dual instead of stock Wolf:
+   ```yaml
+   # In docker-compose.yml
+   wolf:
+     image: wolf-dual:latest  # or ghcr.io/nyc-design/wolf-dual:latest
+   ```
+
+3. Connect two Moonlight clients:
+   - Client A: Sees top screen (primary stream)
+   - Client B: Sees bottom screen (secondary stream)
+
+### Technical Details
+
+See `DUAL-SCREEN-ARCHITECTURE.md` for the full research and implementation details.
+
+Key files:
+- `wolf/Dockerfile.wolf-dual`: Builds compositor with Xwayland support
+- Fork: `github.com/nyc-design/gst-wayland-display` branch `feature/xwayland-support`
+- XwmHandler implementation: Routes X11 windows to separate outputs
+
 ## Next Steps After PoC
 
 1. **Validate streaming quality**: Test latency, visual quality, input responsiveness
@@ -425,3 +506,4 @@ This PoC validates the core streaming pipeline from ARCHITECTURE.md:
 3. **Test multiple games**: Try different 3DS titles for compatibility
 4. **Measure cold start time**: How long from `docker compose up` to playing
 5. **Test on TensorDock**: Verify the cheapest viable GPU tier for 3DS
+6. **Test dual-screen**: Build wolf-dual, verify two clients get separate screens

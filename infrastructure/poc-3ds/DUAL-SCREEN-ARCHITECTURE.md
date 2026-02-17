@@ -263,11 +263,114 @@ Extend fork to capture X11 windows inside Gamescope directly.
 
 **Effort**: Very high - needs X11/XComposite expertise
 
-## RECOMMENDED NEXT STEP
+## RECOMMENDED SOLUTION: Add Xwayland Support to gst-wayland-display
 
-**Build Native Wayland Azahar (Option E)**
+### Key Discovery (2026-02-17)
 
-1. Clone Azahar: `git clone https://github.com/azahar-emu/azahar`
+**The root cause**: gst-wayland-display does NOT have Xwayland support enabled in its Smithay dependency.
+
+Looking at `wayland-display-core/Cargo.toml`:
+```toml
+[dependencies.smithay]
+git = "https://github.com/games-on-whales/smithay"
+features = [
+    "backend_drm",
+    "backend_egl",
+    # ... other features
+    "wayland_frontend"
+    # NOTE: "xwayland" feature is MISSING!
+]
+```
+
+Smithay has a built-in `xwayland` feature that provides:
+- `X11Wm` - X11 window manager
+- `X11Surface` - Represents an X11 window
+- `XwmHandler` - Trait to handle X11 window events (map, unmap, etc.)
+
+**When Xwayland is enabled:**
+1. Each X11 window becomes an `X11Surface`
+2. Each `X11Surface` gets its own wl_surface via xwayland-shell protocol
+3. The compositor sees them as separate toplevels
+4. Our existing multi-output routing logic applies!
+
+### Implementation Plan
+
+1. **Add Xwayland feature to Smithay dependency**:
+   ```toml
+   features = [
+       # existing features...
+       "xwayland"
+   ]
+   ```
+
+2. **Implement XwmHandler for State** (like Anvil's `shell/x11.rs`):
+   ```rust
+   impl XwmHandler for State {
+       fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+           window.set_mapped(true).unwrap();
+           let window = Window::new_x11_window(window);
+
+           // Use SAME routing logic as Wayland toplevels
+           let primary_count = self.space.elements().count();
+           let secondary_count = self.secondary_space.elements().count();
+           let use_secondary = self.multi_output_enabled
+               && self.secondary_output.is_some()
+               && primary_count >= 1
+               && secondary_count == 0;
+
+           if use_secondary {
+               self.secondary_space.map_element(window, (0, 0), true);
+           } else {
+               self.space.map_element(window, (0, 0), true);
+           }
+       }
+       // ... other handlers
+   }
+   ```
+
+3. **Initialize X11Wm in compositor startup**:
+   ```rust
+   let xwm = X11Wm::start_wm(handle, dh, display_number)?;
+   state.xwm = Some(xwm);
+   ```
+
+4. **Start Xwayland when compositor starts**:
+   ```rust
+   let xwayland = XWayland::new(&dh);
+   xwayland.start(handle, data)?;
+   ```
+
+### Why This Works for ALL Emulators
+
+This solution doesn't require modifying any emulator. It enables:
+- **Azahar (3DS)**: X11 app → 2 X11 windows → 2 X11Surfaces → 2 outputs
+- **melonDS (DS)**: Same pattern
+- **Any X11 app**: Just works
+
+### Implementation Files
+
+| File | Changes Needed |
+|------|----------------|
+| `wayland-display-core/Cargo.toml` | Add `xwayland` feature |
+| `wayland-display-core/src/comp/mod.rs` | Add `xwm: Option<X11Wm>` field |
+| `wayland-display-core/src/wayland/handlers/mod.rs` | Add `x11.rs` module |
+| `wayland-display-core/src/wayland/handlers/x11.rs` | NEW: XwmHandler impl |
+| `wayland-display-core/src/lib.rs` | Initialize Xwayland on startup |
+
+### Testing
+
+After implementing:
+1. Build gst-wayland-display with xwayland feature
+2. Build wolf-dual with new compositor
+3. Deploy to TensorDock VM
+4. Run Azahar in SeparateWindows mode (without Gamescope!)
+5. Verify two X11 windows route to separate outputs
+
+### Fallback: Build Native Wayland Emulators
+
+If Xwayland approach has issues, the alternative is building emulators with native Wayland:
+
+1. Clone emulator (e.g., Azahar): `git clone https://github.com/azahar-emu/azahar`
 2. Build with Qt6 Wayland:
    ```bash
    cmake -DENABLE_QT=ON -DENABLE_QT_TRANSLATION=OFF \
@@ -277,3 +380,5 @@ Extend fork to capture X11 windows inside Gamescope directly.
 4. Test: `QT_QPA_PLATFORM=wayland ./azahar`
 5. If two windows appear as separate Wayland surfaces, success!
 6. Create Docker image, deploy to VM, test with Wolf multi-output
+
+But this requires maintaining forks of each emulator - Xwayland support in the compositor is cleaner.

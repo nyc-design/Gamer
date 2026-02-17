@@ -1,15 +1,18 @@
-# Wolf with multi-output gst-wayland-display
+# Wolf with multi-output + Xwayland gst-wayland-display
 #
-# Builds our forked gst-wayland-display with dual-screen support and overlays
-# the custom .so into the stock Wolf image. Wolf itself is UNMODIFIED.
+# Builds our forked gst-wayland-display with:
+# - Dual-screen support (waylanddisplaysecondary element)
+# - Xwayland support (X11 apps work without Gamescope)
+# Then overlays the custom .so into the stock Wolf image. Wolf itself is UNMODIFIED.
 #
 # The fork adds:
 # - waylanddisplaysecondary GStreamer element (shares compositor with primary)
 # - multi-output property on waylanddisplaysrc
-# - Window routing: 1st toplevel → primary space, 2nd → secondary space
+# - Window routing: 1st toplevel/X11 window → primary space, 2nd → secondary space
+# - Xwayland integration: X11 apps create separate surfaces that route correctly
 #
 # Build: docker build -f Dockerfile.wolf-dual -t wolf-dual .
-# Usage: Same as stock Wolf, but dual-screen apps get two separate video streams
+# Usage: Same as stock Wolf, but dual-screen X11 apps get two separate video streams
 
 ARG WOLF_TAG=stable
 ARG GST_TAG=1.26.7
@@ -17,12 +20,14 @@ ARG GST_TAG=1.26.7
 # --- Builder: compile our forked gst-wayland-display ---
 FROM ghcr.io/games-on-whales/gstreamer:${GST_TAG} AS builder
 
+# Install build dependencies including Xwayland requirements
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git build-essential pkg-config \
     libwayland-dev libinput-dev libxkbcommon-dev libgbm-dev \
     libglib2.0-dev libegl-dev libgles-dev libopengl-dev \
     libdrm-dev libudev-dev libevdev-dev \
     libicu-dev libssl-dev \
+    libxcb1-dev libx11-xcb-dev xwayland \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust + cargo-c (same toolchain version as upstream Wolf build)
@@ -34,9 +39,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     && /usr/local/cargo/bin/cargo install cargo-c
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 
-# Clone our fork with multi-output support
+# Clone our fork with multi-output + Xwayland support
 ARG GST_WD_REPO=https://github.com/nyc-design/gst-wayland-display.git
-ARG GST_WD_BRANCH=multi-output
+ARG GST_WD_BRANCH=feature/xwayland-support
 RUN git clone --branch ${GST_WD_BRANCH} --depth 1 ${GST_WD_REPO} /tmp/gst-wayland-display
 
 # Patch fork in-build to avoid secondary-stream backpressure coupling.
@@ -87,7 +92,13 @@ RUN cargo cinstall --features="cuda" \
 # --- Runtime: stock Wolf with our custom .so overlay ---
 FROM ghcr.io/games-on-whales/wolf:${WOLF_TAG}
 
-# Replace the gst-wayland-display plugin with our multi-output version
+# Install Xwayland for X11 application support
+# This enables X11 apps (like Azahar, melonDS) to run without Gamescope
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xwayland \
+    && rm -rf /var/lib/apt/lists/*
+
+# Replace the gst-wayland-display plugin with our multi-output + Xwayland version
 # cargo cinstall puts the GStreamer plugin in {libdir}/gstreamer-1.0/ which
 # creates a doubled path, but the shared lib goes directly into {libdir}.
 COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/gstreamer-1.0/libgstwaylanddisplaysrc.so \
