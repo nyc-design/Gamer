@@ -469,9 +469,9 @@ cmd_setup() {
             sudo docker compose down
             echo '  Wolf stopped after config generation'
 
-            # Merge: keep Wolf's header (gstreamer, paired_clients, uuid)
-            # but replace default apps with our Azahar apps
-            sudo python3 -c \"
+            # Merge: keep Wolf's header + gstreamer section, replace apps with ours.
+            # Wolf generates [gstreamer] AFTER [[profiles]] — we must preserve it.
+            sudo python3 << 'MERGE_PY'
 import sys
 
 with open('/etc/wolf/cfg/config.toml') as f:
@@ -480,26 +480,31 @@ with open('/etc/wolf/cfg/config.toml') as f:
 with open('/opt/gamer/infrastructure/poc-3ds/wolf/config.toml') as f:
     our_config = f.read()
 
-# Find where Wolf's profiles start
+# Extract Wolf's header (before [[profiles]])
 profiles_start = wolf_config.find('[[profiles]]')
-if profiles_start == -1:
-    header = wolf_config.rstrip()
-else:
-    header = wolf_config[:profiles_start].rstrip()
+header = wolf_config[:profiles_start].rstrip() if profiles_start != -1 else wolf_config.rstrip()
 
-# Find where our profiles/apps start
+# Extract Wolf's [gstreamer] section (after all profiles, near end of file)
+gstreamer_start = wolf_config.find('\n[gstreamer]')
+if gstreamer_start == -1:
+    gstreamer_start = wolf_config.find('\n[gstreamer.')
+gstreamer_section = wolf_config[gstreamer_start:].lstrip('\n') if gstreamer_start != -1 else ''
+
+# Extract our apps
 our_profiles_start = our_config.find('[[profiles]]')
 if our_profiles_start == -1:
     print('ERROR: No [[profiles]] found in our config!')
     sys.exit(1)
-
 our_apps = our_config[our_profiles_start:]
 
+# Combine: header + our apps + gstreamer
+merged = header + '\n\n' + our_apps.rstrip() + '\n\n' + gstreamer_section
 with open('/etc/wolf/cfg/config.toml', 'w') as f:
-    f.write(header + chr(10) + chr(10) + our_apps)
+    f.write(merged)
 
-print('  Config merged: Wolf base + Azahar apps')
-\"
+has_h264 = 'h264_encoders' in gstreamer_section
+print(f'  Config merged: Wolf base + Azahar apps + gstreamer (h264={has_h264})')
+MERGE_PY
         fi
 
         # Verify apps are in config
