@@ -34,6 +34,8 @@ else
 fi
 WOLF_DUAL_GST_WD_REPO="${WOLF_DUAL_GST_WD_REPO:-https://github.com/nyc-design/gst-wayland-display.git}"
 WOLF_DUAL_GST_WD_BRANCH="${WOLF_DUAL_GST_WD_BRANCH:-multi-output}"
+RESTORE_STATE=true
+TENSORDOCK_SSH_PUBLIC_KEY="${TENSORDOCK_SSH_PUBLIC_KEY:-${SSH_PUBLIC_KEY:-}}"
 
 # ── Load API token ───────────────────────────────────────────────────────────
 load_token() {
@@ -91,6 +93,82 @@ check_deps() {
             exit 1
         fi
     done
+}
+
+validate_ssh_pubkey() {
+    local key="$1"
+    if ! echo "$key" | grep -Eq '^ssh-(ed25519|rsa|ecdsa)[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$'; then
+        return 1
+    fi
+    return 0
+}
+
+find_latest_state_backup_dir() {
+    local latest
+    latest=$(find "$SCRIPT_DIR/state-backups" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -1 || true)
+    if [ -n "$latest" ] && [ -f "$latest/azahar-config.tgz" ] && [ -f "$latest/azahar-saves.tgz" ]; then
+        echo "$latest"
+        return 0
+    fi
+    return 1
+}
+
+wait_for_ssh() {
+    local ip="$1"
+    for i in $(seq 1 60); do
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "user@$ip" "echo ok" >/dev/null 2>&1; then
+            echo "  ✓ SSH is reachable"
+            return 0
+        fi
+        sleep 5
+        echo "  ... waiting for SSH ($i/60)"
+    done
+    return 1
+}
+
+wait_for_setup_complete() {
+    local ip="$1"
+    echo "  Waiting for setup-vm.sh to complete on the VM..."
+    for i in $(seq 1 90); do
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "user@$ip" \
+            "test -f /var/log/gamer-setup.log && grep -q 'Setup Complete' /var/log/gamer-setup.log" >/dev/null 2>&1; then
+            echo "  ✓ setup-vm.sh completed"
+            return 0
+        fi
+        sleep 10
+        echo "  ... setup still running ($i/90)"
+    done
+    return 1
+}
+
+restore_state_backup() {
+    local ip="$1"
+    local backup_dir="$2"
+    echo "  Restoring Azahar state backup from: $backup_dir"
+    scp -o StrictHostKeyChecking=no "$backup_dir/azahar-config.tgz" "user@$ip:/tmp/azahar-config.tgz"
+    scp -o StrictHostKeyChecking=no "$backup_dir/azahar-saves.tgz" "user@$ip:/tmp/azahar-saves.tgz"
+    ssh -o StrictHostKeyChecking=no "user@$ip" '
+        set -e
+        sudo mkdir -p /home/gamer/config /home/gamer/saves
+        sudo tar -xzf /tmp/azahar-config.tgz -C /home/gamer
+        sudo tar -xzf /tmp/azahar-saves.tgz -C /home/gamer
+        sudo chown -R 1000:1000 /home/gamer/config /home/gamer/saves
+        rm -f /tmp/azahar-config.tgz /tmp/azahar-saves.tgz
+    '
+    echo "  ✓ Azahar config/save state restored"
+}
+
+verify_wolf_ready() {
+    local ip="$1"
+    echo "  Verifying Wolf container and app list..."
+    ssh -o StrictHostKeyChecking=no "user@$ip" '
+        set -e
+        cd /opt/gamer/infrastructure/poc-3ds
+        sudo docker compose ps wolf | grep -q "Up"
+        sudo docker exec poc-3ds-wolf-1 curl --unix-socket /run/user/wolf/wolf.sock http://localhost/api/v1/apps \
+          | grep -q "Azahar 3DS (Single Screen)"
+    '
+    echo "  ✓ Wolf is healthy and Azahar app list is present"
 }
 
 # ── List available GPUs near Dallas ──────────────────────────────────────────
@@ -246,20 +324,31 @@ deploy() {
 
     # Load SSH key
     local ssh_key=""
-    for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
-        if [ -f "$keyfile" ]; then
-            ssh_key=$(cat "$keyfile")
-            echo "  SSH key: $keyfile"
-            break
-        fi
-    done
+    if [ -n "$TENSORDOCK_SSH_PUBLIC_KEY" ]; then
+        ssh_key="$(echo "$TENSORDOCK_SSH_PUBLIC_KEY" | tr -d '\r')"
+        echo "  SSH key: from TENSORDOCK_SSH_PUBLIC_KEY env/secret"
+    else
+        for keyfile in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+            if [ -f "$keyfile" ]; then
+                ssh_key=$(cat "$keyfile")
+                echo "  SSH key: $keyfile"
+                break
+            fi
+        done
+    fi
     if [ -z "$ssh_key" ]; then
-        echo "ERROR: No SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub"
+        echo "ERROR: No SSH public key found."
+        echo "Set TENSORDOCK_SSH_PUBLIC_KEY in env/secret, or provide ~/.ssh/id_ed25519.pub"
+        exit 1
+    fi
+    if ! validate_ssh_pubkey "$ssh_key"; then
+        echo "ERROR: SSH public key is not in valid OpenSSH format."
+        echo "Expected format: ssh-ed25519 AAAA... optional-comment"
         exit 1
     fi
 
-    # Build cloud-init that clones repo and runs setup
-    # Note: setup-vm.sh --skip-driver because TensorDock has NVIDIA drivers pre-installed
+    # Build cloud-init that clones repo and runs setup.
+    # We do not download ROMs here; the main Gamer platform will mount ROMs via rclone.
     local cloud_init_runcmd
     cloud_init_runcmd=$(cat <<CLOUDINIT
 [
@@ -270,7 +359,7 @@ deploy() {
     "cd /opt/gamer && git fetch --all --tags --prune",
     "cd /opt/gamer && git checkout $GAMER_REPO_REF || git checkout -b $GAMER_REPO_REF origin/$GAMER_REPO_REF || true",
     "cd /opt/gamer && git pull --ff-only origin $GAMER_REPO_REF || true",
-    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 ENFORCE_MODESET=0 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --auto-reboot 2>&1 | tee /var/log/gamer-setup.log"
+    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 ENFORCE_MODESET=0 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
 ]
 CLOUDINIT
 )
@@ -334,9 +423,29 @@ CLOUDINIT
             if [ "$status" = "running" ]; then
                 ip_addr=$(echo "$status_result" | jq -r '.data.ip // .data.attributes.ip // .data.ipAddress // .ip // .ipAddress // empty' 2>/dev/null || true)
                 if [ -n "$ip_addr" ]; then
+                    if ! wait_for_ssh "$ip_addr"; then
+                        echo "  ✗ VM IP assigned but SSH never became reachable"
+                        exit 1
+                    fi
+
+                    if ! wait_for_setup_complete "$ip_addr"; then
+                        echo "  ✗ Setup did not complete in time. Inspect: ssh user@$ip_addr 'tail -n 200 /var/log/gamer-setup.log'"
+                        exit 1
+                    fi
+
+                    if [ "$RESTORE_STATE" = true ]; then
+                        if backup_dir=$(find_latest_state_backup_dir); then
+                            restore_state_backup "$ip_addr" "$backup_dir"
+                        else
+                            echo "  ℹ No local state backup found under $SCRIPT_DIR/state-backups (skipping restore)"
+                        fi
+                    fi
+
+                    verify_wolf_ready "$ip_addr"
+
                     echo ""
                     echo "========================================="
-                    echo " VM Running!"
+                    echo " VM Ready for Moonlight Test ✓"
                     echo "========================================="
                     echo ""
                     echo " Instance ID: $instance_id"
@@ -344,21 +453,14 @@ CLOUDINIT
                     echo " GPU:         $gpu_display"
                     echo " Cost:        ~\$$price/hr (GPU) + compute"
                     echo ""
-                    echo " SSH:  ssh user@$ip_addr"
-                    echo ""
-                    echo " Check setup progress:"
-                    echo "   ssh user@$ip_addr 'tail -f /var/log/gamer-setup.log'"
-                    echo ""
-                    echo " Once setup completes (~5-10 min):"
-                    echo "   1. SCP your ROM:"
-                    echo "      scp 'Pokemon Alpha Sapphire*.3ds' user@$ip_addr:/home/gamer/roms/pokemon-alpha-sapphire.3ds"
+                    echo " Next:"
+                    echo "   1. Ensure ROM is mounted/synced to /home/gamer/roms via rclone workflow"
                     echo "   2. Open Moonlight → Add Host → $ip_addr"
-                    echo "   3. Pair and play!"
+                    echo "   3. Pair and launch 'Azahar 3DS (Single Screen)'"
                     echo ""
-                    echo " Stop VM (pauses billing except storage):"
+                    echo " Stop VM:"
                     echo "   $0 --stop $instance_id"
-                    echo ""
-                    echo " Delete VM (stops all billing):"
+                    echo " Delete VM:"
                     echo "   $0 --delete $instance_id"
                     echo ""
                     exit 0
@@ -426,7 +528,7 @@ ssh_instance() {
     ip=$(echo "$result" | jq -r '.data.ip // .data.attributes.ip // .data.ipAddress // .ip // .ipAddress // empty' 2>/dev/null || true)
     if [ -n "$ip" ]; then
         echo "Connecting to $ip..."
-        ssh -o StrictHostKeyChecking=no "root@$ip"
+        ssh -o StrictHostKeyChecking=no "user@$ip"
     else
         echo "Could not determine IP for instance $id"
         echo "$result" | jq . 2>/dev/null
@@ -437,6 +539,10 @@ ssh_instance() {
 check_deps
 
 case "${1:-deploy}" in
+    --no-restore-state)
+        RESTORE_STATE=false
+        deploy
+        ;;
     --list)     list_gpus ;;
     --status)   status ;;
     --stop)     stop_instance "${2:?Usage: $0 --stop INSTANCE_ID}" ;;
