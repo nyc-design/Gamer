@@ -18,17 +18,15 @@ ARG GST_TAG=1.26.7
 FROM ghcr.io/games-on-whales/gstreamer:${GST_TAG} AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates git build-essential pkg-config \
+    ca-certificates git build-essential pkg-config \
     libwayland-dev libinput-dev libxkbcommon-dev libgbm-dev \
     libglib2.0-dev libegl-dev libgles-dev libopengl-dev \
     libdrm-dev libudev-dev libevdev-dev \
+    && apt-get install -y --reinstall curl libcurl4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (same version as upstream Wolf build)
-# The GStreamer base image may have a broken curl (missing libicuuc.so), so
-# reinstall curl from apt to get a working binary for rustup download.
-RUN apt-get install -y --reinstall curl libcurl4 && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo-c
 
