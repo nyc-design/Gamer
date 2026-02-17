@@ -37,6 +37,8 @@ jobs:
               - 'infrastructure/emulator-images/dolphin/Dockerfile'
             citra:
               - 'infrastructure/emulator-images/citra/Dockerfile'
+            eden:
+              - 'infrastructure/emulator-images/eden/Dockerfile'
             ppsspp:
               - 'infrastructure/emulator-images/ppsspp/Dockerfile'
             ryujinx:
@@ -68,6 +70,10 @@ jobs:
             context: infrastructure/emulator-images
             dockerfile: infrastructure/emulator-images/citra/Dockerfile
             image: ghcr.io/${{ github.repository_owner }}/gamer-citra
+          - name: eden
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/eden/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-eden
           - name: ppsspp
             context: infrastructure/emulator-images
             dockerfile: infrastructure/emulator-images/ppsspp/Dockerfile
