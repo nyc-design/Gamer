@@ -393,7 +393,7 @@ deploy() {
     "apt-get update -y",
     "apt-get install -y git curl",
     "git clone --branch $GAMER_REPO_REF $GAMER_REPO_URL /opt/gamer || (cd /opt/gamer && git fetch --all && git checkout $GAMER_REPO_REF && git pull --ff-only origin $GAMER_REPO_REF || true)",
-    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=0 ENFORCE_MODESET=0 bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
+    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=0 ENFORCE_MODESET=1 bash setup-vm.sh --auto-reboot 2>&1 | tee /var/log/gamer-setup.log"
 ]
 CLOUDINIT
 )
