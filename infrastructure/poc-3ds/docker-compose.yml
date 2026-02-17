@@ -41,6 +41,8 @@ services:
       # This env var is checked by our forked waylanddisplaysrc at startup,
       # bypassing Wolf's hardcoded pipeline string. Harmless on stock Wolf.
       - GST_WD_MULTI_OUTPUT=1
+      # Name of in-process interpipesink fed by waylanddisplaysecondary.
+      - GST_WD_SECONDARY_SINK_NAME=secondary_video
     volumes:
       # Wolf state directory — MUST mount at /etc/wolf (not a subdirectory!)
       # Wolf inspects its own Docker mounts to resolve host paths for spawned

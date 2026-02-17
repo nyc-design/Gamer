@@ -46,6 +46,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/gamer-setup.log"
 GAMER_HOME="/home/gamer"
 REBOOT_NEEDED=false
+COMPOSE_BIN=""
+WOLF_IMAGE_SELECTED="ghcr.io/games-on-whales/wolf:stable"
+ENABLE_DUAL_WOLF_BUILD="${ENABLE_DUAL_WOLF_BUILD:-1}"
+WOLF_DUAL_GST_WD_REPO="${WOLF_DUAL_GST_WD_REPO:-https://github.com/nyc-design/gst-wayland-display.git}"
+WOLF_DUAL_GST_WD_BRANCH="${WOLF_DUAL_GST_WD_BRANCH:-multi-output}"
+WOLF_DUAL_WOLF_TAG="${WOLF_DUAL_WOLF_TAG:-stable}"
+WOLF_DUAL_GST_TAG="${WOLF_DUAL_GST_TAG:-1.26.7}"
 
 # Log everything to both console and log file
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -57,6 +64,31 @@ echo "========================================="
 echo " Script dir: $SCRIPT_DIR"
 echo " Options: skip-driver=$SKIP_DRIVER auto-reboot=$AUTO_REBOOT no-start=$NO_START"
 echo ""
+
+# ── Docker compose command detection wrapper ────────────────────────────────
+detect_compose() {
+    if docker compose version &>/dev/null; then
+        COMPOSE_BIN="docker compose"
+        return
+    fi
+    if command -v docker-compose &>/dev/null; then
+        COMPOSE_BIN="docker-compose"
+        return
+    fi
+    COMPOSE_BIN=""
+}
+
+compose() {
+    if [ -z "$COMPOSE_BIN" ]; then
+        echo "  ✗ Docker Compose not found"
+        exit 1
+    fi
+    if [ "$COMPOSE_BIN" = "docker compose" ]; then
+        docker compose "$@"
+    else
+        docker-compose "$@"
+    fi
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: NVIDIA Driver
@@ -102,6 +134,19 @@ if ! command -v docker &> /dev/null; then
 else
     echo "  ✓ Docker already installed"
 fi
+
+detect_compose
+if [ -z "$COMPOSE_BIN" ]; then
+    echo "  Installing Docker Compose..."
+    apt-get update -y
+    apt-get install -y docker-compose-plugin 2>/dev/null || apt-get install -y docker-compose
+    detect_compose
+    if [ -z "$COMPOSE_BIN" ]; then
+        echo "  ✗ Failed to install Docker Compose"
+        exit 1
+    fi
+fi
+echo "  ✓ Compose command: $COMPOSE_BIN"
 
 if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
     echo "  Installing NVIDIA Container Toolkit..."
@@ -278,8 +323,31 @@ cd "$SCRIPT_DIR"
 # Pull Wolf (streaming server)
 docker pull ghcr.io/games-on-whales/wolf:stable 2>&1 | tail -3
 
+# Optionally build dual-screen Wolf image with custom gst-wayland-display.
+# Falls back to stock Wolf automatically if build fails.
+if [ "$ENABLE_DUAL_WOLF_BUILD" = "1" ] || [ "$ENABLE_DUAL_WOLF_BUILD" = "true" ]; then
+    if [ -f "$SCRIPT_DIR/wolf/Dockerfile.wolf-dual" ]; then
+        echo "  Building wolf-dual (repo=$WOLF_DUAL_GST_WD_REPO branch=$WOLF_DUAL_GST_WD_BRANCH)..."
+        if compose build wolf-dual \
+            --build-arg GST_WD_REPO="$WOLF_DUAL_GST_WD_REPO" \
+            --build-arg GST_WD_BRANCH="$WOLF_DUAL_GST_WD_BRANCH" \
+            --build-arg WOLF_TAG="$WOLF_DUAL_WOLF_TAG" \
+            --build-arg GST_TAG="$WOLF_DUAL_GST_TAG" 2>&1 | tail -10; then
+            WOLF_IMAGE_SELECTED="wolf-dual"
+            echo "  ✓ wolf-dual built successfully"
+        else
+            echo "  ⚠ wolf-dual build failed — using stock Wolf image"
+            WOLF_IMAGE_SELECTED="ghcr.io/games-on-whales/wolf:stable"
+        fi
+    else
+        echo "  ⚠ wolf dual Dockerfile missing — using stock Wolf image"
+    fi
+else
+    echo "  ℹ ENABLE_DUAL_WOLF_BUILD=$ENABLE_DUAL_WOLF_BUILD, skipping wolf-dual build"
+fi
+
 # Build Azahar emulator image
-docker compose build azahar 2>&1 | tail -5
+compose build azahar 2>&1 | tail -5
 
 echo "  ✓ Images ready:"
 docker images --format '  {{.Repository}}:{{.Tag}} ({{.Size}})' | grep -E "wolf|azahar" | head -5
@@ -334,13 +402,14 @@ if [ "$NO_START" = true ]; then
 else
     echo "[Step 9/9] Starting Wolf..."
     cd "$SCRIPT_DIR"
-    docker compose up -d wolf
+    echo "  Using image: $WOLF_IMAGE_SELECTED"
+    WOLF_IMAGE="$WOLF_IMAGE_SELECTED" compose up -d wolf
     echo "  ✓ Wolf started"
     sleep 3
-    if docker compose ps wolf 2>/dev/null | grep -q "running"; then
+    if compose ps wolf 2>/dev/null | grep -q "running"; then
         echo "  ✓ Wolf is running"
     else
-        echo "  ⚠ Wolf may have issues. Check: docker compose logs wolf"
+        echo "  ⚠ Wolf may have issues. Check: $COMPOSE_BIN logs wolf"
     fi
 fi
 
@@ -369,10 +438,10 @@ echo "   5. Select 'Azahar 3DS' → play!"
 echo ""
 echo " Useful commands:"
 echo "   cd $SCRIPT_DIR"
-echo "   docker compose logs -f wolf          # Watch Wolf logs"
+echo "   $COMPOSE_BIN logs -f wolf            # Watch Wolf logs"
 echo "   docker logs GamerAzahar 2>&1 | tail  # Emulator logs"
-echo "   docker compose down                  # Stop Wolf"
-echo "   docker compose up -d wolf            # Restart Wolf"
+echo "   $COMPOSE_BIN down                    # Stop Wolf"
+echo "   WOLF_IMAGE=$WOLF_IMAGE_SELECTED $COMPOSE_BIN up -d wolf  # Restart Wolf"
 echo "   nvidia-smi                           # GPU status"
 echo ""
 echo " Setup log saved to: $LOG_FILE"
