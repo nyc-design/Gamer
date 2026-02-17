@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ../_common/startup-app.sh /opt/gow/startup-app.sh
+COPY _common/startup-app.sh /opt/gow/startup-app.sh
 RUN chmod +x /opt/gow/startup-app.sh
 
 WORKDIR /home/retro
