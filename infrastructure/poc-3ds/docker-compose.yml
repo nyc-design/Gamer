@@ -32,6 +32,11 @@ services:
     # Falls back to stock wolf:stable for single-screen mode.
     image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf:stable}
     environment:
+      # Enable nvidia-container-runtime GPU injection.
+      # With default-runtime=nvidia in daemon.json, these env vars trigger
+      # the runtime to mount host CUDA/NVENC libs into the container.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       # Use nvidia driver volume approach (per Wolf docs) — Wolf mounts this
       # volume into spawned app containers for GPU access
       - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
