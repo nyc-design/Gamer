@@ -39,6 +39,43 @@ ARG GST_WD_REPO=https://github.com/nyc-design/gst-wayland-display.git
 ARG GST_WD_BRANCH=multi-output
 RUN git clone --branch ${GST_WD_BRANCH} --depth 1 ${GST_WD_REPO} /tmp/gst-wayland-display
 
+# Patch fork in-build to avoid secondary-stream backpressure coupling.
+# Root issue: upstream multi-output branch auto-spawns
+#   waylanddisplaysecondary ! interpipesink sync=true async=false
+# with no queue. This can stall/tear primary session when secondary
+# consumer connects/disconnects.
+#
+# This patch uses regex to be robust against whitespace variations.
+RUN python3 - <<'PY'
+import re
+from pathlib import Path
+
+p = Path('/tmp/gst-wayland-display/gst-plugin-wayland-display/src/waylandsrc/imp.rs')
+s = p.read_text()
+
+# Match the pipeline_str format! block with flexible whitespace
+# Original: waylanddisplaysecondary compositor-name={socket} ! interpipesink sync=true async=false name={sink} max-buffers=1
+pattern = r'''(let\s+pipeline_str\s*=\s*format!\s*\(\s*"waylanddisplaysecondary\s+compositor-name=\{socket\}\s*!\s*\\?\s*)interpipesink\s+sync=true\s+async=false\s+name=\{sink\}\s+max-buffers=1("[\s\S]*?socket\s*=\s*socket_name[\s\S]*?sink\s*=\s*sink_name[\s\S]*?\);)'''
+
+replacement = r'''\1queue max-size-buffers=4 leaky=downstream ! \
+                             interpipesink sync=false async=false name={sink} max-buffers=4 drop=true\2'''
+
+new_s, count = re.subn(pattern, replacement, s, count=1)
+if count == 0:
+    # Fallback: try simpler string replacement
+    old_pipe = 'interpipesink sync=true async=false name={sink} max-buffers=1'
+    new_pipe = 'queue max-size-buffers=4 leaky=downstream ! interpipesink sync=false async=false name={sink} max-buffers=4 drop=true'
+    if old_pipe in s:
+        new_s = s.replace(old_pipe, new_pipe, 1)
+        print('patched secondary pipeline (fallback method)')
+    else:
+        raise SystemExit('ERROR: Could not find secondary pipeline string to patch in waylandsrc/imp.rs')
+else:
+    print('patched secondary pipeline string in gst-wayland-display')
+
+p.write_text(new_s)
+PY
+
 # Build with CUDA support (matching upstream Wolf build)
 # Install prefix matches stock Wolf layout: plugin .so and shared lib both
 # go under /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/
