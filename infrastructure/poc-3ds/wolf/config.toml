@@ -57,9 +57,10 @@ env = [
     "LAYOUT_OPTION=4",
     # Don't fullscreen — let compositor handle window placement
     "AZAHAR_FULLSCREEN=0",
-    # Single-screen benefits from Sway window management to avoid resize artifacts
-    # when users toggle fullscreen in Azahar mid-session.
-    "RUN_SWAY=1",
+    # IMPORTANT: Disable nested compositors so Wolf's waylanddisplaysrc
+    # sees Azahar's windows directly as separate Wayland surfaces.
+    "RUN_GAMESCOPE=0",
+    "RUN_SWAY=0",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
@@ -82,15 +83,30 @@ base_create_json = """
 
 # ── Dual Screen: Secondary (Bottom Screen) ────────────────────────────────
 # Video-only app — no compositor, no Docker container.
-# Reads directly from `waylanddisplaysecondary`, which attaches to the active
-# shared compositor created by the primary Azahar app above.
+# Reads from the `secondary_video` interpipe sink emitted by our custom
+# gst-wayland-display fork in the primary app session.
 [[profiles.apps]]
 title = "Azahar 3DS (Bottom Screen)"
 start_virtual_compositor = false
 start_audio_server = false
 
+[profiles.apps.runner]
+# Keep a lightweight process alive so Wolf's process runner has a valid command.
+# Without this, some Wolf builds materialize an empty process runner and fail with:
+# "execve failed: Permission denied", which causes RTSP handshake failures.
+type = "process"
+run_cmd = "/etc/wolf/cfg/bottom-screen-keepalive.sh"
+
 [profiles.apps.video]
-source = "waylanddisplaysecondary is-live=true"
+# NOTE: Use interpipesrc here (not waylanddisplaysecondary directly).
+# The direct waylanddisplaysecondary path can negotiate non-CUDA buffers and
+# break the NVENC path with "Input buffer is not CUDA".
+source = "interpipesrc listen-to=secondary_video is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=1 block=false ! queue max-size-buffers=8 leaky=downstream"
+
+[profiles.apps.audio]
+# Keep Moonlight session audio lane alive for this video-only app.
+# Prevents session teardown from missing/empty {session_id}_audio sources.
+source = "audiotestsrc is-live=true wave=silence"
 
 # ── Single Screen Mode ──────────────────────────────────────────────────────
 # Top screen only, fullscreen — traditional single-stream gameplay.
@@ -114,7 +130,7 @@ env = [
     # SingleScreen — top screen only, fullscreen
     "LAYOUT_OPTION=1",
     "AZAHAR_FULLSCREEN=1",
-    # Settings mode should also use Sway for stable window reconfigure behavior.
+    # Single-screen benefits from Sway window management for fullscreen toggles.
     "RUN_SWAY=1",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
@@ -156,7 +172,7 @@ mounts = [
 env = [
     "ROM_OPTIONAL=1",
     "AZAHAR_FULLSCREEN=0",
-    "RUN_SWAY=0",
+    # Keep unset to launch directly without nested compositor.
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
