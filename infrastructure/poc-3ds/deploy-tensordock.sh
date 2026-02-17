@@ -329,10 +329,10 @@ CLOUDINIT
             local status_result
             status_result=$(api_get "/instances/$instance_id" 2>/dev/null || echo '{}')
             local status
-            status=$(echo "$status_result" | jq -r '.data.status // "unknown"' 2>/dev/null || echo "unknown")
+            status=$(echo "$status_result" | jq -r '.data.status // .status // "unknown"' 2>/dev/null || echo "unknown")
 
             if [ "$status" = "running" ]; then
-                ip_addr=$(echo "$status_result" | jq -r '.data.ip // .data.attributes.ip // empty' 2>/dev/null || true)
+                ip_addr=$(echo "$status_result" | jq -r '.data.ip // .data.attributes.ip // .data.ipAddress // .ip // .ipAddress // empty' 2>/dev/null || true)
                 if [ -n "$ip_addr" ]; then
                     echo ""
                     echo "========================================="
@@ -384,8 +384,9 @@ status() {
     local result
     result=$(api_get "/instances")
     echo "$result" | jq -r '
-        .data[]? |
-        "  \(.id) | \(.name // "unnamed") | \(.status) | \(.ip // "no ip")"
+        (.data[]?, .[]?) |
+        select(type == "object") |
+        "  \(.id) | \(.name // "unnamed") | \(.status // "unknown") | \(.ip // .ipAddress // "no ip")"
     ' 2>/dev/null || echo "  (no instances or error)"
     echo ""
 }
@@ -422,7 +423,7 @@ ssh_instance() {
     local result
     result=$(api_get "/instances/$id")
     local ip
-    ip=$(echo "$result" | jq -r '.data.ip // .data.attributes.ip // empty' 2>/dev/null || true)
+    ip=$(echo "$result" | jq -r '.data.ip // .data.attributes.ip // .data.ipAddress // .ip // .ipAddress // empty' 2>/dev/null || true)
     if [ -n "$ip" ]; then
         echo "Connecting to $ip..."
         ssh -o StrictHostKeyChecking=no "root@$ip"
