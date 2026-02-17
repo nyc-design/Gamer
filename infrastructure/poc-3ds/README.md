@@ -89,6 +89,28 @@ cd Gamer/infrastructure/poc-3ds
 sudo ./setup-vm.sh
 ```
 
+### 2.5 Configure storage remotes (R2 + GCS via rclone)
+
+After base VM setup, configure `rclone` remotes used by the Gamer architecture:
+
+```bash
+cd Gamer/infrastructure/poc-3ds
+
+sudo env \
+  R2_ACCOUNT_ID=... \
+  R2_ACCESS_KEY_ID=... \
+  R2_SECRET_ACCESS_KEY=... \
+  R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com \
+  R2_BUCKET_NAME=gamer-roms \
+  GCS_BUCKET_NAME=gamer-data \
+  GCS_SERVICE_ACCOUNT_JSON_B64="$(cat gcs-service-account.json | base64 -w0)" \
+  ./setup-rclone.sh
+```
+
+This writes `/etc/rclone/rclone.conf` with remotes:
+- `r2` (Cloudflare R2 for ROMs)
+- `gcs` (Google Cloud Storage for saves/configs/firmware/steam)
+
 If the NVIDIA driver was just installed, reboot and re-run:
 ```bash
 sudo reboot
