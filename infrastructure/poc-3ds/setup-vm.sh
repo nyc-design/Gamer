@@ -290,16 +290,71 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[Step 4/9] NVIDIA driver volume..."
 
+driver_volume_has_required_files() {
+    docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c \
+        '[ -f /usr/nvidia/share/glvnd/egl_vendor.d/10_nvidia.json ] && [ -f /usr/nvidia/lib/libEGL_nvidia.so.0 ] && [ -f /usr/nvidia/lib/libnvidia-allocator.so.1 ]' \
+        >/dev/null 2>&1
+}
+
+populate_driver_volume_from_host() {
+    echo "  Falling back to host-based NVIDIA volume population..."
+    docker volume create nvidia-driver-vol >/dev/null
+    docker run --rm \
+        -v nvidia-driver-vol:/usr/nvidia \
+        -v /usr/lib/x86_64-linux-gnu:/host/lib:ro \
+        -v /usr/share:/host/share:ro \
+        -v /usr/bin:/host/bin:ro \
+        alpine sh -lc '
+            set -e
+            mkdir -p /usr/nvidia/lib /usr/nvidia/bin /usr/nvidia/share/glvnd/egl_vendor.d /usr/nvidia/share/vulkan/icd.d /usr/nvidia/share/egl/egl_external_platform.d /usr/nvidia/lib/gbm
+
+            for f in /host/lib/libnvidia* /host/lib/libcuda* /host/lib/libEGL_nvidia* /host/lib/libGLX_nvidia* /host/lib/libnv*; do
+                [ -e "$f" ] && cp -a "$f" /usr/nvidia/lib/
+            done
+            [ -d /host/lib/xorg ] && cp -a /host/lib/xorg /usr/nvidia/lib/ || true
+            [ -d /host/lib/wine ] && cp -a /host/lib/wine /usr/nvidia/lib/ || true
+
+            for b in nvidia-smi nvidia-debugdump nvidia-settings nvidia-xconfig nvidia-persistenced nvidia-cuda-mps-control nvidia-cuda-mps-server; do
+                [ -x "/host/bin/$b" ] && cp -a "/host/bin/$b" /usr/nvidia/bin/ || true
+            done
+
+            if [ -f /host/share/glvnd/egl_vendor.d/10_nvidia.json ]; then
+                cp -a /host/share/glvnd/egl_vendor.d/10_nvidia.json /usr/nvidia/share/glvnd/egl_vendor.d/
+            else
+                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libEGL_nvidia.so.0\"\n  }\n}\n" > /usr/nvidia/share/glvnd/egl_vendor.d/10_nvidia.json
+            fi
+
+            if [ -f /host/share/vulkan/icd.d/nvidia_icd.json ]; then
+                cp -a /host/share/vulkan/icd.d/nvidia_icd.json /usr/nvidia/share/vulkan/icd.d/
+            else
+                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libGLX_nvidia.so.0\",\n    \"api_version\" : \"1.3.242\"\n  }\n}\n" > /usr/nvidia/share/vulkan/icd.d/nvidia_icd.json
+            fi
+
+            if [ -f /host/share/egl/egl_external_platform.d/15_nvidia_gbm.json ]; then
+                cp -a /host/share/egl/egl_external_platform.d/15_nvidia_gbm.json /usr/nvidia/share/egl/egl_external_platform.d/
+            else
+                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libnvidia-egl-gbm.so.1\"\n  }\n}\n" > /usr/nvidia/share/egl/egl_external_platform.d/15_nvidia_gbm.json
+            fi
+
+            if [ -f /host/share/egl/egl_external_platform.d/10_nvidia_wayland.json ]; then
+                cp -a /host/share/egl/egl_external_platform.d/10_nvidia_wayland.json /usr/nvidia/share/egl/egl_external_platform.d/
+            else
+                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libnvidia-egl-wayland.so.1\"\n  }\n}\n" > /usr/nvidia/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+            fi
+
+            ln -sf ../libnvidia-allocator.so.1 /usr/nvidia/lib/gbm/nvidia-drm_gbm.so
+        '
+}
+
 # Check if volume exists and is populated
 VOLUME_OK=false
 if docker volume inspect nvidia-driver-vol &>/dev/null; then
-    # Check if it actually has files
     FILE_COUNT=$(docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c 'ls /usr/nvidia/lib/ 2>/dev/null | wc -l' 2>/dev/null || echo "0")
-    if [ "$FILE_COUNT" -gt "5" ]; then
-        echo "  ✓ nvidia-driver-vol already exists and populated ($FILE_COUNT libs)"
+    if [ "$FILE_COUNT" -gt "5" ] && driver_volume_has_required_files; then
+        echo "  ✓ nvidia-driver-vol already exists and healthy ($FILE_COUNT libs)"
         VOLUME_OK=true
     else
-        echo "  ⚠ nvidia-driver-vol exists but appears empty. Recreating..."
+        echo "  ⚠ nvidia-driver-vol exists but is incomplete. Recreating..."
         docker volume rm nvidia-driver-vol 2>/dev/null || true
     fi
 fi
@@ -311,16 +366,39 @@ if [ "$VOLUME_OK" = false ]; then
         echo "    This may indicate the driver needs a reboot to activate."
         exit 1
     fi
+
     echo "  Building driver volume for NVIDIA $NV_VERSION..."
-    # Use Wolf's official driver container Dockerfile
-    curl -sf "https://raw.githubusercontent.com/games-on-whales/wolf/stable/scripts/nvidia-driver-container/Dockerfile" | \
-        docker build -t gow/nvidia-driver:latest --build-arg NV_VERSION="$NV_VERSION" -f - . 2>&1 | tail -5
-    docker volume create nvidia-driver-vol
-    # The container copies driver libs to the volume on creation
-    docker run --rm --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest
-    # Verify
+    docker volume create nvidia-driver-vol >/dev/null
+
+    OFFICIAL_BUILD_OK=false
+    for URL in \
+        "https://raw.githubusercontent.com/games-on-whales/wolf/stable/scripts/nvidia-driver-container/Dockerfile" \
+        "https://raw.githubusercontent.com/games-on-whales/wolf/main/scripts/nvidia-driver-container/Dockerfile"; do
+        if curl -sfL "$URL" -o /tmp/gow-nvidia-driver.Dockerfile; then
+            if [ -s /tmp/gow-nvidia-driver.Dockerfile ] && \
+               docker build -t gow/nvidia-driver:latest --build-arg NV_VERSION="$NV_VERSION" -f /tmp/gow-nvidia-driver.Dockerfile . >/tmp/gow-nvidia-build.log 2>&1 && \
+               docker run --rm --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest >/tmp/gow-nvidia-populate.log 2>&1; then
+                OFFICIAL_BUILD_OK=true
+                echo "  ✓ Built NVIDIA driver volume using official Wolf Dockerfile ($(basename "$URL"))"
+                break
+            fi
+        fi
+    done
+
+    if [ "$OFFICIAL_BUILD_OK" = false ]; then
+        echo "  ⚠ Official Wolf NVIDIA driver volume build failed; using host fallback."
+        docker volume rm nvidia-driver-vol >/dev/null 2>&1 || true
+        populate_driver_volume_from_host
+    fi
+
+    if ! driver_volume_has_required_files; then
+        echo "  ✗ NVIDIA driver volume is still incomplete after setup."
+        echo "    Expected /usr/nvidia/lib/libEGL_nvidia.so.0 and egl vendor json."
+        exit 1
+    fi
+
     FILE_COUNT=$(docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c 'ls /usr/nvidia/lib/ 2>/dev/null | wc -l' 2>/dev/null || echo "0")
-    echo "  ✓ nvidia-driver-vol created ($FILE_COUNT libs)"
+    echo "  ✓ nvidia-driver-vol created ($FILE_COUNT libs + NVIDIA EGL metadata)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
