@@ -1,0 +1,123 @@
+name: Build emulator images
+
+on:
+  push:
+    branches: [ main, poc-3ds-setup ]
+    paths:
+      - "infrastructure/poc-3ds/azahar/Dockerfile"
+      - "infrastructure/emulator-images/**/Dockerfile"
+      - ".github/workflows/build-emulator-images.yml"
+  pull_request:
+    paths:
+      - "infrastructure/poc-3ds/azahar/Dockerfile"
+      - "infrastructure/emulator-images/**/Dockerfile"
+      - ".github/workflows/build-emulator-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            azahar:
+              - 'infrastructure/poc-3ds/azahar/Dockerfile'
+            melonds:
+              - 'infrastructure/emulator-images/melonds/Dockerfile'
+            dolphin:
+              - 'infrastructure/emulator-images/dolphin/Dockerfile'
+            ppsspp:
+              - 'infrastructure/emulator-images/ppsspp/Dockerfile'
+            ryujinx:
+              - 'infrastructure/emulator-images/ryujinx/Dockerfile'
+            steam:
+              - 'infrastructure/emulator-images/steam/Dockerfile'
+
+  build:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.changed != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: azahar
+            context: infrastructure/poc-3ds
+            dockerfile: infrastructure/poc-3ds/azahar/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-azahar
+          - name: melonds
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/melonds/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-melonds
+          - name: dolphin
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/dolphin/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-dolphin
+          - name: ppsspp
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/ppsspp/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-ppsspp
+          - name: ryujinx
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/ryujinx/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-ryujinx
+          - name: steam
+            context: infrastructure/emulator-images
+            dockerfile: infrastructure/emulator-images/steam/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/gamer-steam
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip unchanged image
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo '${{ needs.detect-changes.outputs.changed }}' | grep -q '"${{ matrix.name }}"'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        if: steps.gate.outputs.build == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        if: steps.gate.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
