@@ -57,7 +57,9 @@ env = [
     "LAYOUT_OPTION=4",
     # Don't fullscreen — let compositor handle window placement
     "AZAHAR_FULLSCREEN=0",
-    "RUN_SWAY=0",
+    # Single-screen benefits from Sway window management to avoid resize artifacts
+    # when users toggle fullscreen in Azahar mid-session.
+    "RUN_SWAY=1",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
@@ -112,7 +114,8 @@ env = [
     # SingleScreen — top screen only, fullscreen
     "LAYOUT_OPTION=1",
     "AZAHAR_FULLSCREEN=1",
-    "RUN_SWAY=0",
+    # Settings mode should also use Sway for stable window reconfigure behavior.
+    "RUN_SWAY=1",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
