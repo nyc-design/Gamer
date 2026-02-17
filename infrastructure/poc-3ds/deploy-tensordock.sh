@@ -270,7 +270,7 @@ deploy() {
     "cd /opt/gamer && git fetch --all --tags --prune",
     "cd /opt/gamer && git checkout $GAMER_REPO_REF || git checkout -b $GAMER_REPO_REF origin/$GAMER_REPO_REF || true",
     "cd /opt/gamer && git pull --ff-only origin $GAMER_REPO_REF || true",
-    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --skip-driver --auto-reboot 2>&1 | tee /var/log/gamer-setup.log"
+    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
 ]
 CLOUDINIT
 )
@@ -344,14 +344,14 @@ CLOUDINIT
                     echo " GPU:         $gpu_display"
                     echo " Cost:        ~\$$price/hr (GPU) + compute"
                     echo ""
-                    echo " SSH:  ssh root@$ip_addr"
+                    echo " SSH:  ssh user@$ip_addr"
                     echo ""
                     echo " Check setup progress:"
-                    echo "   ssh root@$ip_addr 'tail -f /var/log/gamer-setup.log'"
+                    echo "   ssh user@$ip_addr 'tail -f /var/log/gamer-setup.log'"
                     echo ""
                     echo " Once setup completes (~5-10 min):"
                     echo "   1. SCP your ROM:"
-                    echo "      scp 'Pokemon Alpha Sapphire*.3ds' root@$ip_addr:/home/gamer/roms/pokemon-alpha-sapphire.3ds"
+                    echo "      scp 'Pokemon Alpha Sapphire*.3ds' user@$ip_addr:/home/gamer/roms/pokemon-alpha-sapphire.3ds"
                     echo "   2. Open Moonlight → Add Host → $ip_addr"
                     echo "   3. Pair and play!"
                     echo ""

@@ -30,6 +30,7 @@ SKIP_DRIVER=false
 AUTO_REBOOT=false
 NO_START=false
 CONTINUE_AFTER_REBOOT=false
+TENSORDOCK_FAST=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -37,6 +38,11 @@ for arg in "$@"; do
         --auto-reboot)       AUTO_REBOOT=true ;;
         --no-start)          NO_START=true ;;
         --continue-after-reboot) CONTINUE_AFTER_REBOOT=true ;;
+        --tensordock-fast)
+            TENSORDOCK_FAST=true
+            SKIP_DRIVER=true
+            AUTO_REBOOT=false
+            ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
@@ -63,6 +69,7 @@ echo " $(date -Iseconds)"
 echo "========================================="
 echo " Script dir: $SCRIPT_DIR"
 echo " Options: skip-driver=$SKIP_DRIVER auto-reboot=$AUTO_REBOOT no-start=$NO_START"
+echo "          tensordock-fast=$TENSORDOCK_FAST"
 echo ""
 
 # ── Docker compose command detection wrapper ────────────────────────────────
@@ -95,7 +102,16 @@ compose() {
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[Step 1/9] NVIDIA driver..."
 
-if command -v nvidia-smi &> /dev/null; then
+if [ "$TENSORDOCK_FAST" = true ]; then
+    if command -v nvidia-smi &> /dev/null; then
+        echo "  ✓ NVIDIA driver present (TensorDock fast mode)"
+        echo "    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo 'query failed')"
+    else
+        echo "  ✗ TensorDock fast mode requires a pre-installed NVIDIA driver (nvidia-smi missing)."
+        echo "    Re-run without --tensordock-fast on non-TensorDock hosts."
+        exit 1
+    fi
+elif command -v nvidia-smi &> /dev/null; then
     echo "  ✓ NVIDIA driver installed:"
     echo "    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo 'query failed')"
 elif [ "$SKIP_DRIVER" = true ]; then
@@ -169,7 +185,19 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[Step 3/9] nvidia_drm.modeset..."
 
-if [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
+if [ "$TENSORDOCK_FAST" = true ]; then
+    if [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
+        MODESET=$(cat /sys/module/nvidia_drm/parameters/modeset)
+        if [ "$MODESET" = "Y" ]; then
+            echo "  ✓ nvidia_drm.modeset already enabled (TensorDock fast mode)"
+        else
+            echo "  ⚠ nvidia_drm.modeset is '$MODESET' (TensorDock fast mode: not mutating kernel settings)"
+            echo "    Continuing without forced reboot. If performance issues appear, enable modeset manually."
+        fi
+    else
+        echo "  ⚠ nvidia_drm module parameter not found (TensorDock fast mode: skipping kernel mutation)"
+    fi
+elif [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
     MODESET=$(cat /sys/module/nvidia_drm/parameters/modeset)
     if [ "$MODESET" = "Y" ]; then
         echo "  ✓ nvidia_drm.modeset already enabled"
