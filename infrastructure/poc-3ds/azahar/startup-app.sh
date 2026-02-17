@@ -54,7 +54,7 @@ if [ -n "${ROM_FILENAME:-}" ]; then
     if [ ! -f "$ROM_PATH" ]; then
         gow_log "ROM not found at exact path: ${ROM_PATH}"
         # Auto-detect: find first .3ds/.cia/.cxi/.app file in roms directory
-        ROM_PATH=$(find /home/retro/roms/ -maxdepth 1 -type f -o -type l 2>/dev/null \
+        ROM_PATH=$(find /home/retro/roms/ -maxdepth 1 \( -type f -o -type l \) 2>/dev/null \
             | grep -iE '\.(3ds|cia|cxi|app)$' | head -1 || true)
         if [ -n "$ROM_PATH" ] && [ -f "$ROM_PATH" ]; then
             gow_log "Auto-detected ROM: ${ROM_PATH}"
