@@ -31,6 +31,7 @@ AUTO_REBOOT=false
 NO_START=false
 CONTINUE_AFTER_REBOOT=false
 TENSORDOCK_FAST=false
+ENFORCE_MODESET="${ENFORCE_MODESET:-0}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -70,6 +71,7 @@ echo "========================================="
 echo " Script dir: $SCRIPT_DIR"
 echo " Options: skip-driver=$SKIP_DRIVER auto-reboot=$AUTO_REBOOT no-start=$NO_START"
 echo "          tensordock-fast=$TENSORDOCK_FAST"
+echo "          enforce-modeset=$ENFORCE_MODESET"
 echo ""
 
 # ── Docker compose command detection wrapper ────────────────────────────────
@@ -181,7 +183,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 3: nvidia_drm.modeset (required for zero-copy pipeline)
+# Step 3: nvidia_drm.modeset (optional; enforce only when requested)
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[Step 3/9] nvidia_drm.modeset..."
 
@@ -202,25 +204,34 @@ elif [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
     if [ "$MODESET" = "Y" ]; then
         echo "  ✓ nvidia_drm.modeset already enabled"
     else
-        echo "  Enabling nvidia_drm.modeset=1..."
-        echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
-        # Also add to kernel command line for reliability
-        if [ -f /etc/default/grub ]; then
-            if ! grep -q 'nvidia-drm.modeset=1' /etc/default/grub; then
-                sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="nvidia-drm.modeset=1 /' /etc/default/grub
-                update-grub 2>/dev/null || true
+        if [ "$ENFORCE_MODESET" = "1" ] || [ "$ENFORCE_MODESET" = "true" ]; then
+            echo "  Enforcing nvidia_drm.modeset=1..."
+            echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
+            # Also add to kernel command line for reliability
+            if [ -f /etc/default/grub ]; then
+                if ! grep -q 'nvidia-drm.modeset=1' /etc/default/grub; then
+                    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="nvidia-drm.modeset=1 /' /etc/default/grub
+                    update-grub 2>/dev/null || true
+                fi
             fi
+            update-initramfs -u 2>/dev/null || true
+            REBOOT_NEEDED=true
+            echo "  ⚠ Reboot required for modeset"
+        else
+            echo "  ℹ modeset is '$MODESET' (not enforced by default)."
+            echo "    Set ENFORCE_MODESET=1 if you want script-managed kernel mutation/reboot."
         fi
-        update-initramfs -u 2>/dev/null || true
-        REBOOT_NEEDED=true
-        echo "  ⚠ Reboot required for modeset"
     fi
 else
-    echo "  ⚠ nvidia_drm module not loaded. Setting modeset for after reboot."
-    echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
-    if [ "$REBOOT_NEEDED" = false ] && command -v nvidia-smi &>/dev/null; then
-        # Driver exists but module not loaded — try loading it
-        modprobe nvidia-drm modeset=1 2>/dev/null || REBOOT_NEEDED=true
+    if [ "$ENFORCE_MODESET" = "1" ] || [ "$ENFORCE_MODESET" = "true" ]; then
+        echo "  ⚠ nvidia_drm module not loaded. Setting modeset for after reboot."
+        echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
+        if [ "$REBOOT_NEEDED" = false ] && command -v nvidia-smi &>/dev/null; then
+            # Driver exists but module not loaded — try loading it
+            modprobe nvidia-drm modeset=1 2>/dev/null || REBOOT_NEEDED=true
+        fi
+    else
+        echo "  ℹ nvidia_drm module not loaded; skipping modeset mutation (ENFORCE_MODESET=0)."
     fi
 fi
 

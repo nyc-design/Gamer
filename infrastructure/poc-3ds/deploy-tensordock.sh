@@ -270,7 +270,7 @@ deploy() {
     "cd /opt/gamer && git fetch --all --tags --prune",
     "cd /opt/gamer && git checkout $GAMER_REPO_REF || git checkout -b $GAMER_REPO_REF origin/$GAMER_REPO_REF || true",
     "cd /opt/gamer && git pull --ff-only origin $GAMER_REPO_REF || true",
-    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
+    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 ENFORCE_MODESET=0 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --auto-reboot 2>&1 | tee /var/log/gamer-setup.log"
 ]
 CLOUDINIT
 )
