@@ -8,7 +8,7 @@
 #     SeparateWindows mode (layout_option=4). Azahar creates two SDL windows.
 #     Our custom gst-wayland-display routes each window to a separate output:
 #       Window 1 (top screen) → primary space → primary video stream
-#       Window 2 (bottom screen) → secondary space → secondary_video interpipe
+#       Window 2 (bottom screen) → secondary space → waylanddisplaysecondary source
 #
 #   "Azahar 3DS (Bottom Screen)" — Lightweight secondary app for the 2nd
 #     Moonlight client. No compositor, no Docker container — just reads the
@@ -18,7 +18,7 @@
 #   "Azahar 3DS (Settings)" — No ROM, windowed, for config changes.
 #
 # Setup:
-#   1. Start Wolf with GST_WD_MULTI_OUTPUT=1 GST_WD_SECONDARY_SINK_NAME=secondary_video
+#   1. Start Wolf with GST_WD_MULTI_OUTPUT=1
 #   2. Client 1 (iPad) pairs and launches "Azahar 3DS (Dual Screen)" → top screen
 #   3. Client 2 (iPhone) pairs and launches "Azahar 3DS (Bottom Screen)" → bottom screen
 ###############################################################################
@@ -35,7 +35,7 @@ id = "3ds-gaming"
 
 # ── Dual Screen: Primary (Top Screen) ─────────────────────────────────────
 # Launches Azahar with SeparateWindows mode. The custom gst-wayland-display
-# auto-spawns a secondary pipeline that feeds "secondary_video" interpipe.
+# routes Azahar's second window to a secondary compositor output.
 [[profiles.apps]]
 title = "Azahar 3DS (Dual Screen)"
 start_virtual_compositor = true
@@ -80,15 +80,15 @@ base_create_json = """
 
 # ── Dual Screen: Secondary (Bottom Screen) ────────────────────────────────
 # Video-only app — no compositor, no Docker container.
-# Reads from the "secondary_video" interpipe that was auto-spawned by the
-# primary Azahar app above. Connect a second Moonlight client to this.
+# Reads directly from `waylanddisplaysecondary`, which attaches to the active
+# shared compositor created by the primary Azahar app above.
 [[profiles.apps]]
 title = "Azahar 3DS (Bottom Screen)"
 start_virtual_compositor = false
 start_audio_server = false
 
 [profiles.apps.video]
-source = "interpipesrc listen-to=secondary_video is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=1 leaky-type=downstream"
+source = "waylanddisplaysecondary is-live=true"
 
 # ── Single Screen Mode ──────────────────────────────────────────────────────
 # Top screen only, fullscreen — traditional single-stream gameplay.

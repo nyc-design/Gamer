@@ -38,10 +38,9 @@ services:
       - WOLF_RENDER_NODE=/dev/dri/renderD128
       - WOLF_LOG_LEVEL=INFO
       # Dual-screen: enable multi-output in gst-wayland-display.
-      # These env vars are checked by our forked waylanddisplaysrc at startup,
+      # This env var is checked by our forked waylanddisplaysrc at startup,
       # bypassing Wolf's hardcoded pipeline string. Harmless on stock Wolf.
       - GST_WD_MULTI_OUTPUT=1
-      - GST_WD_SECONDARY_SINK_NAME=secondary_video
     volumes:
       # Wolf state directory — MUST mount at /etc/wolf (not a subdirectory!)
       # Wolf inspects its own Docker mounts to resolve host paths for spawned
