@@ -376,7 +376,7 @@ cmd_setup() {
     fi
 
     # ── Step 1: Clone repo ────────────────────────────────────────────────
-    echo "[Step 1/4] Cloning Gamer repo..."
+    echo "[Step 1/5] Cloning Gamer repo..."
     ssh_cmd "$ip" "
         if [ -d /opt/gamer/.git ]; then
             cd /opt/gamer && sudo git fetch --all && sudo git checkout $GAMER_REPO_REF && sudo git pull --ff-only origin $GAMER_REPO_REF || true
@@ -390,7 +390,7 @@ cmd_setup() {
     echo "  ✓ Repo ready at /opt/gamer ($GAMER_REPO_REF)"
 
     # ── Step 2: Host bootstrap ────────────────────────────────────────────
-    echo "[Step 2/4] Running host bootstrap (setup-vm.sh)..."
+    echo "[Step 2/5] Running host bootstrap (setup-vm.sh)..."
     echo "  This installs NVIDIA driver, Docker, toolkit, creates driver volume."
     echo "  If a reboot is needed, the script auto-continues after reboot."
     echo ""
@@ -430,16 +430,11 @@ cmd_setup() {
         echo "  ✓ Host bootstrap completed (no reboot needed)"
     fi
 
-    # ── Step 3: Build images + copy Wolf config ──────────────────────────
-    echo "[Step 3/4] Building Docker images + writing Wolf config..."
+    # ── Step 3: Build/pull Docker images ─────────────────────────────────
+    echo "[Step 3/5] Building/pulling Docker images..."
     ssh_cmd "$ip" "
         set -e
         cd /opt/gamer/infrastructure/poc-3ds
-
-        # Copy Wolf config to host /etc/wolf/cfg/
-        sudo mkdir -p /etc/wolf/cfg
-        sudo cp wolf/config.toml /etc/wolf/cfg/config.toml
-        echo '  Wolf config written to /etc/wolf/cfg/config.toml'
 
         # Build Azahar image (referenced by Wolf config)
         echo '  Building gamer/azahar:poc image...'
@@ -449,11 +444,69 @@ cmd_setup() {
         echo '  Pulling Wolf image...'
         sudo docker pull ghcr.io/games-on-whales/wolf:stable
     " 2>&1 | while IFS= read -r line; do echo "  $line"; done
-
     echo "  ✓ Images ready"
 
-    # ── Step 4: Start Wolf ────────────────────────────────────────────────
-    echo "[Step 4/4] Starting Wolf via docker compose..."
+    # ── Step 4: Generate Wolf base config ─────────────────────────────────
+    # Wolf generates its own config.toml on first start with correct
+    # config_version, gstreamer pipelines, and uuid. We let it do that,
+    # then stop it and merge our Azahar app definitions in.
+    echo "[Step 4/5] Generating Wolf config + merging Azahar apps..."
+    ssh_cmd "$ip" "
+        set -e
+        cd /opt/gamer/infrastructure/poc-3ds
+
+        # If Wolf already generated a config with our apps, skip regeneration
+        if sudo grep -q 'Azahar' /etc/wolf/cfg/config.toml 2>/dev/null; then
+            echo '  Wolf config already has Azahar apps — skipping regeneration'
+        else
+            # Start Wolf briefly to generate base config
+            sudo docker compose down 2>/dev/null || true
+            sudo docker compose up -d wolf
+            echo '  Waiting for Wolf to generate base config...'
+            sleep 8
+            sudo docker compose down
+            echo '  Wolf stopped after config generation'
+
+            # Merge: keep Wolf's header (gstreamer, paired_clients, uuid)
+            # but replace default apps with our Azahar apps
+            sudo python3 -c \"
+import sys
+
+with open('/etc/wolf/cfg/config.toml') as f:
+    wolf_config = f.read()
+
+with open('/opt/gamer/infrastructure/poc-3ds/wolf/config.toml') as f:
+    our_config = f.read()
+
+# Find where Wolf's profiles start
+profiles_start = wolf_config.find('[[profiles]]')
+if profiles_start == -1:
+    header = wolf_config.rstrip()
+else:
+    header = wolf_config[:profiles_start].rstrip()
+
+# Find where our profiles/apps start
+our_profiles_start = our_config.find('[[profiles]]')
+if our_profiles_start == -1:
+    print('ERROR: No [[profiles]] found in our config!')
+    sys.exit(1)
+
+our_apps = our_config[our_profiles_start:]
+
+with open('/etc/wolf/cfg/config.toml', 'w') as f:
+    f.write(header + chr(10) + chr(10) + our_apps)
+
+print('  Config merged: Wolf base + Azahar apps')
+\"
+        fi
+
+        # Verify apps are in config
+        app_count=\$(grep -c 'title.*Azahar' /etc/wolf/cfg/config.toml || echo 0)
+        echo \"  ✓ Wolf config has \$app_count Azahar app(s)\"
+    "
+
+    # ── Step 5: Start Wolf ────────────────────────────────────────────────
+    echo "[Step 5/5] Starting Wolf..."
     ssh_cmd "$ip" "
         set -e
         cd /opt/gamer/infrastructure/poc-3ds
@@ -466,9 +519,16 @@ cmd_setup() {
         echo 'Wolf started'
 
         # Verify
-        sleep 3
+        sleep 5
         if sudo docker ps --format '{{.Names}}' | grep -qi wolf; then
             echo 'Wolf container confirmed running'
+            # Verify apps are still in config (Wolf didn't overwrite)
+            app_count=\$(grep -c 'title.*Azahar' /etc/wolf/cfg/config.toml || echo 0)
+            if [ \"\$app_count\" -gt 0 ]; then
+                echo \"Wolf has \$app_count Azahar app(s) registered\"
+            else
+                echo 'WARNING: Wolf may have overwritten config — Azahar apps missing!'
+            fi
         else
             echo 'WARNING: Wolf may not be running'
             sudo docker ps
