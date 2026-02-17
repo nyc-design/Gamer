@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libwayland-dev libinput-dev libxkbcommon-dev libgbm-dev \
     libglib2.0-dev libegl-dev libgles-dev libopengl-dev \
     libdrm-dev libudev-dev libevdev-dev \
-    libicu-dev \
+    libicu-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust + cargo-c (same toolchain version as upstream Wolf build)
