@@ -55,7 +55,7 @@ GAMER_HOME="/home/gamer"
 REBOOT_NEEDED=false
 COMPOSE_BIN=""
 WOLF_IMAGE_SELECTED="ghcr.io/games-on-whales/wolf:stable"
-ENABLE_DUAL_WOLF_BUILD="${ENABLE_DUAL_WOLF_BUILD:-1}"
+ENABLE_DUAL_WOLF_BUILD="${ENABLE_DUAL_WOLF_BUILD:-0}"
 WOLF_DUAL_GST_WD_REPO="${WOLF_DUAL_GST_WD_REPO:-https://github.com/nyc-design/gst-wayland-display.git}"
 WOLF_DUAL_GST_WD_BRANCH="${WOLF_DUAL_GST_WD_BRANCH:-multi-output}"
 WOLF_DUAL_WOLF_TAG="${WOLF_DUAL_WOLF_TAG:-stable}"
@@ -449,11 +449,15 @@ docker pull ghcr.io/games-on-whales/wolf:stable 2>&1 | tail -3
 if [ "$ENABLE_DUAL_WOLF_BUILD" = "1" ] || [ "$ENABLE_DUAL_WOLF_BUILD" = "true" ]; then
     if [ -f "$SCRIPT_DIR/wolf/Dockerfile.wolf-dual" ]; then
         echo "  Building wolf-dual (repo=$WOLF_DUAL_GST_WD_REPO branch=$WOLF_DUAL_GST_WD_BRANCH)..."
-        if compose build wolf-dual \
+        # Use docker build directly (not compose) because we need custom --build-arg values
+        if docker build \
+            -f "$SCRIPT_DIR/wolf/Dockerfile.wolf-dual" \
+            -t wolf-dual \
             --build-arg GST_WD_REPO="$WOLF_DUAL_GST_WD_REPO" \
             --build-arg GST_WD_BRANCH="$WOLF_DUAL_GST_WD_BRANCH" \
             --build-arg WOLF_TAG="$WOLF_DUAL_WOLF_TAG" \
-            --build-arg GST_TAG="$WOLF_DUAL_GST_TAG" 2>&1 | tail -10; then
+            --build-arg GST_TAG="$WOLF_DUAL_GST_TAG" \
+            "$SCRIPT_DIR/wolf" 2>&1 | tail -10; then
             WOLF_IMAGE_SELECTED="wolf-dual"
             echo "  ✓ wolf-dual built successfully"
         else

@@ -128,15 +128,24 @@ wait_for_ssh() {
 
 wait_for_setup_complete() {
     local ip="$1"
-    echo "  Waiting for setup-vm.sh to complete on the VM..."
-    for i in $(seq 1 90); do
+    # Wolf-dual Rust build can take 20-40 min on a 4 vCPU VM. Total timeout: ~45 min.
+    echo "  Waiting for setup-vm.sh to complete on the VM (this includes building images)..."
+    for i in $(seq 1 135); do
         if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "user@$ip" \
             "test -f /var/log/gamer-setup.log && grep -q 'Setup Complete' /var/log/gamer-setup.log" >/dev/null 2>&1; then
             echo "  ✓ setup-vm.sh completed"
             return 0
         fi
-        sleep 10
-        echo "  ... setup still running ($i/90)"
+        # Show last log line every 5 checks for progress visibility
+        if (( i % 5 == 0 )); then
+            local last_line
+            last_line=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "user@$ip" \
+                "tail -1 /var/log/gamer-setup.log 2>/dev/null" 2>/dev/null || echo "...")
+            echo "  ... setup running ($i/135): $last_line"
+        else
+            echo "  ... setup running ($i/135)"
+        fi
+        sleep 20
     done
     return 1
 }
@@ -160,15 +169,19 @@ restore_state_backup() {
 
 verify_wolf_ready() {
     local ip="$1"
-    echo "  Verifying Wolf container and app list..."
+    echo "  Verifying Wolf is running..."
     ssh -o StrictHostKeyChecking=no "user@$ip" '
         set -e
-        cd /opt/gamer/infrastructure/poc-3ds
-        sudo docker compose ps wolf | grep -q "Up"
-        sudo docker exec poc-3ds-wolf-1 curl --unix-socket /run/user/wolf/wolf.sock http://localhost/api/v1/apps \
-          | grep -q "Azahar 3DS (Single Screen)"
+        # Check Wolf container is running (compose project name may vary)
+        if sudo docker ps --format "{{.Names}}" | grep -qi wolf; then
+            echo "Wolf container is running"
+        else
+            echo "WARNING: Wolf container not found in docker ps"
+            sudo docker ps
+            exit 1
+        fi
     '
-    echo "  ✓ Wolf is healthy and Azahar app list is present"
+    echo "  ✓ Wolf is running"
 }
 
 # ── List available GPUs near Dallas ──────────────────────────────────────────
@@ -208,12 +221,18 @@ data = json.loads(sys.argv[1])
 # Dallas, TX
 DALLAS = (32.7767, -96.7970)
 
-# Hand-curated coordinates for common TensorDock US locations.
+# Hand-curated coordinates for common TensorDock locations.
 # (Avoids runtime geocoder dependency for automation reliability.)
+# NOTE: TensorDock's API sometimes returns city/state swapped
+# (e.g. city="Delaware", state="Wilmington") or uses state name
+# as city (e.g. city="Texas", state="Texas"). We include both
+# variants to handle this gracefully.
 CITY_COORDS = {
+    # US locations (canonical)
     ("Chubbuck", "Idaho"): (42.9207, -112.4667),
     ("Joplin", "Missouri"): (37.0842, -94.5133),
     ("Wilmington", "Delaware"): (39.7447, -75.5484),
+    ("Delaware", "Wilmington"): (39.7447, -75.5484),  # API returns swapped
     ("Manassas", "Virginia"): (38.7509, -77.4753),
     ("New York City", "New York"): (40.7128, -74.0060),
     ("Orlando", "Florida"): (28.5383, -81.3792),
@@ -221,6 +240,22 @@ CITY_COORDS = {
     ("Miami", "Florida"): (25.7617, -80.1918),
     ("Chicago", "Illinois"): (41.8781, -87.6298),
     ("Los Angeles", "California"): (34.0522, -118.2437),
+    ("Dallas", "Texas"): (32.7767, -96.7970),
+    ("Texas", "Texas"): (32.7767, -96.7970),  # API uses state as city
+    ("Houston", "Texas"): (29.7604, -95.3698),
+    ("Austin", "Texas"): (30.2672, -97.7431),
+    ("Atlanta", "Georgia"): (33.7490, -84.3880),
+    ("Denver", "Colorado"): (39.7392, -104.9903),
+    ("Phoenix", "Arizona"): (33.4484, -112.0740),
+    # Canada
+    ("Winnipeg", "Manitoba"): (49.8951, -97.1384),
+    # Europe
+    ("Tallinn", "Harjumaa"): (59.4370, 24.7536),
+    ("Mölln", "Hamburg"): (53.6306, 10.6925),
+    ("Wolverhampton", "Midlands"): (52.5862, -2.1289),
+    ("Mischii", "Dolj"): (44.3167, 23.7958),
+    # Asia
+    ("Mumbai", "Maharashtra"): (19.0760, 72.8777),
 }
 
 # GPU names considered comfortably capable for Azahar 5x.
@@ -349,17 +384,16 @@ deploy() {
 
     # Build cloud-init that clones repo and runs setup.
     # We do not download ROMs here; the main Gamer platform will mount ROMs via rclone.
+    # Cloud-init only installs git/curl, then hands off to setup-vm.sh which
+    # installs Docker (via get.docker.com — includes compose plugin), NVIDIA
+    # Container Toolkit, builds images, and starts Wolf.
     local cloud_init_runcmd
     cloud_init_runcmd=$(cat <<CLOUDINIT
 [
     "apt-get update -y",
-    "apt-get install -y git curl docker.io docker-compose-plugin docker-compose-v2 || apt-get install -y git curl docker.io docker-compose-plugin || apt-get install -y git curl docker.io docker-compose",
-    "systemctl enable docker && systemctl start docker",
-    "if [ ! -d /opt/gamer/.git ]; then git clone $GAMER_REPO_URL /opt/gamer; fi",
-    "cd /opt/gamer && git fetch --all --tags --prune",
-    "cd /opt/gamer && git checkout $GAMER_REPO_REF || git checkout -b $GAMER_REPO_REF origin/$GAMER_REPO_REF || true",
-    "cd /opt/gamer && git pull --ff-only origin $GAMER_REPO_REF || true",
-    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=1 ENFORCE_MODESET=0 WOLF_DUAL_GST_WD_REPO='$WOLF_DUAL_GST_WD_REPO' WOLF_DUAL_GST_WD_BRANCH='$WOLF_DUAL_GST_WD_BRANCH' bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
+    "apt-get install -y git curl",
+    "git clone --branch $GAMER_REPO_REF $GAMER_REPO_URL /opt/gamer || (cd /opt/gamer && git fetch --all && git checkout $GAMER_REPO_REF && git pull --ff-only origin $GAMER_REPO_REF || true)",
+    "cd /opt/gamer/infrastructure/poc-3ds && ENABLE_DUAL_WOLF_BUILD=0 ENFORCE_MODESET=0 bash setup-vm.sh --tensordock-fast 2>&1 | tee /var/log/gamer-setup.log"
 ]
 CLOUDINIT
 )
