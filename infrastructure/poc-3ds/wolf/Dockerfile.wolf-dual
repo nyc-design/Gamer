@@ -40,9 +40,11 @@ ARG GST_WD_BRANCH=multi-output
 RUN git clone --branch ${GST_WD_BRANCH} --depth 1 ${GST_WD_REPO} /tmp/gst-wayland-display
 
 # Build with CUDA support (matching upstream Wolf build)
+# Install prefix matches stock Wolf layout: plugin .so and shared lib both
+# go under /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/
 WORKDIR /tmp/gst-wayland-display
 RUN cargo cinstall --features="cuda" \
-    --prefix=/usr/local/lib/x86_64-linux-gnu/ \
+    --prefix=/usr/local/ \
     --libdir=/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0
 
 # --- Runtime: stock Wolf with our custom .so overlay ---
@@ -51,7 +53,8 @@ FROM ghcr.io/games-on-whales/wolf:${WOLF_TAG}
 # Replace the gst-wayland-display plugin with our multi-output version
 COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwaylanddisplaysrc.so \
     /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwaylanddisplaysrc.so
-COPY --from=builder /usr/local/lib/liblibgstwaylanddisplay* /usr/local/lib/
+COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/liblibgstwaylanddisplay.so* \
+    /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/
 
 # Refresh shared library cache
 RUN ldconfig
