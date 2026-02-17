@@ -49,20 +49,34 @@ fi
 
 # Determine ROM path (optional for settings-only mode)
 ROM_PATH=""
-if [ -n "${ROM_FILENAME}" ]; then
+if [ -n "${ROM_FILENAME:-}" ]; then
     ROM_PATH="/home/retro/roms/${ROM_FILENAME}"
     if [ ! -f "$ROM_PATH" ]; then
-        gow_log "ERROR: ROM not found at ${ROM_PATH}"
-        gow_log "Available ROMs:"
-        ls -la /home/retro/roms/ 2>/dev/null || echo "  (empty)"
-        # Keep container alive for debugging
+        gow_log "ROM not found at exact path: ${ROM_PATH}"
+        # Auto-detect: find first .3ds/.cia/.cxi/.app file in roms directory
+        ROM_PATH=$(find /home/retro/roms/ -maxdepth 1 -type f -o -type l 2>/dev/null \
+            | grep -iE '\.(3ds|cia|cxi|app)$' | head -1 || true)
+        if [ -n "$ROM_PATH" ] && [ -f "$ROM_PATH" ]; then
+            gow_log "Auto-detected ROM: ${ROM_PATH}"
+        else
+            gow_log "ERROR: No ROM files found in /home/retro/roms/"
+            gow_log "Available files:"
+            ls -la /home/retro/roms/ 2>/dev/null || echo "  (empty)"
+            sleep 3600
+            exit 1
+        fi
+    fi
+elif [ "${ROM_OPTIONAL:-0}" != "1" ]; then
+    # No ROM_FILENAME set — try auto-detect
+    ROM_PATH=$(find /home/retro/roms/ -maxdepth 1 -type f -o -type l 2>/dev/null \
+        | grep -iE '\.(3ds|cia|cxi|app)$' | head -1 || true)
+    if [ -n "$ROM_PATH" ] && [ -f "$ROM_PATH" ]; then
+        gow_log "No ROM_FILENAME set — auto-detected: ${ROM_PATH}"
+    else
+        gow_log "ERROR: ROM_FILENAME is not set and no ROM files found in /home/retro/roms/"
         sleep 3600
         exit 1
     fi
-elif [ "${ROM_OPTIONAL:-0}" != "1" ]; then
-    gow_log "ERROR: ROM_FILENAME is not set and ROM_OPTIONAL is not enabled"
-    sleep 3600
-    exit 1
 else
     gow_log "ROM_OPTIONAL=1: launching Azahar without a ROM (settings mode)"
 fi
