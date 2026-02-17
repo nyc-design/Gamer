@@ -18,7 +18,7 @@ ARG GST_TAG=1.26.7
 FROM ghcr.io/games-on-whales/gstreamer:${GST_TAG} AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git build-essential pkg-config \
+    curl ca-certificates git build-essential pkg-config \
     libwayland-dev libinput-dev libxkbcommon-dev libgbm-dev \
     libglib2.0-dev libegl-dev libgles-dev libopengl-dev \
     libdrm-dev libudev-dev libevdev-dev \
