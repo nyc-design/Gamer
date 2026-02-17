@@ -18,16 +18,18 @@ ARG GST_TAG=1.26.7
 FROM ghcr.io/games-on-whales/gstreamer:${GST_TAG} AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget ca-certificates git build-essential pkg-config \
+    ca-certificates git build-essential pkg-config \
     libwayland-dev libinput-dev libxkbcommon-dev libgbm-dev \
     libglib2.0-dev libegl-dev libgles-dev libopengl-dev \
     libdrm-dev libudev-dev libevdev-dev \
+    libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (same version as upstream Wolf build)
-# Use wget instead of curl — the GStreamer base image ships a curl linked
-# against ICU libs (libicuuc.so.76) that aren't present in the container.
-RUN wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1
+# The GStreamer base image has /usr/local/lib in LD path with libs linked
+# against libicuuc.so.76 which isn't installed. Install libicu-dev above
+# to provide it, then curl works normally.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo-c
 
