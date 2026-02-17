@@ -28,13 +28,20 @@ services:
   # the azahar container with the correct GPU, audio, and display access.
   ###########################################################################
   wolf:
-    image: ghcr.io/games-on-whales/wolf:stable
+    # Use wolf-dual for dual-screen support (custom gst-wayland-display .so overlay).
+    # Falls back to stock wolf:stable for single-screen mode.
+    image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf:stable}
     environment:
       # Use nvidia driver volume approach (per Wolf docs) — Wolf mounts this
       # volume into spawned app containers for GPU access
       - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
       - WOLF_RENDER_NODE=/dev/dri/renderD128
       - WOLF_LOG_LEVEL=INFO
+      # Dual-screen: enable multi-output in gst-wayland-display.
+      # These env vars are checked by our forked waylanddisplaysrc at startup,
+      # bypassing Wolf's hardcoded pipeline string. Harmless on stock Wolf.
+      - GST_WD_MULTI_OUTPUT=1
+      - GST_WD_SECONDARY_SINK_NAME=secondary_video
     volumes:
       # Wolf state directory — MUST mount at /etc/wolf (not a subdirectory!)
       # Wolf inspects its own Docker mounts to resolve host paths for spawned
@@ -63,6 +70,21 @@ services:
       - /dev/nvidia-modeset
     network_mode: host
     restart: unless-stopped
+
+  ###########################################################################
+  # Wolf Dual-Screen — custom build with multi-output gst-wayland-display
+  #
+  # Only needed for dual-screen streaming. Build with:
+  #   docker compose build wolf-dual
+  # Then set WOLF_IMAGE=wolf-dual in .env or environment before `docker compose up`.
+  ###########################################################################
+  wolf-dual:
+    build:
+      context: ./wolf
+      dockerfile: Dockerfile.wolf-dual
+    image: wolf-dual
+    profiles:
+      - build-only
 
   ###########################################################################
   # Azahar 3DS Emulator — pre-built image

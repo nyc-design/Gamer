@@ -3,20 +3,24 @@
 #
 # Placed at /etc/wolf/cfg/config.toml on the VM.
 #
-# App modes:
-#   "Azahar 3DS (Dual Screen)" — SeparateWindows mode (layout_option=4)
-#     Azahar creates two SDL windows (top + bottom screen).
-#     Sway tiles them side-by-side in one compositor output.
-#     This validates the foundation for per-window stream splitting.
+# Dual-screen architecture:
+#   "Azahar 3DS (Dual Screen)" — Primary app that launches the emulator in
+#     SeparateWindows mode (layout_option=4). Azahar creates two SDL windows.
+#     Our custom gst-wayland-display routes each window to a separate output:
+#       Window 1 (top screen) → primary space → primary video stream
+#       Window 2 (bottom screen) → secondary space → secondary_video interpipe
 #
-#   "Azahar 3DS (Single Screen)" — Top screen only (layout_option=1)
-#     Traditional single-screen mode for gameplay-focused testing.
+#   "Azahar 3DS (Bottom Screen)" — Lightweight secondary app for the 2nd
+#     Moonlight client. No compositor, no Docker container — just reads the
+#     secondary_video interpipe sink that was auto-spawned by the primary.
 #
+#   "Azahar 3DS (Single Screen)" — Traditional single-screen for testing.
 #   "Azahar 3DS (Settings)" — No ROM, windowed, for config changes.
 #
-# Dual-screen architecture goal (requires Wolf source changes):
-#   Each SDL window → separate Wayland output → separate stream → separate
-#   Moonlight app. See PR spec: Session Group + Stream Source Selection.
+# Setup:
+#   1. Start Wolf with GST_WD_MULTI_OUTPUT=1 GST_WD_SECONDARY_SINK_NAME=secondary_video
+#   2. Client 1 (iPad) pairs and launches "Azahar 3DS (Dual Screen)" → top screen
+#   3. Client 2 (iPhone) pairs and launches "Azahar 3DS (Bottom Screen)" → bottom screen
 ###############################################################################
 
 hostname = "gamer-vm"
@@ -29,9 +33,9 @@ support_hevc = true
 [[profiles]]
 id = "3ds-gaming"
 
-# ── Dual Screen Mode ────────────────────────────────────────────────────────
-# Azahar SeparateWindows: two SDL windows tiled by Sway in one stream.
-# Tests that Azahar correctly creates two independent Wayland surfaces.
+# ── Dual Screen: Primary (Top Screen) ─────────────────────────────────────
+# Launches Azahar with SeparateWindows mode. The custom gst-wayland-display
+# auto-spawns a secondary pipeline that feeds "secondary_video" interpipe.
 [[profiles.apps]]
 title = "Azahar 3DS (Dual Screen)"
 start_virtual_compositor = true
@@ -51,9 +55,9 @@ env = [
     "ROM_FILENAME=pokemon-alpha-sapphire.3ds",
     # SeparateWindows mode — Azahar creates two windows
     "LAYOUT_OPTION=4",
-    # Don't fullscreen — let Sway tile both windows
+    # Don't fullscreen — let compositor handle window placement
     "AZAHAR_FULLSCREEN=0",
-    "RUN_SWAY=1",
+    "RUN_SWAY=0",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
@@ -73,6 +77,18 @@ base_create_json = """
     }
 }
 """
+
+# ── Dual Screen: Secondary (Bottom Screen) ────────────────────────────────
+# Video-only app — no compositor, no Docker container.
+# Reads from the "secondary_video" interpipe that was auto-spawned by the
+# primary Azahar app above. Connect a second Moonlight client to this.
+[[profiles.apps]]
+title = "Azahar 3DS (Bottom Screen)"
+start_virtual_compositor = false
+start_audio_server = false
+
+[profiles.apps.video]
+source = "interpipesrc listen-to=secondary_video is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=1 leaky-type=downstream"
 
 # ── Single Screen Mode ──────────────────────────────────────────────────────
 # Top screen only, fullscreen — traditional single-stream gameplay.
@@ -96,7 +112,7 @@ env = [
     # SingleScreen — top screen only, fullscreen
     "LAYOUT_OPTION=1",
     "AZAHAR_FULLSCREEN=1",
-    "RUN_SWAY=1",
+    "RUN_SWAY=0",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
@@ -137,7 +153,7 @@ mounts = [
 env = [
     "ROM_OPTIONAL=1",
     "AZAHAR_FULLSCREEN=0",
-    "RUN_SWAY=1",
+    "RUN_SWAY=0",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
