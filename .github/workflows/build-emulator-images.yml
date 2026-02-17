@@ -4,13 +4,13 @@ on:
   push:
     branches: [ main, poc-3ds-setup ]
     paths:
-      - "infrastructure/poc-3ds/azahar/Dockerfile"
-      - "infrastructure/emulator-images/**/Dockerfile"
+      - "infrastructure/poc-3ds/azahar/**"
+      - "infrastructure/emulator-images/**"
       - ".github/workflows/build-emulator-images.yml"
   pull_request:
     paths:
-      - "infrastructure/poc-3ds/azahar/Dockerfile"
-      - "infrastructure/emulator-images/**/Dockerfile"
+      - "infrastructure/poc-3ds/azahar/**"
+      - "infrastructure/emulator-images/**"
       - ".github/workflows/build-emulator-images.yml"
   workflow_dispatch:
 
@@ -30,21 +30,28 @@ jobs:
         with:
           filters: |
             azahar:
-              - 'infrastructure/poc-3ds/azahar/Dockerfile'
+              - 'infrastructure/poc-3ds/azahar/**'
             melonds:
-              - 'infrastructure/emulator-images/melonds/Dockerfile'
+              - 'infrastructure/emulator-images/melonds/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
             dolphin:
-              - 'infrastructure/emulator-images/dolphin/Dockerfile'
+              - 'infrastructure/emulator-images/dolphin/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
             citra:
-              - 'infrastructure/emulator-images/citra/Dockerfile'
+              - 'infrastructure/emulator-images/citra/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
             eden:
-              - 'infrastructure/emulator-images/eden/Dockerfile'
+              - 'infrastructure/emulator-images/eden/**'
+              - 'infrastructure/emulator-images/_common/**'
             ppsspp:
-              - 'infrastructure/emulator-images/ppsspp/Dockerfile'
+              - 'infrastructure/emulator-images/ppsspp/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
             ryujinx:
-              - 'infrastructure/emulator-images/ryujinx/Dockerfile'
+              - 'infrastructure/emulator-images/ryujinx/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
             steam:
-              - 'infrastructure/emulator-images/steam/Dockerfile'
+              - 'infrastructure/emulator-images/steam/**'
+              - 'infrastructure/emulator-images/_common/30-nvidia-readonly-safe.sh'
 
   build:
     runs-on: ubuntu-latest
