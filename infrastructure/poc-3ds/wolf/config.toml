@@ -21,6 +21,12 @@
 #   1. Start Wolf with GST_WD_MULTI_OUTPUT=1
 #   2. Client 1 (iPad) pairs and launches "Azahar 3DS (Dual Screen)" → top screen
 #   3. Client 2 (iPhone) pairs and launches "Azahar 3DS (Bottom Screen)" → bottom screen
+#
+# Shader support:
+#   Set GST_WD_SHADER_PRESET=/etc/wolf/shaders/your-preset.slangp on the Wolf
+#   container to apply RetroArch .slangp shader presets to the video stream.
+#   Optional: GST_WD_SHADER_PARAMS="PARAM=1.0;OTHER=0.5" for parameter overrides.
+#   For dual-screen, use GST_WD_SECONDARY_SHADER_PRESET for the bottom screen.
 ###############################################################################
 
 hostname = "gamer-vm"
