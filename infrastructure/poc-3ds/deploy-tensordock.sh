@@ -122,10 +122,10 @@ find_best_location_for_dallas() {
 
     # We prioritize distance to Dallas first, then price.
     # "Capable" means GPUs strong enough for Azahar @ 5x on this PoC.
-    python3 - <<'PY' <<<"$response"
+    python3 - "$response" <<'PY'
 import json, math, sys
 
-data = json.load(sys.stdin)
+data = json.loads(sys.argv[1])
 
 # Dallas, TX
 DALLAS = (32.7767, -96.7970)
