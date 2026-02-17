@@ -25,9 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (same version as upstream Wolf build)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# The GStreamer base image may have a broken curl (missing libicuuc.so), so
+# reinstall curl from apt to get a working binary for rustup download.
+RUN apt-get install -y --reinstall curl libcurl4 && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup install 1.91.1 && rustup default 1.91.1
 RUN cargo install cargo-c
 
 # Clone our fork with multi-output support
