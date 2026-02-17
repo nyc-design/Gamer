@@ -51,7 +51,9 @@ RUN cargo cinstall --features="cuda" \
 FROM ghcr.io/games-on-whales/wolf:${WOLF_TAG}
 
 # Replace the gst-wayland-display plugin with our multi-output version
-COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwaylanddisplaysrc.so \
+# cargo cinstall puts the GStreamer plugin in {libdir}/gstreamer-1.0/ which
+# creates a doubled path, but the shared lib goes directly into {libdir}.
+COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/gstreamer-1.0/libgstwaylanddisplaysrc.so \
     /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwaylanddisplaysrc.so
 COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/liblibgstwaylanddisplay.so* \
     /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/
