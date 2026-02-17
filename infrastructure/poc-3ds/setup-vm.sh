@@ -357,8 +357,8 @@ docker images --format '  {{.Repository}}:{{.Tag}} ({{.Size}})' | grep -E "wolf|
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[Step 8/9] Firewall..."
 
-# Moonlight protocol ports
-TCP_PORTS="47984 47989 47999 48010"
+# SSH + Moonlight protocol ports
+TCP_PORTS="22 47984 47989 47999 48010"
 UDP_PORTS="47998:48010"
 UDP_EXTRA="48100 48200"
 
