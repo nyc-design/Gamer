@@ -11,7 +11,9 @@ source /opt/gow/bash-lib/utils.sh
 # Expected env vars (set by Wolf config or Gamer Agent):
 #   ROM_FILENAME     - Name of ROM file in /home/retro/roms/ (e.g., "game.3ds")
 #   FAKETIME         - Optional fake time string (e.g., "2024-01-01 12:00:00")
-#   RUN_SWAY         - Set to "1" to use Sway compositor (recommended for Azahar)
+#   RUN_SWAY         - Set to "1" to use Sway compositor (single-screen/settings).
+#                      Keep "0" for dual-screen SeparateWindows to avoid nested
+#                      compositor stutter under Wolf.
 #   LAYOUT_OPTION    - Override layout_option in qt-config.ini at startup
 #                      0=Default(stacked), 1=SingleScreen, 4=SeparateWindows
 #   AZAHAR_FULLSCREEN - 0=windowed, 1=fullscreen (ignored for SeparateWindows)
@@ -23,6 +25,19 @@ gow_log "ROM_FILENAME=${ROM_FILENAME:-<not set>}"
 gow_log "LAYOUT_OPTION=${LAYOUT_OPTION:-<default from config>}"
 gow_log "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<not set>}"
 gow_log "PULSE_SERVER=${PULSE_SERVER:-<not set>}"
+
+# GOW launch-comp treats RUN_SWAY / RUN_GAMESCOPE as "enabled if non-empty"
+# (it does not parse boolean values). Normalize common false values so that
+# RUN_SWAY=0 actually disables Sway.
+#
+# We also track explicit disables via _DISABLED flags so we don't
+# auto-enable compositors that were explicitly turned off.
+case "${RUN_SWAY:-}" in
+    0|false|FALSE|no|NO|off|OFF) unset RUN_SWAY; RUN_SWAY_DISABLED=1 ;;
+esac
+case "${RUN_GAMESCOPE:-}" in
+    0|false|FALSE|no|NO|off|OFF) unset RUN_GAMESCOPE; RUN_GAMESCOPE_DISABLED=1 ;;
+esac
 
 # libfaketime — only activate if FAKETIME is set
 if [ -n "$FAKETIME" ]; then
@@ -104,8 +119,21 @@ fi
 ACTIVE_LAYOUT=$(grep -oP 'layout_option=\K\d+' /home/retro/config/azahar-emu/qt-config.ini 2>/dev/null || echo "0")
 gow_log "Active layout_option=${ACTIVE_LAYOUT}"
 
-# Launch via Sway compositor (required for Wayland rendering)
-# The `launcher` function from launch-comp.sh handles Sway/Gamescope setup
+# In dual-screen mode, prefer Gamescope over Sway by default.
+# Azahar's AppImage bundles Qt/XCB (and may not include a compatible Wayland
+# plugin), so pure direct-Wayland launch can fail. Gamescope provides the
+# required Xwayland path with much lower overhead than full Sway.
+#
+# HOWEVER: If RUN_GAMESCOPE was explicitly set to 0/false, respect that.
+# This allows Wolf's custom waylanddisplaysrc to see Azahar's windows directly.
+if [ "$ACTIVE_LAYOUT" = "4" ] && [ -z "${RUN_SWAY:-}" ] && [ -z "${RUN_GAMESCOPE:-}" ] && [ -z "${RUN_GAMESCOPE_DISABLED:-}" ]; then
+    export RUN_GAMESCOPE=1
+    gow_log "Dual-screen mode: enabling RUN_GAMESCOPE=1 (no RUN_SWAY)"
+fi
+
+# Launch via GOW compositor wrapper.
+# The `launcher` function from launch-comp.sh handles direct launch vs
+# Sway/Gamescope based on RUN_* env vars.
 source /opt/gow/launch-comp.sh
 
 # Build launch arguments
