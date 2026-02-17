@@ -1,12 +1,14 @@
 #!/bin/bash
 ###############################################################################
-# TensorDock GPU VM Deployment — Provision + Setup
+# TensorDock GPU VM Deployment — Multi-Emulator Gaming
+#
+# Generalized deployment script that supports ALL emulators (not just Azahar).
+# The emulator selection happens via Wolf app profiles in config.toml —
+# the user picks which emulator to launch from their Moonlight client.
 #
 # Two-step deployment:
 #   1. provision — Create VM via TensorDock API (returns instance ID + IP)
-#   2. setup    — SSH in, bootstrap host, build images, start Wolf
-#
-# The split lets you re-run setup after a failed attempt without reprovisioning.
+#   2. setup    — SSH in, bootstrap host, pull images, start Wolf
 #
 # Prerequisites:
 #   - TENSORDOCK_API_TOKEN in .env file or environment
@@ -14,21 +16,29 @@
 #   - jq, curl, python3 installed locally
 #
 # Usage:
-#   ./deploy-tensordock.sh provision        # Create VM, save instance ID + IP
-#   ./deploy-tensordock.sh setup [IP]       # Bootstrap host + start Wolf
-#   ./deploy-tensordock.sh deploy           # provision + setup in one shot
-#   ./deploy-tensordock.sh --list           # List available GPUs near Dallas
-#   ./deploy-tensordock.sh --status         # Check instance status
-#   ./deploy-tensordock.sh --stop [ID]      # Stop an instance
-#   ./deploy-tensordock.sh --delete [ID]    # Delete an instance
-#   ./deploy-tensordock.sh --ssh [IP]       # SSH into instance
+#   ./deploy-tensordock.sh provision         # Create VM, save instance ID + IP
+#   ./deploy-tensordock.sh setup [IP]        # Bootstrap host + start Wolf
+#   ./deploy-tensordock.sh deploy            # provision + setup in one shot
+#   ./deploy-tensordock.sh --list            # List available GPUs near Dallas
+#   ./deploy-tensordock.sh --status          # Check instance status
+#   ./deploy-tensordock.sh --stop [ID]       # Stop an instance
+#   ./deploy-tensordock.sh --delete [ID]     # Delete an instance
+#   ./deploy-tensordock.sh --ssh [IP]        # SSH into instance
+#
+# Environment variables:
+#   TENSORDOCK_API_TOKEN        Required: TensorDock API auth
+#   TENSORDOCK_SSH_PUBLIC_KEY   Optional: override SSH key detection
+#   GAMER_REPO_URL              Optional: Git repo URL (default: GitHub)
+#   GAMER_REPO_REF              Optional: Git branch (default: current branch)
+#   WOLF_IMAGE                  Optional: wolf image (default: stock stable)
+#   EMULATOR_IMAGES             Optional: space-separated list of extra images to pull
 ###############################################################################
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_BASE="https://dashboard.tensordock.com/api/v2"
-VM_NAME="gamer-3ds-poc"
+VM_NAME="gamer-vm"
 STATE_FILE="$SCRIPT_DIR/.tensordock-instance"
 GAMER_REPO_URL="${GAMER_REPO_URL:-https://github.com/nyc-design/Gamer.git}"
 if git -C "$SCRIPT_DIR/../.." rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -218,7 +228,7 @@ list_gpus() {
 cmd_provision() {
     load_token
     echo "========================================="
-    echo " Provisioning TensorDock VM"
+    echo " Provisioning TensorDock Gaming VM"
     echo "========================================="
     echo ""
 
@@ -348,7 +358,7 @@ cmd_provision() {
 }
 
 ###############################################################################
-# SETUP — SSH in, bootstrap host, build images, start Wolf
+# SETUP — SSH in, bootstrap host, pull images, start Wolf
 ###############################################################################
 cmd_setup() {
     local ip="${1:-}"
@@ -392,12 +402,9 @@ cmd_setup() {
     # ── Step 2: Host bootstrap ────────────────────────────────────────────
     echo "[Step 2/5] Running host bootstrap (setup-vm.sh)..."
     echo "  This installs NVIDIA driver, Docker, toolkit, creates driver volume."
-    echo "  If a reboot is needed, the script auto-continues after reboot."
     echo ""
 
-    # Run setup-vm.sh. If it triggers a reboot (exit 0 after reboot command),
-    # SSH will disconnect. We then wait for the VM to come back and check if
-    # the continue service completed the rest.
+    # setup-vm.sh is shared with poc-3ds (same host-level requirements)
     local setup_exit=0
     ssh_cmd "$ip" "cd /opt/gamer/infrastructure/poc-3ds && sudo bash setup-vm.sh --auto-reboot 2>&1" || setup_exit=$?
 
@@ -430,36 +437,51 @@ cmd_setup() {
         echo "  ✓ Host bootstrap completed (no reboot needed)"
     fi
 
-    # ── Step 3: Build/pull Docker images ─────────────────────────────────
-    echo "[Step 3/5] Building/pulling Docker images..."
+    # ── Step 2.5: Create shader presets directory ─────────────────────────
+    echo "  Creating shader presets directory..."
+    ssh_cmd "$ip" "sudo mkdir -p /home/gamer/shaders && sudo chown user:user /home/gamer/shaders"
+    echo "  ✓ /home/gamer/shaders ready (mount shaders here, or set GST_WD_SHADER_PRESET)"
+
+    # ── Step 3: Pull/build Docker images ──────────────────────────────────
+    echo "[Step 3/5] Pulling emulator images..."
     ssh_cmd "$ip" "
         set -e
-        cd /opt/gamer/infrastructure/poc-3ds
+        cd /opt/gamer/infrastructure/gaming-vm
 
-        # Build Azahar image (referenced by Wolf config)
-        echo '  Building gamer/azahar:poc image...'
-        sudo docker build -t gamer/azahar:poc -f azahar/Dockerfile azahar/
+        # Build Azahar (local image, not on GHCR yet)
+        echo '  Building gamer/azahar:poc...'
+        sudo docker build -t gamer/azahar:poc -f ../poc-3ds/azahar/Dockerfile ../poc-3ds/azahar/
 
-        # Pull Wolf images (stock + dual-screen)
-        echo '  Pulling Wolf stock image...'
+        # Pull Wolf
+        echo '  Pulling Wolf...'
         sudo docker pull ghcr.io/games-on-whales/wolf:stable
-        echo '  Pulling Wolf dual-screen image...'
-        sudo docker pull ghcr.io/nyc-design/wolf-dual:latest || echo '  ⚠ wolf-dual pull failed (optional)'
+
+        # Pull all GHCR emulator images
+        IMAGES=(
+            ghcr.io/nyc-design/gamer-melonds:latest
+            ghcr.io/nyc-design/gamer-dolphin:latest
+            ghcr.io/nyc-design/gamer-citra:latest
+            ghcr.io/nyc-design/gamer-ppsspp:latest
+            ghcr.io/nyc-design/gamer-ryujinx:latest
+            ghcr.io/nyc-design/gamer-steam:latest
+        )
+        for img in \"\${IMAGES[@]}\"; do
+            echo \"  Pulling \$img...\"
+            sudo docker pull \"\$img\" 2>/dev/null || echo \"    ⚠ Failed to pull \$img (not built yet?)\"
+        done
     " 2>&1 | while IFS= read -r line; do echo "  $line"; done
     echo "  ✓ Images ready"
 
-    # ── Step 4: Generate Wolf base config ─────────────────────────────────
-    # Wolf generates its own config.toml on first start with correct
-    # config_version, gstreamer pipelines, and uuid. We let it do that,
-    # then stop it and merge our Azahar app definitions in.
-    echo "[Step 4/5] Generating Wolf config + merging Azahar apps..."
+    # ── Step 4: Generate Wolf config + merge emulator apps ─────────────────
+    echo "[Step 4/5] Generating Wolf config with all emulator apps..."
     ssh_cmd "$ip" "
         set -e
-        cd /opt/gamer/infrastructure/poc-3ds
+        cd /opt/gamer/infrastructure/gaming-vm
 
         # If Wolf already generated a config with our apps, skip regeneration
-        if sudo grep -q 'Azahar' /etc/wolf/cfg/config.toml 2>/dev/null; then
-            echo '  Wolf config already has Azahar apps — skipping regeneration'
+        if sudo grep -q 'Azahar' /etc/wolf/cfg/config.toml 2>/dev/null && \
+           sudo grep -q 'melonDS' /etc/wolf/cfg/config.toml 2>/dev/null; then
+            echo '  Wolf config already has emulator apps — skipping regeneration'
         else
             # Start Wolf briefly to generate base config
             sudo docker compose down 2>/dev/null || true
@@ -469,70 +491,54 @@ cmd_setup() {
             sudo docker compose down
             echo '  Wolf stopped after config generation'
 
-            # Merge: keep Wolf's header + gstreamer section, replace apps with ours.
-            # Wolf generates [gstreamer] AFTER [[profiles]] — we must preserve it.
-            sudo python3 << 'MERGE_PY'
+            # Merge: keep Wolf's header (gstreamer, paired_clients, uuid)
+            # but replace default apps with our emulator apps
+            sudo python3 -c \"
 import sys
 
 with open('/etc/wolf/cfg/config.toml') as f:
     wolf_config = f.read()
 
-with open('/opt/gamer/infrastructure/poc-3ds/wolf/config.toml') as f:
+with open('/opt/gamer/infrastructure/gaming-vm/wolf/config.toml') as f:
     our_config = f.read()
 
-# Extract Wolf's header (before [[profiles]])
+# Find where Wolf's profiles start
 profiles_start = wolf_config.find('[[profiles]]')
-header = wolf_config[:profiles_start].rstrip() if profiles_start != -1 else wolf_config.rstrip()
+if profiles_start == -1:
+    header = wolf_config.rstrip()
+else:
+    header = wolf_config[:profiles_start].rstrip()
 
-# Extract Wolf's [gstreamer] section (after all profiles, near end of file)
-gstreamer_start = wolf_config.find('\n[gstreamer]')
-if gstreamer_start == -1:
-    gstreamer_start = wolf_config.find('\n[gstreamer.')
-gstreamer_section = wolf_config[gstreamer_start:].lstrip('\n') if gstreamer_start != -1 else ''
-
-# Extract our apps
+# Find where our profiles/apps start
 our_profiles_start = our_config.find('[[profiles]]')
 if our_profiles_start == -1:
     print('ERROR: No [[profiles]] found in our config!')
     sys.exit(1)
+
 our_apps = our_config[our_profiles_start:]
 
-# Combine: header + our apps + gstreamer
-merged = header + '\n\n' + our_apps.rstrip() + '\n\n' + gstreamer_section
 with open('/etc/wolf/cfg/config.toml', 'w') as f:
-    f.write(merged)
+    f.write(header + chr(10) + chr(10) + our_apps)
 
-has_h264 = 'h264_encoders' in gstreamer_section
-print(f'  Config merged: Wolf base + Azahar apps + gstreamer (h264={has_h264})')
-MERGE_PY
+print('  Config merged: Wolf base + all emulator apps')
+\"
         fi
 
         # Verify apps are in config
-        app_count=\$(grep -c 'title.*Azahar' /etc/wolf/cfg/config.toml || echo 0)
-        echo \"  ✓ Wolf config has \$app_count Azahar app(s)\"
+        app_count=\$(grep -c '^\[\[profiles\.apps\]\]' /etc/wolf/cfg/config.toml || echo 0)
+        echo \"  ✓ Wolf config has \$app_count app profile(s)\"
     "
 
     # ── Step 5: Start Wolf ────────────────────────────────────────────────
-    echo "[Step 5/5] Starting Wolf (dual-screen)..."
+    echo "[Step 5/5] Starting Wolf..."
     ssh_cmd "$ip" "
         set -e
-        cd /opt/gamer/infrastructure/poc-3ds
+        cd /opt/gamer/infrastructure/gaming-vm
 
         # Stop existing Wolf if running
         sudo docker compose down 2>/dev/null || true
 
-        # Use wolf-dual for dual-screen support if available.
-        # Write WOLF_IMAGE to a .env file so docker compose picks it up
-        # (env vars don't pass through sudo otherwise).
-        if sudo docker image inspect ghcr.io/nyc-design/wolf-dual:latest >/dev/null 2>&1; then
-            echo 'WOLF_IMAGE=ghcr.io/nyc-design/wolf-dual:latest' | sudo tee .env >/dev/null
-            echo \"Using wolf-dual image for dual-screen support\"
-        else
-            sudo rm -f .env
-            echo 'wolf-dual not available, using stock Wolf (single-screen only)'
-        fi
-
-        # Start Wolf (only the wolf service — azahar is spawned by Wolf)
+        # Start Wolf (emulators are spawned by Wolf on-demand)
         sudo docker compose up -d wolf
         echo 'Wolf started'
 
@@ -540,13 +546,8 @@ MERGE_PY
         sleep 5
         if sudo docker ps --format '{{.Names}}' | grep -qi wolf; then
             echo 'Wolf container confirmed running'
-            # Verify apps are still in config (Wolf didn't overwrite)
-            app_count=\$(grep -c 'title.*Azahar' /etc/wolf/cfg/config.toml || echo 0)
-            if [ \"\$app_count\" -gt 0 ]; then
-                echo \"Wolf has \$app_count Azahar app(s) registered\"
-            else
-                echo 'WARNING: Wolf may have overwritten config — Azahar apps missing!'
-            fi
+            app_count=\$(grep -c '^\[\[profiles\.apps\]\]' /etc/wolf/cfg/config.toml || echo 0)
+            echo \"Wolf has \$app_count app profile(s) registered\"
         else
             echo 'WARNING: Wolf may not be running'
             sudo docker ps
@@ -555,38 +556,29 @@ MERGE_PY
     "
     echo "  ✓ Wolf running"
 
-    # ── Restore state backup if available ────────────────────────────────
-    local backup_dir=""
-    backup_dir=$(find "$SCRIPT_DIR/state-backups" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -1 || true)
-    if [ -n "$backup_dir" ] && [ -f "$backup_dir/azahar-config.tgz" ] && [ -f "$backup_dir/azahar-saves.tgz" ]; then
-        echo ""
-        echo "  Restoring Azahar state backup from: $backup_dir"
-        scp -o StrictHostKeyChecking=no "$backup_dir/azahar-config.tgz" "user@$ip:/tmp/azahar-config.tgz"
-        scp -o StrictHostKeyChecking=no "$backup_dir/azahar-saves.tgz" "user@$ip:/tmp/azahar-saves.tgz"
-        ssh_cmd "$ip" '
-            sudo mkdir -p /home/gamer/config /home/gamer/saves
-            sudo tar -xzf /tmp/azahar-config.tgz -C /home/gamer
-            sudo tar -xzf /tmp/azahar-saves.tgz -C /home/gamer
-            sudo chown -R 1000:1000 /home/gamer/config /home/gamer/saves
-            rm -f /tmp/azahar-config.tgz /tmp/azahar-saves.tgz
-        '
-        echo "  ✓ Azahar state restored"
-    fi
-
     echo ""
     echo "========================================="
-    echo " VM Ready for Moonlight"
+    echo " Gaming VM Ready"
     echo "========================================="
     echo ""
     echo "  IP: $ip"
     echo ""
-    echo "  Next steps:"
-    echo "    1. SCP your ROM:  scp 'your-rom.3ds' user@$ip:/home/gamer/roms/"
-    echo "    2. Open Moonlight → Add Host → $ip"
-    echo "    3. Pair and launch an Azahar app:"
-    echo "       - 'Azahar 3DS (Single Screen)' — combined view"
-    echo "       - 'Azahar 3DS (Dual Screen)'   — top screen (needs wolf-dual)"
-    echo "       - 'Azahar 3DS (Bottom Screen)'  — bottom screen (needs wolf-dual)"
+    echo "  Available emulators (select in Moonlight):"
+    echo "    - Azahar 3DS (Dual Screen)    — 3DS dual-screen"
+    echo "    - Azahar 3DS (Bottom Screen)  — 3DS second screen"
+    echo "    - Azahar 3DS                  — 3DS single screen"
+    echo "    - melonDS (DS)                — Nintendo DS"
+    echo "    - Dolphin (GC/Wii)            — GameCube/Wii"
+    echo "    - Citra (3DS Legacy)          — 3DS (legacy emulator)"
+    echo "    - PPSSPP (PSP)                — PlayStation Portable"
+    echo "    - Ryujinx (Switch)            — Nintendo Switch"
+    echo "    - Steam                       — PC Gaming"
+    echo ""
+    echo "  ROMs:"
+    echo "    scp 'your-rom.ext' user@$ip:/home/gamer/roms/"
+    echo ""
+    echo "  Connect:"
+    echo "    Open Moonlight → Add Host → $ip → Pair → Select emulator"
     echo ""
 }
 
@@ -648,7 +640,6 @@ cmd_ssh() {
         ip="${IP:-}"
     fi
     if [ -z "$ip" ]; then
-        # Try to get IP from saved instance
         load_token
         load_state
         if [ -n "${INSTANCE_ID:-}" ]; then
@@ -685,7 +676,7 @@ case "${1:-deploy}" in
         echo ""
         echo "Commands:"
         echo "  provision       Create VM via TensorDock API"
-        echo "  setup [IP]      Bootstrap host + build images + start Wolf"
+        echo "  setup [IP]      Bootstrap host + pull images + start Wolf"
         echo "  deploy          provision + setup in one shot"
         echo "  --list          List available GPUs near Dallas"
         echo "  --status        Check instance status"

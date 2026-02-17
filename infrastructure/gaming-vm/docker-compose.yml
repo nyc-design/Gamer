@@ -1,0 +1,157 @@
+###############################################################################
+# Gaming VM Docker Compose — Multi-Emulator Streaming
+#
+# Runs on a GPU VM (TensorDock, GCP, or any machine with NVIDIA GPU).
+# Wolf handles Moonlight protocol, video encoding, and spawns emulator
+# containers when a user connects.
+#
+# Prerequisites on the host:
+#   - NVIDIA GPU with driver installed
+#   - Docker + NVIDIA Container Toolkit
+#   - nvidia-driver-vol Docker volume (created by setup-vm.sh)
+#   - Ports 47984-48010 open (Moonlight protocol)
+#   - Emulator images pulled or built (see emulator-images/)
+#   - ROMs in /home/gamer/roms/
+#
+# Usage:
+#   # Pull emulator images
+#   docker compose pull
+#   # Start Wolf (emulators are spawned by Wolf on-demand)
+#   docker compose up -d wolf
+#
+# For dual-screen 3DS (Azahar):
+#   docker compose build wolf-dual
+#   WOLF_IMAGE=wolf-dual docker compose up -d wolf
+###############################################################################
+
+services:
+  ###########################################################################
+  # Wolf — Moonlight-compatible streaming server
+  #
+  # Handles: RTSP/RTP streaming, NVENC video encoding, PulseAudio capture,
+  # virtual input devices (gamepad, touch), Docker app orchestration.
+  #
+  # When a Moonlight client connects and selects an emulator app, Wolf
+  # spawns the corresponding emulator container with GPU, audio, and display.
+  ###########################################################################
+  wolf:
+    # Use wolf-dual for dual-screen 3DS support (custom gst-wayland-display).
+    # Falls back to stock wolf:stable for single-screen mode.
+    image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf:stable}
+    environment:
+      # Use nvidia driver volume approach (per Wolf docs) — Wolf mounts this
+      # volume into spawned app containers for GPU access
+      - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
+      - WOLF_RENDER_NODE=/dev/dri/renderD128
+      - WOLF_LOG_LEVEL=INFO
+      # Dual-screen: enable multi-output in gst-wayland-display.
+      # Harmless on stock Wolf when no dual-screen app is started.
+      - GST_WD_MULTI_OUTPUT=1
+      - GST_WD_SECONDARY_SINK_NAME=secondary_video
+      # RetroArch-compatible shader support (librashader)
+      # Set these to apply .slangp shader presets to the video stream.
+      # Presets are mounted at /etc/wolf/shaders/ from host.
+      - GST_WD_SHADER_PRESET=${GST_WD_SHADER_PRESET:-}
+      - GST_WD_SHADER_PARAMS=${GST_WD_SHADER_PARAMS:-}
+      - GST_WD_SECONDARY_SHADER_PRESET=${GST_WD_SECONDARY_SHADER_PRESET:-}
+      - GST_WD_SECONDARY_SHADER_PARAMS=${GST_WD_SECONDARY_SHADER_PARAMS:-}
+    volumes:
+      # Wolf state directory — MUST mount at /etc/wolf (not a subdirectory!)
+      - /etc/wolf:/etc/wolf:rw
+      # Wolf needs Docker socket to spawn app containers
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      # Device access for GPU, input, and udev
+      - /dev/:/dev/:rw
+      - /run/udev:/run/udev:rw
+      # NVIDIA driver volume — pre-populated with host's nvidia driver libs
+      - nvidia-driver-vol:/usr/nvidia:rw
+      # Shader presets directory (RetroArch .slangp format)
+      - /home/gamer/shaders:/etc/wolf/shaders:ro
+    device_cgroup_rules:
+      - 'c 13:* rmw'    # Input devices
+      - 'c 244:* rmw'   # NVIDIA devices
+    devices:
+      - /dev/dri         # GPU render nodes
+      - /dev/uinput      # Virtual input device creation
+      - /dev/udmabuf     # DMA buffer allocation for Wayland compositor
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+      - /dev/nvidiactl
+      - /dev/nvidia0
+      - /dev/nvidia-modeset
+    network_mode: host
+    restart: unless-stopped
+
+  ###########################################################################
+  # Wolf Dual-Screen — custom build with multi-output gst-wayland-display
+  #
+  # Only needed for dual-screen 3DS streaming. Build with:
+  #   docker compose build wolf-dual
+  # Then: WOLF_IMAGE=wolf-dual docker compose up -d wolf
+  ###########################################################################
+  wolf-dual:
+    build:
+      context: ../poc-3ds/wolf
+      dockerfile: Dockerfile.wolf-dual
+    image: wolf-dual
+    profiles:
+      - build-only
+
+  ###########################################################################
+  # Emulator images — NOT started by compose.
+  # Wolf spawns them on-demand. We define them here so:
+  #   1. `docker compose pull` pulls all images
+  #   2. `docker compose build` builds local images (azahar)
+  # The `build-only` profile prevents compose from starting them.
+  ###########################################################################
+
+  # Azahar (3DS) — built locally from poc-3ds
+  azahar:
+    build:
+      context: ../poc-3ds/azahar
+      dockerfile: Dockerfile
+    image: gamer/azahar:poc
+    profiles:
+      - build-only
+
+  # melonDS (DS) — pulled from GHCR
+  melonds:
+    image: ghcr.io/nyc-design/gamer-melonds:latest
+    profiles:
+      - build-only
+
+  # Dolphin (GC/Wii) — pulled from GHCR
+  dolphin:
+    image: ghcr.io/nyc-design/gamer-dolphin:latest
+    profiles:
+      - build-only
+
+  # Citra (3DS legacy) — pulled from GHCR
+  citra:
+    image: ghcr.io/nyc-design/gamer-citra:latest
+    profiles:
+      - build-only
+
+  # PPSSPP (PSP) — pulled from GHCR
+  ppsspp:
+    image: ghcr.io/nyc-design/gamer-ppsspp:latest
+    profiles:
+      - build-only
+
+  # Ryujinx (Switch) — pulled from GHCR
+  ryujinx:
+    image: ghcr.io/nyc-design/gamer-ryujinx:latest
+    profiles:
+      - build-only
+
+  # Steam (PC) — pulled from GHCR
+  steam:
+    image: ghcr.io/nyc-design/gamer-steam:latest
+    profiles:
+      - build-only
+
+volumes:
+  nvidia-driver-vol:
+    external: true

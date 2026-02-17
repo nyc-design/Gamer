@@ -32,6 +32,11 @@ services:
     # Falls back to stock wolf:stable for single-screen mode.
     image: ${WOLF_IMAGE:-ghcr.io/games-on-whales/wolf:stable}
     environment:
+      # Enable nvidia-container-runtime GPU injection.
+      # With default-runtime=nvidia in daemon.json, these env vars trigger
+      # the runtime to mount host CUDA/NVENC libs into the container.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       # Use nvidia driver volume approach (per Wolf docs) — Wolf mounts this
       # volume into spawned app containers for GPU access
       - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
@@ -53,8 +58,12 @@ services:
       # Device access for GPU, input, and udev
       - /dev/:/dev/:rw
       - /run/udev:/run/udev:rw
-      # NVIDIA driver volume — pre-populated with host's nvidia driver libs
-      - nvidia-driver-vol:/usr/nvidia:rw
+      # NOTE: We do NOT mount nvidia-driver-vol into Wolf itself.
+      # The nvidia container runtime (default-runtime=nvidia + NVIDIA_VISIBLE_DEVICES=all)
+      # injects CUDA/NVENC libs automatically. Mounting the driver volume triggers
+      # Wolf's 30-nvidia.sh init script which conflicts with the runtime's read-only
+      # EGL mounts, causing a crash. Wolf still passes NVIDIA_DRIVER_VOLUME_NAME to
+      # spawned app containers via its config.
     device_cgroup_rules:
       - 'c 13:* rmw'    # Input devices
       - 'c 244:* rmw'   # NVIDIA devices

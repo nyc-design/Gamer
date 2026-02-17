@@ -123,11 +123,18 @@ if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
         tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
     apt-get update -y
     apt-get install -y nvidia-container-toolkit
-    nvidia-ctk runtime configure --runtime=docker
+    nvidia-ctk runtime configure --runtime=docker --set-as-default
     systemctl restart docker
-    echo "  ✓ NVIDIA Container Toolkit installed"
+    echo "  ✓ NVIDIA Container Toolkit installed (nvidia = default runtime)"
 else
     echo "  ✓ NVIDIA Container Toolkit already installed"
+    # Ensure nvidia is the default runtime (Wolf needs NVENC access without explicit --runtime flag)
+    if ! grep -q '"default-runtime"' /etc/docker/daemon.json 2>/dev/null; then
+        echo "  Setting nvidia as default Docker runtime..."
+        nvidia-ctk runtime configure --runtime=docker --set-as-default
+        systemctl restart docker
+        echo "  ✓ nvidia set as default runtime"
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

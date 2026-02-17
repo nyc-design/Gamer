@@ -1,0 +1,512 @@
+###############################################################################
+# Wolf config.toml — Multi-Emulator Streaming
+#
+# Placed at /etc/wolf/cfg/config.toml on the VM.
+#
+# This is the generalized Wolf config with app profiles for ALL supported
+# emulators. The deploy script merges this into Wolf's auto-generated config
+# (which contains gstreamer pipelines, paired clients, UUIDs, etc.).
+#
+# Each emulator gets:
+#   - A standard gameplay app (single screen, fullscreen)
+#   - A settings app (no ROM, windowed, for config changes)
+#
+# Azahar (3DS) additionally gets dual-screen variants for SeparateWindows mode.
+#
+# Env vars injected per app by the Gamer Agent or manual .env:
+#   ROM_FILENAME         - ROM file name in /home/retro/roms/
+#   FAKETIME             - Fake time string for libfaketime
+#   STEAM_GAME_ID        - Steam game ID (Steam app only)
+#
+# Shader env vars (set on Wolf container, not per-app):
+#   GST_WD_SHADER_PRESET              - Path to .slangp preset (primary output)
+#   GST_WD_SHADER_PARAMS              - Shader param overrides (e.g. "PARAM=1.0;OTHER=0.5")
+#   GST_WD_SECONDARY_SHADER_PRESET    - Path to .slangp preset (secondary output)
+#   GST_WD_SECONDARY_SHADER_PARAMS    - Shader param overrides (secondary output)
+#
+# Shader presets are mounted at /etc/wolf/shaders/ from /home/gamer/shaders/ on host.
+#
+# Mount layout (set by deploy script, matches rclone + host dirs):
+#   /home/gamer/roms      → container:/home/retro/roms     (ro)
+#   /home/gamer/saves     → container:/home/retro/saves     (rw)
+#   /home/gamer/config    → container:/home/retro/config    (rw)
+#   /home/gamer/firmware  → container:/home/retro/firmware   (ro)
+###############################################################################
+
+hostname = "gamer-vm"
+config_version = 2
+support_hevc = true
+
+###############################################################################
+# Profile: Gaming
+###############################################################################
+[[profiles]]
+id = "moonlight-profile-id"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Azahar 3DS — Dual Screen: Primary (Top Screen)
+# ─────────────────────────────────────────────────────────────────────────────
+# Launches Azahar with SeparateWindows mode. The custom gst-wayland-display
+# routes Azahar's second window to a secondary compositor output.
+[[profiles.apps]]
+title = "Azahar 3DS (Dual Screen)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzaharDual"
+image = "gamer/azahar:poc"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "LAYOUT_OPTION=4",
+    "AZAHAR_FULLSCREEN=0",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Azahar 3DS — Dual Screen: Secondary (Bottom Screen)
+# ─────────────────────────────────────────────────────────────────────────────
+# Video-only app — no compositor, no Docker container.
+# Reads from waylanddisplaysecondary interpipe (created by primary).
+[[profiles.apps]]
+title = "Azahar 3DS (Bottom Screen)"
+start_virtual_compositor = false
+start_audio_server = false
+
+[profiles.apps.video]
+source = "waylanddisplaysecondary is-live=true"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Azahar 3DS — Single Screen
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Azahar 3DS"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzahar"
+image = "gamer/azahar:poc"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "LAYOUT_OPTION=1",
+    "AZAHAR_FULLSCREEN=1",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Azahar 3DS — Settings
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Azahar 3DS (Settings)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzaharSettings"
+image = "gamer/azahar:poc"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_OPTIONAL=1",
+    "AZAHAR_FULLSCREEN=0",
+    "RUN_SWAY=0",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# melonDS — Nintendo DS
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "melonDS (DS)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerMelonDS"
+image = "ghcr.io/nyc-design/gamer-melonds:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# melonDS — Settings
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "melonDS (Settings)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerMelonDSSettings"
+image = "ghcr.io/nyc-design/gamer-melonds:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_OPTIONAL=1",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dolphin — GameCube/Wii
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Dolphin (GC/Wii)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerDolphin"
+image = "ghcr.io/nyc-design/gamer-dolphin:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dolphin — Settings
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Dolphin (Settings)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerDolphinSettings"
+image = "ghcr.io/nyc-design/gamer-dolphin:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_OPTIONAL=1",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Citra — 3DS (Legacy)
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Citra (3DS Legacy)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerCitra"
+image = "ghcr.io/nyc-design/gamer-citra:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PPSSPP — PlayStation Portable
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "PPSSPP (PSP)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerPPSSPP"
+image = "ghcr.io/nyc-design/gamer-ppsspp:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ryujinx — Nintendo Switch
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Ryujinx (Switch)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerRyujinx"
+image = "ghcr.io/nyc-design/gamer-ryujinx:latest"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=${ROM_FILENAME:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Steam — PC Gaming
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles.apps]]
+title = "Steam"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerSteam"
+image = "ghcr.io/nyc-design/gamer-steam:latest"
+mounts = [
+    "/home/gamer/config:/home/retro/config:rw",
+]
+env = [
+    "STEAM_GAME_ID=${STEAM_GAME_ID:-}",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
