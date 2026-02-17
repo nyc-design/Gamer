@@ -70,7 +70,7 @@ saves/
 roms/
 
 # TensorDock instance state
-.tensordock-instance-id
+.tensordock-instance*
 infrastructure/poc-3ds/state-backups/
 
 # ROM files — never commit these

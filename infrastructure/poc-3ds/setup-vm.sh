@@ -1,150 +1,100 @@
 #!/bin/bash
 ###############################################################################
-# Gaming VM Setup Script — Zero-Touch Deployment
+# Gaming VM Host Bootstrap
 #
-# Fully automated setup for Wolf + Azahar 3DS streaming on any NVIDIA GPU VM.
-# Handles all states: fresh Ubuntu, pre-installed NVIDIA drivers (TensorDock),
-# reboot-required scenarios, and idempotent re-runs.
+# Prepares a bare Ubuntu VM for GPU-accelerated Docker workloads.
+# Installs only host-level dependencies — all app logic lives in Docker images.
+#
+# What this does:
+#   1. NVIDIA driver (install or detect)
+#   2. Docker + NVIDIA Container Toolkit
+#   3. nvidia_drm.modeset
+#   4. NVIDIA driver volume for Wolf containers
+#   5. Host directories for game data
+#   6. Firewall rules for Moonlight protocol
+#
+# What this does NOT do:
+#   - Pull/build any Docker images (that's deploy-tensordock.sh setup)
+#   - Write Wolf config (baked into docker-compose.yml)
+#   - Start any containers
 #
 # Usage:
 #   sudo ./setup-vm.sh [OPTIONS]
 #
 # Options:
-#   --skip-driver       Skip NVIDIA driver installation (for VMs with pre-installed drivers)
-#   --auto-reboot       Automatically reboot if nvidia_drm.modeset needs enabling
-#   --no-start          Don't start Wolf at the end (just prepare everything)
-#
-# The script is idempotent — safe to re-run at any point. Each step checks
-# whether it's already been completed and skips if so.
+#   --auto-reboot    Automatically reboot if driver install or modeset needs it
+#   --skip-driver    Skip NVIDIA driver installation (already installed)
 #
 # Exit codes:
-#   0  — Success (everything set up and Wolf started)
-#   2  — Reboot required (re-run after reboot to complete setup)
+#   0  — Host ready for Docker workloads
+#   2  — Reboot required (re-run after reboot, or use --auto-reboot)
 #   1  — Error
 ###############################################################################
 
 set -euo pipefail
 
-# ── Parse arguments ──────────────────────────────────────────────────────────
-SKIP_DRIVER=false
-AUTO_REBOOT=false
-NO_START=false
-CONTINUE_AFTER_REBOOT=false
-TENSORDOCK_FAST=false
-ENFORCE_MODESET="${ENFORCE_MODESET:-0}"
-
-for arg in "$@"; do
-    case "$arg" in
-        --skip-driver)       SKIP_DRIVER=true ;;
-        --auto-reboot)       AUTO_REBOOT=true ;;
-        --no-start)          NO_START=true ;;
-        --continue-after-reboot) CONTINUE_AFTER_REBOOT=true ;;
-        --tensordock-fast)
-            TENSORDOCK_FAST=true
-            SKIP_DRIVER=true
-            AUTO_REBOOT=false
-            ;;
-        *) echo "Unknown option: $arg"; exit 1 ;;
-    esac
-done
-
-# ── Resolve script directory (works from any cwd) ───────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/gamer-setup.log"
 GAMER_HOME="/home/gamer"
 REBOOT_NEEDED=false
-COMPOSE_BIN=""
-WOLF_IMAGE_SELECTED="ghcr.io/games-on-whales/wolf:stable"
-ENABLE_DUAL_WOLF_BUILD="${ENABLE_DUAL_WOLF_BUILD:-0}"
-WOLF_DUAL_GST_WD_REPO="${WOLF_DUAL_GST_WD_REPO:-https://github.com/nyc-design/gst-wayland-display.git}"
-WOLF_DUAL_GST_WD_BRANCH="${WOLF_DUAL_GST_WD_BRANCH:-multi-output}"
-WOLF_DUAL_WOLF_TAG="${WOLF_DUAL_WOLF_TAG:-stable}"
-WOLF_DUAL_GST_TAG="${WOLF_DUAL_GST_TAG:-1.26.7}"
+SKIP_DRIVER=false
+AUTO_REBOOT=false
+CONTINUE_AFTER_REBOOT=false
 
-# Log everything to both console and log file
+for arg in "$@"; do
+    case "$arg" in
+        --skip-driver)           SKIP_DRIVER=true ;;
+        --auto-reboot)           AUTO_REBOOT=true ;;
+        --continue-after-reboot) CONTINUE_AFTER_REBOOT=true ;;
+        *) echo "Unknown option: $arg"; exit 1 ;;
+    esac
+done
+
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "========================================="
-echo " Gamer PoC — Gaming VM Setup"
+echo " Gamer PoC — Host Bootstrap"
 echo " $(date -Iseconds)"
 echo "========================================="
-echo " Script dir: $SCRIPT_DIR"
-echo " Options: skip-driver=$SKIP_DRIVER auto-reboot=$AUTO_REBOOT no-start=$NO_START"
-echo "          tensordock-fast=$TENSORDOCK_FAST"
-echo "          enforce-modeset=$ENFORCE_MODESET"
+echo " Options: skip-driver=$SKIP_DRIVER auto-reboot=$AUTO_REBOOT"
 echo ""
-
-# ── Docker compose command detection wrapper ────────────────────────────────
-detect_compose() {
-    if docker compose version &>/dev/null; then
-        COMPOSE_BIN="docker compose"
-        return
-    fi
-    if command -v docker-compose &>/dev/null; then
-        COMPOSE_BIN="docker-compose"
-        return
-    fi
-    COMPOSE_BIN=""
-}
-
-compose() {
-    if [ -z "$COMPOSE_BIN" ]; then
-        echo "  ✗ Docker Compose not found"
-        exit 1
-    fi
-    if [ "$COMPOSE_BIN" = "docker compose" ]; then
-        docker compose "$@"
-    else
-        docker-compose "$@"
-    fi
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: NVIDIA Driver
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 1/9] NVIDIA driver..."
+echo "[Step 1/6] NVIDIA driver..."
 
-if [ "$TENSORDOCK_FAST" = true ]; then
-    if command -v nvidia-smi &> /dev/null; then
-        echo "  ✓ NVIDIA driver present (TensorDock fast mode)"
-        echo "    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo 'query failed')"
-    else
-        echo "  ✗ TensorDock fast mode requires a pre-installed NVIDIA driver (nvidia-smi missing)."
-        echo "    Re-run without --tensordock-fast on non-TensorDock hosts."
-        exit 1
-    fi
-elif command -v nvidia-smi &> /dev/null; then
-    echo "  ✓ NVIDIA driver installed:"
-    echo "    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo 'query failed')"
+if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    echo "  ✓ NVIDIA driver working:"
+    echo "    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null)"
 elif [ "$SKIP_DRIVER" = true ]; then
-    echo "  ⚠ nvidia-smi not found but --skip-driver set. Checking if driver loads after modprobe..."
+    echo "  ⚠ --skip-driver set but nvidia-smi not working."
     modprobe nvidia 2>/dev/null || true
-    if command -v nvidia-smi &> /dev/null; then
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
         echo "  ✓ Driver loaded after modprobe"
     else
-        echo "  ✗ No NVIDIA driver found even after modprobe. May need reboot or driver install."
+        echo "  ✗ No working NVIDIA driver. May need reboot or driver install."
     fi
 else
     echo "  Installing NVIDIA driver..."
     apt-get update -y
     apt-get install -y linux-headers-$(uname -r) 2>/dev/null || true
-    # Try ubuntu-drivers first, fall back to manual
-    if command -v ubuntu-drivers &> /dev/null; then
+    if command -v ubuntu-drivers &>/dev/null; then
         ubuntu-drivers install 2>/dev/null || apt-get install -y nvidia-driver-570 2>/dev/null || apt-get install -y nvidia-driver-550
     else
         apt-get install -y nvidia-driver-570 2>/dev/null || apt-get install -y nvidia-driver-550
     fi
-    echo "  Driver installed. Reboot required."
+    echo "  Driver installed — reboot required."
     REBOOT_NEEDED=true
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 2: Docker + NVIDIA Container Toolkit
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 2/9] Docker + NVIDIA Container Toolkit..."
+echo "[Step 2/6] Docker + NVIDIA Container Toolkit..."
 
-if ! command -v docker &> /dev/null; then
-    echo "  Installing Docker..."
+if ! command -v docker &>/dev/null; then
+    echo "  Installing Docker via get.docker.com..."
     curl -fsSL https://get.docker.com | sh
     systemctl enable docker
     systemctl start docker
@@ -153,18 +103,16 @@ else
     echo "  ✓ Docker already installed"
 fi
 
-detect_compose
-if [ -z "$COMPOSE_BIN" ]; then
-    echo "  Installing Docker Compose..."
+if ! docker compose version &>/dev/null; then
+    echo "  Installing Docker Compose plugin..."
     apt-get update -y
-    apt-get install -y docker-compose-plugin 2>/dev/null || apt-get install -y docker-compose
-    detect_compose
-    if [ -z "$COMPOSE_BIN" ]; then
-        echo "  ✗ Failed to install Docker Compose"
-        exit 1
-    fi
+    apt-get install -y docker-compose-plugin 2>/dev/null || true
 fi
-echo "  ✓ Compose command: $COMPOSE_BIN"
+if docker compose version &>/dev/null; then
+    echo "  ✓ Docker Compose available"
+else
+    echo "  ⚠ Docker Compose plugin not available — docker compose commands may fail"
+fi
 
 if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
     echo "  Installing NVIDIA Container Toolkit..."
@@ -183,55 +131,29 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 3: nvidia_drm.modeset (optional; enforce only when requested)
+# Step 3: nvidia_drm.modeset
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 3/9] nvidia_drm.modeset..."
+echo "[Step 3/6] nvidia_drm.modeset..."
 
-if [ "$TENSORDOCK_FAST" = true ]; then
-    if [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
-        MODESET=$(cat /sys/module/nvidia_drm/parameters/modeset)
-        if [ "$MODESET" = "Y" ]; then
-            echo "  ✓ nvidia_drm.modeset already enabled (TensorDock fast mode)"
-        else
-            echo "  ⚠ nvidia_drm.modeset is '$MODESET' (TensorDock fast mode: not mutating kernel settings)"
-            echo "    Continuing without forced reboot. If performance issues appear, enable modeset manually."
-        fi
-    else
-        echo "  ⚠ nvidia_drm module parameter not found (TensorDock fast mode: skipping kernel mutation)"
-    fi
-elif [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
+if [ -f /sys/module/nvidia_drm/parameters/modeset ]; then
     MODESET=$(cat /sys/module/nvidia_drm/parameters/modeset)
     if [ "$MODESET" = "Y" ]; then
         echo "  ✓ nvidia_drm.modeset already enabled"
     else
-        if [ "$ENFORCE_MODESET" = "1" ] || [ "$ENFORCE_MODESET" = "true" ]; then
-            echo "  Enforcing nvidia_drm.modeset=1..."
-            echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
-            # Also add to kernel command line for reliability
-            if [ -f /etc/default/grub ]; then
-                if ! grep -q 'nvidia-drm.modeset=1' /etc/default/grub; then
-                    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="nvidia-drm.modeset=1 /' /etc/default/grub
-                    update-grub 2>/dev/null || true
-                fi
-            fi
-            update-initramfs -u 2>/dev/null || true
-            REBOOT_NEEDED=true
-            echo "  ⚠ Reboot required for modeset"
-        else
-            echo "  ℹ modeset is '$MODESET' (not enforced by default)."
-            echo "    Set ENFORCE_MODESET=1 if you want script-managed kernel mutation/reboot."
+        echo "  Enabling nvidia_drm.modeset=1..."
+        echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
+        if [ -f /etc/default/grub ] && ! grep -q 'nvidia-drm.modeset=1' /etc/default/grub; then
+            sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="nvidia-drm.modeset=1 /' /etc/default/grub
+            update-grub 2>/dev/null || true
         fi
+        update-initramfs -u 2>/dev/null || true
+        REBOOT_NEEDED=true
     fi
 else
-    if [ "$ENFORCE_MODESET" = "1" ] || [ "$ENFORCE_MODESET" = "true" ]; then
-        echo "  ⚠ nvidia_drm module not loaded. Setting modeset for after reboot."
-        echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
-        if [ "$REBOOT_NEEDED" = false ] && command -v nvidia-smi &>/dev/null; then
-            # Driver exists but module not loaded — try loading it
-            modprobe nvidia-drm modeset=1 2>/dev/null || REBOOT_NEEDED=true
-        fi
-    else
-        echo "  ℹ nvidia_drm module not loaded; skipping modeset mutation (ENFORCE_MODESET=0)."
+    echo "  ⚠ nvidia_drm module not loaded — setting modeset for after reboot"
+    echo 'options nvidia-drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
+    if [ "$REBOOT_NEEDED" = false ]; then
+        modprobe nvidia-drm modeset=1 2>/dev/null || REBOOT_NEEDED=true
     fi
 fi
 
@@ -246,7 +168,6 @@ if [ "$REBOOT_NEEDED" = true ]; then
 
     if [ "$AUTO_REBOOT" = true ]; then
         echo " Setting up auto-continue after reboot..."
-        # Create a systemd service that continues setup after reboot
         cat > /etc/systemd/system/gamer-setup-continue.service <<SVCEOF
 [Unit]
 Description=Gamer PoC Setup - Continue After Reboot
@@ -256,7 +177,7 @@ ConditionPathExists=/etc/gamer-setup-continue
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash $SCRIPT_DIR/setup-vm.sh --skip-driver --continue-after-reboot $([ "$NO_START" = true ] && echo "--no-start")
+ExecStart=/bin/bash $SCRIPT_DIR/setup-vm.sh --skip-driver --continue-after-reboot
 ExecStartPost=/bin/rm -f /etc/gamer-setup-continue
 ExecStartPost=/bin/systemctl disable gamer-setup-continue.service
 StandardOutput=journal+console
@@ -278,7 +199,6 @@ SVCEOF
     fi
 fi
 
-# Clean up continue service if we're running after a reboot
 if [ "$CONTINUE_AFTER_REBOOT" = true ]; then
     echo " (Continuing setup after reboot)"
     rm -f /etc/gamer-setup-continue
@@ -288,7 +208,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 4: NVIDIA Driver Volume for Wolf
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 4/9] NVIDIA driver volume..."
+echo "[Step 4/6] NVIDIA driver volume..."
 
 driver_volume_has_required_files() {
     docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c \
@@ -297,8 +217,8 @@ driver_volume_has_required_files() {
 }
 
 populate_driver_volume_from_host() {
-    echo "  Falling back to host-based NVIDIA volume population..."
-    docker volume create nvidia-driver-vol >/dev/null
+    echo "  Populating nvidia-driver-vol from host libraries..."
+    docker volume create nvidia-driver-vol >/dev/null 2>&1 || true
     docker run --rm \
         -v nvidia-driver-vol:/usr/nvidia \
         -v /usr/lib/x86_64-linux-gnu:/host/lib:ro \
@@ -321,40 +241,39 @@ populate_driver_volume_from_host() {
             if [ -f /host/share/glvnd/egl_vendor.d/10_nvidia.json ]; then
                 cp -a /host/share/glvnd/egl_vendor.d/10_nvidia.json /usr/nvidia/share/glvnd/egl_vendor.d/
             else
-                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libEGL_nvidia.so.0\"\n  }\n}\n" > /usr/nvidia/share/glvnd/egl_vendor.d/10_nvidia.json
+                printf "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libEGL_nvidia.so.0\"}}\n" > /usr/nvidia/share/glvnd/egl_vendor.d/10_nvidia.json
             fi
 
             if [ -f /host/share/vulkan/icd.d/nvidia_icd.json ]; then
                 cp -a /host/share/vulkan/icd.d/nvidia_icd.json /usr/nvidia/share/vulkan/icd.d/
             else
-                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libGLX_nvidia.so.0\",\n    \"api_version\" : \"1.3.242\"\n  }\n}\n" > /usr/nvidia/share/vulkan/icd.d/nvidia_icd.json
+                printf "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3.242\"}}\n" > /usr/nvidia/share/vulkan/icd.d/nvidia_icd.json
             fi
 
             if [ -f /host/share/egl/egl_external_platform.d/15_nvidia_gbm.json ]; then
                 cp -a /host/share/egl/egl_external_platform.d/15_nvidia_gbm.json /usr/nvidia/share/egl/egl_external_platform.d/
             else
-                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libnvidia-egl-gbm.so.1\"\n  }\n}\n" > /usr/nvidia/share/egl/egl_external_platform.d/15_nvidia_gbm.json
+                printf "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libnvidia-egl-gbm.so.1\"}}\n" > /usr/nvidia/share/egl/egl_external_platform.d/15_nvidia_gbm.json
             fi
 
             if [ -f /host/share/egl/egl_external_platform.d/10_nvidia_wayland.json ]; then
                 cp -a /host/share/egl/egl_external_platform.d/10_nvidia_wayland.json /usr/nvidia/share/egl/egl_external_platform.d/
             else
-                printf "{\n  \"file_format_version\" : \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"libnvidia-egl-wayland.so.1\"\n  }\n}\n" > /usr/nvidia/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+                printf "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libnvidia-egl-wayland.so.1\"}}\n" > /usr/nvidia/share/egl/egl_external_platform.d/10_nvidia_wayland.json
             fi
 
             ln -sf ../libnvidia-allocator.so.1 /usr/nvidia/lib/gbm/nvidia-drm_gbm.so
         '
 }
 
-# Check if volume exists and is populated
 VOLUME_OK=false
 if docker volume inspect nvidia-driver-vol &>/dev/null; then
     FILE_COUNT=$(docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c 'ls /usr/nvidia/lib/ 2>/dev/null | wc -l' 2>/dev/null || echo "0")
     if [ "$FILE_COUNT" -gt "5" ] && driver_volume_has_required_files; then
-        echo "  ✓ nvidia-driver-vol already exists and healthy ($FILE_COUNT libs)"
+        echo "  ✓ nvidia-driver-vol exists and healthy ($FILE_COUNT libs)"
         VOLUME_OK=true
     else
-        echo "  ⚠ nvidia-driver-vol exists but is incomplete. Recreating..."
+        echo "  ⚠ nvidia-driver-vol incomplete — recreating..."
         docker volume rm nvidia-driver-vol 2>/dev/null || true
     fi
 fi
@@ -362,8 +281,7 @@ fi
 if [ "$VOLUME_OK" = false ]; then
     NV_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)
     if [ -z "$NV_VERSION" ]; then
-        echo "  ✗ Cannot determine NVIDIA driver version. nvidia-smi failed."
-        echo "    This may indicate the driver needs a reboot to activate."
+        echo "  ✗ Cannot determine NVIDIA driver version (nvidia-smi failed)."
         exit 1
     fi
 
@@ -374,200 +292,73 @@ if [ "$VOLUME_OK" = false ]; then
     for URL in \
         "https://raw.githubusercontent.com/games-on-whales/wolf/stable/scripts/nvidia-driver-container/Dockerfile" \
         "https://raw.githubusercontent.com/games-on-whales/wolf/main/scripts/nvidia-driver-container/Dockerfile"; do
-        if curl -sfL "$URL" -o /tmp/gow-nvidia-driver.Dockerfile; then
-            if [ -s /tmp/gow-nvidia-driver.Dockerfile ] && \
-               docker build -t gow/nvidia-driver:latest --build-arg NV_VERSION="$NV_VERSION" -f /tmp/gow-nvidia-driver.Dockerfile . >/tmp/gow-nvidia-build.log 2>&1 && \
+        if curl -sfL "$URL" -o /tmp/gow-nvidia-driver.Dockerfile && [ -s /tmp/gow-nvidia-driver.Dockerfile ]; then
+            if docker build -t gow/nvidia-driver:latest --build-arg NV_VERSION="$NV_VERSION" -f /tmp/gow-nvidia-driver.Dockerfile . >/tmp/gow-nvidia-build.log 2>&1 && \
                docker run --rm --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest >/tmp/gow-nvidia-populate.log 2>&1; then
                 OFFICIAL_BUILD_OK=true
-                echo "  ✓ Built NVIDIA driver volume using official Wolf Dockerfile ($(basename "$URL"))"
+                echo "  ✓ Built driver volume via official Wolf Dockerfile"
                 break
             fi
         fi
     done
 
     if [ "$OFFICIAL_BUILD_OK" = false ]; then
-        echo "  ⚠ Official Wolf NVIDIA driver volume build failed; using host fallback."
+        echo "  ⚠ Official build failed — using host fallback"
         docker volume rm nvidia-driver-vol >/dev/null 2>&1 || true
         populate_driver_volume_from_host
     fi
 
     if ! driver_volume_has_required_files; then
-        echo "  ✗ NVIDIA driver volume is still incomplete after setup."
-        echo "    Expected /usr/nvidia/lib/libEGL_nvidia.so.0 and egl vendor json."
+        echo "  ✗ NVIDIA driver volume still incomplete."
         exit 1
     fi
 
     FILE_COUNT=$(docker run --rm -v nvidia-driver-vol:/usr/nvidia:ro alpine sh -c 'ls /usr/nvidia/lib/ 2>/dev/null | wc -l' 2>/dev/null || echo "0")
-    echo "  ✓ nvidia-driver-vol created ($FILE_COUNT libs + NVIDIA EGL metadata)"
+    echo "  ✓ nvidia-driver-vol created ($FILE_COUNT libs)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 5: Directory Structure
+# Step 5: Host Directories
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 5/9] Directory structure..."
+echo "[Step 5/6] Host directories..."
 
 mkdir -p "$GAMER_HOME"/{roms,saves,config,firmware/3ds/sysdata}
-# Wolf containers run as retro user UID 1000
+mkdir -p /etc/wolf/cfg
 chown -R 1000:1000 "$GAMER_HOME"
 chmod -R 775 "$GAMER_HOME"
 
-echo "  ✓ Directories ready at $GAMER_HOME/"
+echo "  ✓ $GAMER_HOME/ and /etc/wolf/ ready"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 6: Wolf Configuration
+# Step 6: Firewall
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 6/9] Wolf configuration..."
+echo "[Step 6/6] Firewall..."
 
-mkdir -p /etc/wolf/cfg
-# Always apply app profile section from repo config, while preserving runtime
-# identity/pairing/gstreamer base from an existing Wolf-generated config.
-if [ -f /etc/wolf/cfg/config.toml ]; then
-    TMP_BASE="/tmp/wolf_cfg_base.toml"
-    TMP_APPS="/tmp/wolf_cfg_apps.toml"
-    awk 'BEGIN{found=0} /^\[\[profiles\]\]/{found=1} !found{print}' /etc/wolf/cfg/config.toml > "$TMP_BASE"
-    awk 'BEGIN{found=0} /^\[\[profiles\]\]/{found=1} found{print}' "$SCRIPT_DIR/wolf/config.toml" > "$TMP_APPS"
-    cat "$TMP_BASE" "$TMP_APPS" > /etc/wolf/cfg/config.toml
-    rm -f "$TMP_BASE" "$TMP_APPS"
-    echo "  ✓ Merged existing Wolf base config with repo app profiles"
-else
-    cp "$SCRIPT_DIR/wolf/config.toml" /etc/wolf/cfg/config.toml
-    echo "  ✓ Installed repo config.toml to /etc/wolf/cfg/"
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 7: Build/Pull Images
-# ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 7/9] Building Azahar image and pulling Wolf..."
-
-cd "$SCRIPT_DIR"
-
-# Pull Wolf (streaming server)
-docker pull ghcr.io/games-on-whales/wolf:stable 2>&1 | tail -3
-
-# Optionally build dual-screen Wolf image with custom gst-wayland-display.
-# Falls back to stock Wolf automatically if build fails.
-if [ "$ENABLE_DUAL_WOLF_BUILD" = "1" ] || [ "$ENABLE_DUAL_WOLF_BUILD" = "true" ]; then
-    if [ -f "$SCRIPT_DIR/wolf/Dockerfile.wolf-dual" ]; then
-        echo "  Building wolf-dual (repo=$WOLF_DUAL_GST_WD_REPO branch=$WOLF_DUAL_GST_WD_BRANCH)..."
-        # Use docker build directly (not compose) because we need custom --build-arg values
-        if docker build \
-            -f "$SCRIPT_DIR/wolf/Dockerfile.wolf-dual" \
-            -t wolf-dual \
-            --build-arg GST_WD_REPO="$WOLF_DUAL_GST_WD_REPO" \
-            --build-arg GST_WD_BRANCH="$WOLF_DUAL_GST_WD_BRANCH" \
-            --build-arg WOLF_TAG="$WOLF_DUAL_WOLF_TAG" \
-            --build-arg GST_TAG="$WOLF_DUAL_GST_TAG" \
-            "$SCRIPT_DIR/wolf" 2>&1 | tail -10; then
-            WOLF_IMAGE_SELECTED="wolf-dual"
-            echo "  ✓ wolf-dual built successfully"
-        else
-            echo "  ⚠ wolf-dual build failed — using stock Wolf image"
-            WOLF_IMAGE_SELECTED="ghcr.io/games-on-whales/wolf:stable"
-        fi
-    else
-        echo "  ⚠ wolf dual Dockerfile missing — using stock Wolf image"
-    fi
-else
-    echo "  ℹ ENABLE_DUAL_WOLF_BUILD=$ENABLE_DUAL_WOLF_BUILD, skipping wolf-dual build"
-fi
-
-# Build Azahar emulator image
-compose build azahar 2>&1 | tail -5
-
-echo "  ✓ Images ready:"
-docker images --format '  {{.Repository}}:{{.Tag}} ({{.Size}})' | grep -E "wolf|azahar" | head -5
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 8: Firewall
-# ─────────────────────────────────────────────────────────────────────────────
-echo "[Step 8/9] Firewall..."
-
-# SSH + Moonlight protocol ports
 TCP_PORTS="22 47984 47989 47999 48010"
 UDP_PORTS="47998:48010"
 UDP_EXTRA="48100 48200"
 
-if command -v ufw &> /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     for port in $TCP_PORTS; do ufw allow "$port/tcp" 2>/dev/null; done
     ufw allow "$UDP_PORTS/udp" 2>/dev/null
     for port in $UDP_EXTRA; do ufw allow "$port/udp" 2>/dev/null; done
     echo "  ✓ UFW rules added"
-elif command -v firewall-cmd &> /dev/null; then
-    for port in $TCP_PORTS; do firewall-cmd --permanent --add-port="$port/tcp" 2>/dev/null; done
-    firewall-cmd --permanent --add-port="$UDP_PORTS/udp" 2>/dev/null
-    for port in $UDP_EXTRA; do firewall-cmd --permanent --add-port="$port/udp" 2>/dev/null; done
-    firewall-cmd --reload 2>/dev/null
-    echo "  ✓ Firewalld rules added"
-elif command -v iptables &> /dev/null; then
-    # Check if iptables has a default DROP policy (meaning firewall is active)
-    if iptables -L INPUT 2>/dev/null | head -1 | grep -q "DROP"; then
-        for port in $TCP_PORTS; do
-            iptables -I INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null
-        done
-        iptables -I INPUT -p udp --dport 47998:48010 -j ACCEPT 2>/dev/null
-        for port in $UDP_EXTRA; do
-            iptables -I INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null
-        done
-        echo "  ✓ iptables rules added"
-    else
-        echo "  ✓ No active firewall detected (iptables ACCEPT policy)"
-    fi
+elif command -v iptables &>/dev/null && iptables -L INPUT 2>/dev/null | head -1 | grep -q "DROP"; then
+    for port in $TCP_PORTS; do iptables -I INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null; done
+    iptables -I INPUT -p udp --dport 47998:48010 -j ACCEPT 2>/dev/null
+    for port in $UDP_EXTRA; do iptables -I INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null; done
+    echo "  ✓ iptables rules added"
 else
-    echo "  ℹ No firewall manager found — ports should be open by default"
-    echo "    If using a cloud provider, ensure these ports are open in security groups:"
-    echo "    TCP: $TCP_PORTS"
-    echo "    UDP: $UDP_PORTS, $UDP_EXTRA"
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 9: Start Wolf
-# ─────────────────────────────────────────────────────────────────────────────
-if [ "$NO_START" = true ]; then
-    echo "[Step 9/9] Skipping Wolf start (--no-start)"
-else
-    echo "[Step 9/9] Starting Wolf..."
-    cd "$SCRIPT_DIR"
-    echo "  Using image: $WOLF_IMAGE_SELECTED"
-    WOLF_IMAGE="$WOLF_IMAGE_SELECTED" compose up -d wolf
-    echo "  ✓ Wolf started"
-    sleep 3
-    if compose ps wolf 2>/dev/null | grep -q "running"; then
-        echo "  ✓ Wolf is running"
-    else
-        echo "  ⚠ Wolf may have issues. Check: $COMPOSE_BIN logs wolf"
-    fi
+    echo "  ✓ No active firewall detected"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Done
 # ─────────────────────────────────────────────────────────────────────────────
-PUBLIC_IP=$(curl -sf https://ifconfig.me 2>/dev/null || curl -sf https://api.ipify.org 2>/dev/null || echo "<unknown>")
-
 echo ""
 echo "========================================="
-echo " Setup Complete! ✓"
+echo " Host Bootstrap Complete"
 echo "========================================="
 echo ""
-echo " VM Public IP: $PUBLIC_IP"
-echo ""
-echo " Next steps:"
-echo "   1. Place your 3DS ROM in $GAMER_HOME/roms/"
-echo "      ROM filename must match ROM_FILENAME in Wolf config."
-echo "      Currently set to: pokemon-alpha-sapphire.3ds"
-echo ""
-echo "   2. Open Moonlight on your device → Add Host → $PUBLIC_IP"
-echo "   3. Check Wolf logs for pairing PIN:"
-echo "      docker compose -f $SCRIPT_DIR/docker-compose.yml logs wolf 2>&1 | grep -i pin"
-echo "   4. Enter the PIN in Moonlight to pair"
-echo "   5. Select 'Azahar 3DS' → play!"
-echo ""
-echo " Useful commands:"
-echo "   cd $SCRIPT_DIR"
-echo "   $COMPOSE_BIN logs -f wolf            # Watch Wolf logs"
-echo "   docker logs GamerAzahar 2>&1 | tail  # Emulator logs"
-echo "   $COMPOSE_BIN down                    # Stop Wolf"
-echo "   WOLF_IMAGE=$WOLF_IMAGE_SELECTED $COMPOSE_BIN up -d wolf  # Restart Wolf"
-echo "   nvidia-smi                           # GPU status"
-echo ""
-echo " Setup log saved to: $LOG_FILE"
+echo " Next: run deploy-tensordock.sh setup to build images and start Wolf"
 echo ""
