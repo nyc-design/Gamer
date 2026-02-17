@@ -69,6 +69,9 @@ games/
 saves/
 roms/
 
+# TensorDock instance state
+.tensordock-instance-id
+
 # ROM files — never commit these
 *.3ds
 *.cia
