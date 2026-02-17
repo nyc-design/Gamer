@@ -516,11 +516,14 @@ print('  Config merged: Wolf base + Azahar apps')
         # Stop existing Wolf if running
         sudo docker compose down 2>/dev/null || true
 
-        # Use wolf-dual for dual-screen support if available
+        # Use wolf-dual for dual-screen support if available.
+        # Write WOLF_IMAGE to a .env file so docker compose picks it up
+        # (env vars don't pass through sudo otherwise).
         if sudo docker image inspect ghcr.io/nyc-design/wolf-dual:latest >/dev/null 2>&1; then
-            export WOLF_IMAGE=ghcr.io/nyc-design/wolf-dual:latest
+            echo 'WOLF_IMAGE=ghcr.io/nyc-design/wolf-dual:latest' | sudo tee .env >/dev/null
             echo \"Using wolf-dual image for dual-screen support\"
         else
+            sudo rm -f .env
             echo 'wolf-dual not available, using stock Wolf (single-screen only)'
         fi
 
