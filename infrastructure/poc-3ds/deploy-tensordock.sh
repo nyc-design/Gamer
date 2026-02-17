@@ -440,9 +440,11 @@ cmd_setup() {
         echo '  Building gamer/azahar:poc image...'
         sudo docker build -t gamer/azahar:poc -f azahar/Dockerfile azahar/
 
-        # Pull stock Wolf image
-        echo '  Pulling Wolf image...'
+        # Pull Wolf images (stock + dual-screen)
+        echo '  Pulling Wolf stock image...'
         sudo docker pull ghcr.io/games-on-whales/wolf:stable
+        echo '  Pulling Wolf dual-screen image...'
+        sudo docker pull ghcr.io/nyc-design/wolf-dual:latest || echo '  ⚠ wolf-dual pull failed (optional)'
     " 2>&1 | while IFS= read -r line; do echo "  $line"; done
     echo "  ✓ Images ready"
 
@@ -506,13 +508,21 @@ print('  Config merged: Wolf base + Azahar apps')
     "
 
     # ── Step 5: Start Wolf ────────────────────────────────────────────────
-    echo "[Step 5/5] Starting Wolf..."
+    echo "[Step 5/5] Starting Wolf (dual-screen)..."
     ssh_cmd "$ip" "
         set -e
         cd /opt/gamer/infrastructure/poc-3ds
 
         # Stop existing Wolf if running
         sudo docker compose down 2>/dev/null || true
+
+        # Use wolf-dual for dual-screen support if available
+        if sudo docker image inspect ghcr.io/nyc-design/wolf-dual:latest >/dev/null 2>&1; then
+            export WOLF_IMAGE=ghcr.io/nyc-design/wolf-dual:latest
+            echo \"Using wolf-dual image for dual-screen support\"
+        else
+            echo 'wolf-dual not available, using stock Wolf (single-screen only)'
+        fi
 
         # Start Wolf (only the wolf service — azahar is spawned by Wolf)
         sudo docker compose up -d wolf
@@ -565,7 +575,10 @@ print('  Config merged: Wolf base + Azahar apps')
     echo "  Next steps:"
     echo "    1. SCP your ROM:  scp 'your-rom.3ds' user@$ip:/home/gamer/roms/"
     echo "    2. Open Moonlight → Add Host → $ip"
-    echo "    3. Pair and launch 'Azahar 3DS (Single Screen)'"
+    echo "    3. Pair and launch an Azahar app:"
+    echo "       - 'Azahar 3DS (Single Screen)' — combined view"
+    echo "       - 'Azahar 3DS (Dual Screen)'   — top screen (needs wolf-dual)"
+    echo "       - 'Azahar 3DS (Bottom Screen)'  — bottom screen (needs wolf-dual)"
     echo ""
 }
 

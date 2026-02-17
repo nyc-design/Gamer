@@ -73,17 +73,20 @@ services:
     restart: unless-stopped
 
   ###########################################################################
-  # Wolf Dual-Screen — custom build with multi-output gst-wayland-display
+  # Wolf Dual-Screen — pre-built image with multi-output gst-wayland-display
   #
-  # Only needed for dual-screen streaming. Build with:
-  #   docker compose build wolf-dual
-  # Then set WOLF_IMAGE=wolf-dual in .env or environment before `docker compose up`.
+  # Pre-built and pushed to GHCR. To use dual-screen mode:
+  #   export WOLF_IMAGE=ghcr.io/nyc-design/wolf-dual:latest
+  #   docker compose up -d wolf
+  #
+  # To rebuild locally (requires Rust toolchain, ~15 min on 16 vCPU):
+  #   docker build -f wolf/Dockerfile.wolf-dual -t ghcr.io/nyc-design/wolf-dual:latest wolf/
   ###########################################################################
   wolf-dual:
     build:
       context: ./wolf
       dockerfile: Dockerfile.wolf-dual
-    image: wolf-dual
+    image: ghcr.io/nyc-design/wolf-dual:latest
     profiles:
       - build-only
 
