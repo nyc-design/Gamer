@@ -1,26 +1,27 @@
 ###############################################################################
-# Wolf config.toml — PoC for 3DS Streaming via Moonlight
+# Wolf config.toml — 3DS Dual-Screen Streaming PoC
 #
-# This config is placed at /etc/wolf/cfg/config.toml on the VM.
-# Wolf reads it at startup and registers the Azahar app.
+# Placed at /etc/wolf/cfg/config.toml on the VM.
 #
-# Moonlight pairing: On first connection from the iPhone Moonlight app,
-# Wolf will display a PIN. Enter it in Moonlight to pair. Wolf then
-# writes the client certificate into the [[paired_clients]] section
-# automatically.
+# App modes:
+#   "Azahar 3DS (Dual Screen)" — SeparateWindows mode (layout_option=4)
+#     Azahar creates two SDL windows (top + bottom screen).
+#     Sway tiles them side-by-side in one compositor output.
+#     This validates the foundation for per-window stream splitting.
 #
-# After pairing, the Azahar app appears in Moonlight's app list.
+#   "Azahar 3DS (Single Screen)" — Top screen only (layout_option=1)
+#     Traditional single-screen mode for gameplay-focused testing.
+#
+#   "Azahar 3DS (Settings)" — No ROM, windowed, for config changes.
+#
+# Dual-screen architecture goal (requires Wolf source changes):
+#   Each SDL window → separate Wayland output → separate stream → separate
+#   Moonlight app. See PR spec: Session Group + Stream Source Selection.
 ###############################################################################
 
 hostname = "gamer-vm"
 config_version = 2
-
-# GPU encoding: enable HEVC for better quality at lower bandwidth (iPhone supports it)
 support_hevc = true
-
-# Paired clients are added automatically when you pair via Moonlight PIN.
-# You can also pre-populate this by extracting the client cert from Moonlight.
-# paired_clients = []
 
 ###############################################################################
 # Profile: 3DS Gaming
@@ -28,36 +29,33 @@ support_hevc = true
 [[profiles]]
 id = "3ds-gaming"
 
+# ── Dual Screen Mode ────────────────────────────────────────────────────────
+# Azahar SeparateWindows: two SDL windows tiled by Sway in one stream.
+# Tests that Azahar correctly creates two independent Wayland surfaces.
 [[profiles.apps]]
-title = "Azahar 3DS"
+title = "Azahar 3DS (Dual Screen)"
 start_virtual_compositor = true
 start_audio_server = true
 
 [profiles.apps.runner]
 type = "docker"
-name = "GamerAzahar"
+name = "GamerAzaharDual"
 image = "gamer/azahar:poc"
 mounts = [
-    # ROMs directory — place your .3ds/.cia files here on the host
     "/home/gamer/roms:/home/retro/roms:ro",
-    # Saves directory — Azahar writes save files here
     "/home/gamer/saves:/home/retro/saves:rw",
-    # Config persistence — user config survives container restarts
     "/home/gamer/config:/home/retro/config:rw",
-    # 3DS firmware/system files (if you have them)
     "/home/gamer/firmware:/home/retro/firmware:ro",
 ]
 env = [
-    # ROM to launch — set this to your 3DS ROM filename
     "ROM_FILENAME=pokemon-alpha-sapphire.3ds",
-    # Start Azahar in fullscreen for gameplay. Avoid toggling fullscreen mid-stream.
-    "AZAHAR_FULLSCREEN=1",
-    # Use Sway compositor (required for Azahar's Wayland rendering)
+    # SeparateWindows mode — Azahar creates two windows
+    "LAYOUT_OPTION=4",
+    # Don't fullscreen — let Sway tile both windows
+    "AZAHAR_FULLSCREEN=0",
     "RUN_SWAY=1",
-    # NVIDIA GPU access
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
-    # GOW device access for input
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
 ]
 devices = []
@@ -76,6 +74,51 @@ base_create_json = """
 }
 """
 
+# ── Single Screen Mode ──────────────────────────────────────────────────────
+# Top screen only, fullscreen — traditional single-stream gameplay.
+[[profiles.apps]]
+title = "Azahar 3DS (Single Screen)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzahar"
+image = "gamer/azahar:poc"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=pokemon-alpha-sapphire.3ds",
+    # SingleScreen — top screen only, fullscreen
+    "LAYOUT_OPTION=1",
+    "AZAHAR_FULLSCREEN=1",
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ── Settings Mode ────────────────────────────────────────────────────────────
+# No ROM, windowed — for adjusting Azahar config via the menu.
 [[profiles.apps]]
 title = "Azahar 3DS (Settings)"
 start_virtual_compositor = true
@@ -92,7 +135,6 @@ mounts = [
     "/home/gamer/firmware:/home/retro/firmware:ro",
 ]
 env = [
-    # Settings mode: run without ROM, windowed to expose menu/controls safely
     "ROM_OPTIONAL=1",
     "AZAHAR_FULLSCREEN=0",
     "RUN_SWAY=1",

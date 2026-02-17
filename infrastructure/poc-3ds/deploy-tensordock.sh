@@ -31,10 +31,15 @@ load_token() {
     if [ -n "${TENSORDOCK_API_TOKEN:-}" ]; then
         return
     fi
-    # Try .env in project root
+    # Try .env in project root (check both TOKEN and KEY variants)
     for envfile in "$SCRIPT_DIR/../../.env" "$SCRIPT_DIR/.env" "$HOME/.env"; do
         if [ -f "$envfile" ]; then
             TENSORDOCK_API_TOKEN=$(grep -E '^TENSORDOCK_API_TOKEN' "$envfile" | sed 's/.*=\s*//' | tr -d '"' | tr -d "'" || true)
+            if [ -n "$TENSORDOCK_API_TOKEN" ]; then
+                return
+            fi
+            # Fall back to API_KEY (works as Bearer token on v2 API)
+            TENSORDOCK_API_TOKEN=$(grep -E '^TENSORDOCK_API_KEY' "$envfile" | sed 's/.*=\s*//' | tr -d '"' | tr -d "'" || true)
             if [ -n "$TENSORDOCK_API_TOKEN" ]; then
                 return
             fi

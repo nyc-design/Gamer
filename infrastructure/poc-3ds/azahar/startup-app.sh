@@ -9,15 +9,20 @@ source /opt/gow/bash-lib/utils.sh
 # Wolf injects: WAYLAND_DISPLAY, PULSE_SERVER, XDG_RUNTIME_DIR, DISPLAY_*
 #
 # Expected env vars (set by Wolf config or Gamer Agent):
-#   ROM_FILENAME   - Name of ROM file in /home/retro/roms/ (e.g., "game.3ds")
-#   FAKETIME       - Optional fake time string (e.g., "2024-01-01 12:00:00")
-#   RUN_SWAY       - Set to "1" to use Sway compositor (recommended for Azahar)
+#   ROM_FILENAME     - Name of ROM file in /home/retro/roms/ (e.g., "game.3ds")
+#   FAKETIME         - Optional fake time string (e.g., "2024-01-01 12:00:00")
+#   RUN_SWAY         - Set to "1" to use Sway compositor (recommended for Azahar)
+#   LAYOUT_OPTION    - Override layout_option in qt-config.ini at startup
+#                      0=Default(stacked), 1=SingleScreen, 4=SeparateWindows
+#   AZAHAR_FULLSCREEN - 0=windowed, 1=fullscreen (ignored for SeparateWindows)
+#   ROM_OPTIONAL     - Set to "1" to allow launching without a ROM (settings mode)
 ###############################################################################
 
 gow_log "=== Azahar 3DS Emulator Starting ==="
-gow_log "ROM_FILENAME=${ROM_FILENAME}"
-gow_log "WAYLAND_DISPLAY=${WAYLAND_DISPLAY}"
-gow_log "PULSE_SERVER=${PULSE_SERVER}"
+gow_log "ROM_FILENAME=${ROM_FILENAME:-<not set>}"
+gow_log "LAYOUT_OPTION=${LAYOUT_OPTION:-<default from config>}"
+gow_log "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<not set>}"
+gow_log "PULSE_SERVER=${PULSE_SERVER:-<not set>}"
 
 # libfaketime — only activate if FAKETIME is set
 if [ -n "$FAKETIME" ]; then
@@ -31,6 +36,15 @@ if [ ! -f /home/retro/config/azahar-emu/qt-config.ini ]; then
     gow_log "First run — copying default Azahar config"
     mkdir -p /home/retro/config/azahar-emu
     cp -r /defaults/config/azahar-emu/* /home/retro/config/azahar-emu/ 2>/dev/null || true
+fi
+
+# Runtime layout override — patch qt-config.ini if LAYOUT_OPTION is set
+if [ -n "${LAYOUT_OPTION:-}" ]; then
+    CONFIG_FILE="/home/retro/config/azahar-emu/qt-config.ini"
+    if [ -f "$CONFIG_FILE" ]; then
+        gow_log "Overriding layout_option to ${LAYOUT_OPTION}"
+        sed -i "s/^layout_option=.*/layout_option=${LAYOUT_OPTION}/" "$CONFIG_FILE"
+    fi
 fi
 
 # Determine ROM path (optional for settings-only mode)
@@ -72,17 +86,26 @@ else
     gow_log "Launching Azahar without ROM"
 fi
 
+# Read the active layout option from config
+ACTIVE_LAYOUT=$(grep -oP 'layout_option=\K\d+' /home/retro/config/azahar-emu/qt-config.ini 2>/dev/null || echo "0")
+gow_log "Active layout_option=${ACTIVE_LAYOUT}"
+
 # Launch via Sway compositor (required for Wayland rendering)
 # The `launcher` function from launch-comp.sh handles Sway/Gamescope setup
 source /opt/gow/launch-comp.sh
 
-# Keep stream surface stable by default:
-# - AZAHAR_FULLSCREEN=1 -> start in fullscreen (gameplay mode)
-# - AZAHAR_FULLSCREEN=0 -> windowed (settings/config mode)
+# Build launch arguments
 AZAHAR_ARGS=()
-if [ "${AZAHAR_FULLSCREEN:-1}" = "1" ]; then
+
+# Fullscreen handling:
+# - SeparateWindows (layout=4): Never use -f flag. Sway auto-tiles both windows.
+# - Other layouts: Use -f for gameplay, skip for settings mode.
+if [ "$ACTIVE_LAYOUT" = "4" ]; then
+    gow_log "SeparateWindows mode: Sway will tile both windows (no fullscreen flag)"
+elif [ "${AZAHAR_FULLSCREEN:-1}" = "1" ]; then
     AZAHAR_ARGS+=("-f")
 fi
+
 if [ -n "$ROM_PATH" ]; then
     AZAHAR_ARGS+=("${ROM_PATH}")
 fi
