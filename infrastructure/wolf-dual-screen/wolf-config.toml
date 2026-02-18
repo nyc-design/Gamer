@@ -1,0 +1,354 @@
+config_version = 6
+hostname = 'Wolf'
+uuid = '8b17bf89-814a-47fe-81e7-b6569866ffd1'
+
+[gstreamer.audio]
+default_audio_params = 'queue max-size-buffers=3 leaky=downstream ! audiorate ! audioconvert'
+default_opus_encoder = 'opusenc bitrate={bitrate} bitrate-type=cbr frame-size={packet_duration} bandwidth=fullband audio-type=restricted-lowdelay max-payload-size=1400'
+default_sink = '''rtpmoonlightpay_audio name=moonlight_pay packet_duration={packet_duration} encrypt={encrypt} aes_key="{aes_key}" aes_iv="{aes_iv}" !
+appsink name=wolf_udp_sink'''
+default_source = 'interpipesrc name=interpipesrc_{}_audio listen-to={session_id}_audio is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=3 block=false'
+
+[gstreamer.video]
+default_sink = '''rtpmoonlightpay_video name=moonlight_pay payload_size={payload_size} fec_percentage={fec_percentage} min_required_fec_packets={min_required_fec_packets} !
+appsink sync=false name=wolf_udp_sink
+'''
+default_source = 'interpipesrc name=interpipesrc_{}_video listen-to={session_id}_video is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=1 leaky-type=downstream'
+
+    [gstreamer.video.defaults.nvcodec]
+    video_params = '''cudaupload !
+cudaconvertscale add-borders=true !
+video/x-raw(memory:CUDAMemory), width={width}, height={height}, chroma-site={color_range}, format=NV12, colorimetry={color_space}, pixel-aspect-ratio=1/1'''
+    video_params_zero_copy = '''cudaupload !
+cudaconvertscale add-borders=true !
+video/x-raw(memory:CUDAMemory),format=NV12, width={width}, height={height}, pixel-aspect-ratio=1/1
+'''
+
+    [gstreamer.video.defaults.qsv]
+    video_params = '''videoconvertscale !
+video/x-raw, chroma-site={color_range}, width={width}, height={height}, format=NV12,
+colorimetry={color_space}, pixel-aspect-ratio=1/1'''
+    video_params_zero_copy = '''vapostproc add-borders=true !
+video/x-raw(memory:VAMemory), format=NV12, width={width}, height={height}, pixel-aspect-ratio=1/1'''
+
+    [gstreamer.video.defaults.va]
+    video_params = '''vapostproc add-borders=true !
+video/x-raw, chroma-site={color_range}, width={width}, height={height}, format=NV12,
+colorimetry={color_space}, pixel-aspect-ratio=1/1'''
+    video_params_zero_copy = '''vapostproc add-borders=true !
+video/x-raw(memory:VAMemory), format=NV12, width={width}, height={height}, pixel-aspect-ratio=1/1'''
+
+    [[gstreamer.video.av1_encoders]]
+    check_elements = [ 'nvav1enc', 'cudaconvertscale', 'cudaupload' ]
+    encoder_pipeline = '''nvav1enc gop-size=-1 bitrate={bitrate} rc-mode=cbr zerolatency=true preset=p1 tune=ultra-low-latency multi-pass=two-pass-quarter !
+av1parse !
+video/x-av1, stream-format=obu-stream, alignment=frame, profile=main'''
+    plugin_name = 'nvcodec'
+
+    [[gstreamer.video.av1_encoders]]
+    check_elements = [ 'vaav1enc', 'vapostproc' ]
+    encoder_pipeline = '''vaav1enc ref-frames=1 bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+av1parse !
+video/x-av1, stream-format=obu-stream, alignment=frame, profile=main'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.av1_encoders]]
+    check_elements = [ 'vaav1lpenc', 'vapostproc' ]
+    encoder_pipeline = '''vaav1lpenc ref-frames=1 bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+av1parse !
+video/x-av1, stream-format=obu-stream, alignment=frame, profile=main'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.av1_encoders]]
+    check_elements = [ 'qsvav1enc', 'vapostproc' ]
+    encoder_pipeline = '''qsvav1enc gop-size=0 ref-frames=1 bitrate={bitrate} rate-control=cbr low-latency=1 target-usage=6 !
+av1parse !
+video/x-av1, stream-format=obu-stream, alignment=frame, profile=main'''
+    plugin_name = 'qsv'
+
+    [[gstreamer.video.av1_encoders]]
+    check_elements = [ 'av1enc' ]
+    encoder_pipeline = '''av1enc usage-profile=realtime end-usage=vbr target-bitrate={bitrate} !
+av1parse !
+video/x-av1, stream-format=obu-stream, alignment=frame, profile=main'''
+    plugin_name = 'aom'
+    video_params = '''videoconvertscale !
+videorate !
+video/x-raw, width={width}, height={height}, framerate={fps}/1, format=I420,
+chroma-site={color_range}, colorimetry={color_space}'''
+    video_params_zero_copy = '''videoconvertscale !
+videorate !
+video/x-raw, width={width}, height={height}, framerate={fps}/1, format=I420,
+chroma-site={color_range}, colorimetry={color_space}'''
+
+    [[gstreamer.video.h264_encoders]]
+    check_elements = [ 'nvh264enc', 'cudaconvertscale', 'cudaupload' ]
+    encoder_pipeline = '''nvh264enc preset=low-latency-hq zerolatency=true gop-size=0 rc-mode=cbr-ld-hq bitrate={bitrate} aud=false !
+h264parse !
+video/x-h264, profile=main, stream-format=byte-stream'''
+    plugin_name = 'nvcodec'
+
+    [[gstreamer.video.h264_encoders]]
+    check_elements = [ 'vah264enc', 'vapostproc' ]
+    encoder_pipeline = '''vah264enc aud=false b-frames=0 ref-frames=1 num-slices={slices_per_frame} bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+h264parse !
+video/x-h264, profile=main, stream-format=byte-stream'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.h264_encoders]]
+    check_elements = [ 'vah264lpenc', 'vapostproc' ]
+    encoder_pipeline = '''vah264lpenc aud=false b-frames=0 ref-frames=1 num-slices={slices_per_frame} bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+h264parse !
+video/x-h264, profile=main, stream-format=byte-stream'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.h264_encoders]]
+    check_elements = [ 'qsvh264enc', 'vapostproc' ]
+    encoder_pipeline = '''qsvh264enc b-frames=0 gop-size=0 idr-interval=1 ref-frames=1 bitrate={bitrate} rate-control=cbr target-usage=6  !
+h264parse !
+video/x-h264, profile=main, stream-format=byte-stream'''
+    plugin_name = 'qsv'
+
+    [[gstreamer.video.h264_encoders]]
+    check_elements = [ 'x264enc' ]
+    encoder_pipeline = '''x264enc pass=qual tune=zerolatency speed-preset=superfast b-adapt=false bframes=0 ref=1
+sliced-threads=true threads={slices_per_frame} option-string="slices={slices_per_frame}:keyint=infinite:open-gop=0"
+b-adapt=false bitrate={bitrate} aud=false !
+video/x-h264, profile=high, stream-format=byte-stream'''
+    plugin_name = 'x264'
+
+    [[gstreamer.video.hevc_encoders]]
+    check_elements = [ 'nvh265enc', 'cudaconvertscale', 'cudaupload' ]
+    encoder_pipeline = '''nvh265enc gop-size=-1 bitrate={bitrate} aud=false rc-mode=cbr zerolatency=true preset=p1 tune=ultra-low-latency multi-pass=two-pass-quarter !
+h265parse !
+video/x-h265, profile=main, stream-format=byte-stream'''
+    plugin_name = 'nvcodec'
+
+    [[gstreamer.video.hevc_encoders]]
+    check_elements = [ 'vah265enc', 'vapostproc' ]
+    encoder_pipeline = '''vah265enc aud=false b-frames=0 ref-frames=1 num-slices={slices_per_frame} bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+h265parse !
+video/x-h265, profile=main, stream-format=byte-stream'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.hevc_encoders]]
+    check_elements = [ 'qsvh265enc', 'vapostproc' ]
+    encoder_pipeline = '''qsvh265enc b-frames=0 gop-size=0 idr-interval=1 ref-frames=1 bitrate={bitrate} rate-control=cbr low-latency=1 target-usage=6 !
+h265parse !
+video/x-h265, profile=main, stream-format=byte-stream'''
+    plugin_name = 'qsv'
+
+    [[gstreamer.video.hevc_encoders]]
+    check_elements = [ 'vah265lpenc', 'vapostproc' ]
+    encoder_pipeline = '''vah265lpenc aud=false b-frames=0 ref-frames=1 num-slices={slices_per_frame} bitrate={bitrate} cpb-size={bitrate} key-int-max=1024 rate-control=cqp target-usage=6 !
+h265parse !
+video/x-h265, profile=main, stream-format=byte-stream'''
+    plugin_name = 'va'
+
+    [[gstreamer.video.hevc_encoders]]
+    check_elements = [ 'x265enc' ]
+    encoder_pipeline = '''x265enc tune=zerolatency speed-preset=superfast bitrate={bitrate}
+option-string="info=0:keyint=-1:qp=28:repeat-headers=1:slices={slices_per_frame}:aud=0:annexb=1:log-level=3:open-gop=0:bframes=0:intra-refresh=0" !
+video/x-h265, profile=main, stream-format=byte-stream'''
+    plugin_name = 'x265'
+    video_params = '''videoconvertscale !
+videorate !
+video/x-raw, width={width}, height={height}, framerate={fps}/1, format=I420,
+chroma-site={color_range}, colorimetry={color_space}'''
+    video_params_zero_copy = '''videoconvertscale !
+videorate !
+video/x-raw, width={width}, height={height}, framerate={fps}/1, format=I420,
+chroma-site={color_range}, colorimetry={color_space}'''
+
+[[paired_clients]]
+app_state_folder = '16697641588654413202'
+client_cert = '''-----BEGIN CERTIFICATE-----
+MIICvzCCAaegAwIBAgIBADANBgkqhkiG9w0BAQsFADAjMSEwHwYDVQQDDBhOVklE
+SUEgR2FtZVN0cmVhbSBDbGllbnQwHhcNMjUwODI1MjM1NTQ3WhcNNDUwODIwMjM1
+NTQ3WjAjMSEwHwYDVQQDDBhOVklESUEgR2FtZVN0cmVhbSBDbGllbnQwggEiMA0G
+CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDx6L8iCxJENLprIwOPf1uFXfVNXFa8
+tX7d28NeSJhD5Z2lToSbidjzbRQzK8ccLlPYd1aqmg9d+18GOH5AZv/INabk1as3
+y+3aA6Xyvkfpr3mhrkiXvnaB04ZUjQZPDUb8cZqEHMp21fPqw28kncyE4kbIP8jo
+AWa4w0F+SIZfdTtXSGAkoIh5MMRKqxzJW6RXa3nRS8WtDZUTTrx/btZKXHWWnbIb
+/zIx9QVWCBV7MjupYcxbE83OziZ30DAi1XcllY14nuCrDh66OadrLgFN0/njd617
+bnxncrYbEuVegGlMJ4aVLHNoG8txG0ygKJXtHErj+l9NuYtH8vsXdNuNAgMBAAEw
+DQYJKoZIhvcNAQELBQADggEBADzjcViitQ0RLA8NNAqwAnv/J+4oP5rPKvTayl7e
+3AHrq36qPEB3pd6K4oQpCWS0EKBxzSjMwRXIDHvwnkCge92wL7L/E7Gp7w0coSEz
+9Db1nRqvLH9y3yjPix2mAzOG5Q9TodBfouBnko92b2bv5pRRgugzAr01X1bWXr5d
+vo92H89fAMluGl+FDDDMnLo48p+G2Bq0eh+T4FyhYfqpmBnFuJnKGa/bY6Adyz8c
+NVuk6Zgr/cgrPOSObNalJD6LIRyihC9N5LJ0hxe5XYnq+XsgIs/OFsviSbpiKg+I
+1iXADKgF+cp6IxfsZGWRzVv1gVvBukLCuv6nft+dAwDuILM=
+-----END CERTIFICATE-----
+'''
+
+    [paired_clients.settings]
+    controllers_override = []
+    h_scroll_acceleration = 1.0
+    mouse_acceleration = 1.0
+    run_gid = 1000
+    run_uid = 1000
+    v_scroll_acceleration = 1.0
+
+[[paired_clients]]
+app_state_folder = '3930696056887766098'
+client_cert = '''-----BEGIN CERTIFICATE-----
+MIICvzCCAaegAwIBAgIBADANBgkqhkiG9w0BAQsFADAjMSEwHwYDVQQDDBhOVklE
+SUEgR2FtZVN0cmVhbSBDbGllbnQwHhcNMjYwMjE2MDkzNDEyWhcNNDYwMjExMDkz
+NDEyWjAjMSEwHwYDVQQDDBhOVklESUEgR2FtZVN0cmVhbSBDbGllbnQwggEiMA0G
+CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCzQL/zFUymBBcWI8baFjMdv5tsQBQp
+ULuimlPaBb1K9jXUJeVasFIpiTR2a2rMcqg6Klod6/kTGVUMJKS7KNkYmp0bOBaY
+4nkTpFI9i9C96baR8JoAjjn4NrCjfk1eynC5E7Zc/IWTWg7HasyJuGofMVQ2pdf+
+A3HPfz9fzrwZ+trqwhIepPGGEnDeWLrZjEDWqOYQz/pCYa7z7/c0fd3IkdYQBm5s
+N8k9RPP9Hi3vtE66vFkryr0zWBIjSNyoU3Tvm/ql7yxnYXa8UzyQ+sF/u84f6FrR
+qq6/kSnueFvsVkzw3ZGCOj9WlHb1HAqp4dZUQ2wlF1YVzZoF5uBVXrEJAgMBAAEw
+DQYJKoZIhvcNAQELBQADggEBAIJspedtiEoBZ9AgjSqNh5mQOg8R8Xmh5gX2BTHV
+3s5mtbG31hkjXqJtV/+qCufAmcOUKWuUzIwPjakbvwJd7QPK/wHt2B+/qElGM/In
+s/42aRvQKXn+ARBr8uf6hdcyRbO1hENpkQypC81N5k0VKhV/QfVdIdiG9+5IroOR
+VUIiV/GQmuAr9ga6nNOmQo0ZM8g7mojC+yoMU0E5O+LBxPWryIAOU7UMd2RNLbt6
+Lo8VVmA7LD0bxnujyEyGKwk50IzbF0XsZiDRn9OVFswjwZIJUrgfNSXGTNoQvUeX
++J73Mx5K+XYm1IR1DVRHMDu5eCXu+KRnnncU8lVIP6T1JD8=
+-----END CERTIFICATE-----
+'''
+
+    [paired_clients.settings]
+    controllers_override = []
+    h_scroll_acceleration = 1.0
+    mouse_acceleration = 1.0
+    run_gid = 1000
+    run_uid = 1000
+    v_scroll_acceleration = 1.0
+
+[[profiles]]
+id = 'moonlight-profile-id'
+
+    [[profiles.apps]]
+    start_audio_server = true
+    start_virtual_compositor = true
+    title = 'Azahar 3DS (Dual Screen)'
+
+        [profiles.apps.runner]
+        base_create_json = '''{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+'''
+        devices = []
+        env = [
+            'ROM_FILENAME=pokemon-alpha-sapphire.3ds',
+            'LAYOUT_OPTION=4',
+            'AZAHAR_FULLSCREEN=0',
+            'RUN_GAMESCOPE=0',
+            'RUN_SWAY=0',
+            'DISPLAY=:0',
+            'NVIDIA_DRIVER_CAPABILITIES=all',
+            'NVIDIA_VISIBLE_DEVICES=all',
+            'GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*'
+        ]
+        image = 'gamer/azahar:poc'
+        mounts = [
+            '/home/gamer/roms:/home/retro/roms:ro',
+            '/home/gamer/saves:/home/retro/saves:rw',
+            '/home/gamer/config:/home/retro/config:rw',
+            '/home/gamer/firmware:/home/retro/firmware:ro'
+        ]
+        name = 'GamerAzaharDual'
+        ports = []
+        type = 'docker'
+
+    [[profiles.apps]]
+    start_audio_server = false
+    start_virtual_compositor = false
+    title = 'Azahar 3DS (Bottom Screen)'
+
+        [profiles.apps.audio]
+        source = 'audiotestsrc is-live=true wave=silence'
+
+        [profiles.apps.runner]
+        run_cmd = 'sh -c "while :; do sleep 86400; done"'
+        type = 'process'
+
+        [profiles.apps.video]
+        source = 'interpipesrc listen-to=secondary_video is-live=true stream-sync=compensate-ts max-bytes=0 max-buffers=2 block=false allow-renegotiation=true accept-events=true ! queue max-size-buffers=8 leaky=downstream'
+
+    [[profiles.apps]]
+    start_audio_server = true
+    start_virtual_compositor = true
+    title = 'Azahar 3DS (Single Screen)'
+
+        [profiles.apps.runner]
+        base_create_json = '''{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+'''
+        devices = []
+        env = [
+            'ROM_FILENAME=pokemon-alpha-sapphire.3ds',
+            'LAYOUT_OPTION=1',
+            'AZAHAR_FULLSCREEN=1',
+            'RUN_SWAY=1',
+            'NVIDIA_DRIVER_CAPABILITIES=all',
+            'NVIDIA_VISIBLE_DEVICES=all',
+            'GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*'
+        ]
+        image = 'gamer/azahar:poc'
+        mounts = [
+            '/home/gamer/roms:/home/retro/roms:ro',
+            '/home/gamer/saves:/home/retro/saves:rw',
+            '/home/gamer/config:/home/retro/config:rw',
+            '/home/gamer/firmware:/home/retro/firmware:ro'
+        ]
+        name = 'GamerAzahar'
+        ports = []
+        type = 'docker'
+
+    [[profiles.apps]]
+    start_audio_server = true
+    start_virtual_compositor = true
+    title = 'Azahar 3DS (Settings)'
+
+        [profiles.apps.runner]
+        base_create_json = '''{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+'''
+        devices = []
+        env = [
+            'ROM_OPTIONAL=1',
+            'AZAHAR_FULLSCREEN=0',
+            'NVIDIA_DRIVER_CAPABILITIES=all',
+            'NVIDIA_VISIBLE_DEVICES=all',
+            'GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*'
+        ]
+        image = 'gamer/azahar:poc'
+        mounts = [
+            '/home/gamer/roms:/home/retro/roms:ro',
+            '/home/gamer/saves:/home/retro/saves:rw',
+            '/home/gamer/config:/home/retro/config:rw',
+            '/home/gamer/firmware:/home/retro/firmware:ro'
+        ]
+        name = 'GamerAzaharSettings'
+        ports = []
+        type = 'docker'

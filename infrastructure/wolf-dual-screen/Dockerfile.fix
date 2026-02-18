@@ -1,0 +1,17 @@
+# Stage 1: Build the fixed GStreamer plugin with CUDA support
+FROM ghcr.io/games-on-whales/gstreamer:1.26.7 AS builder
+
+RUN apt-get update && apt-get install -y     curl build-essential pkg-config     libwayland-dev libxkbcommon-dev libudev-dev libinput-dev libseat-dev     libpixman-1-dev libdrm-dev libgbm-dev libegl-dev libgl-dev     libxcb1-dev libxcb-composite0-dev libx11-xcb-dev libxcb-xfixes0-dev     libxcb-render0-dev libx11-dev libicu-dev cmake     && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
+ENV PATH=/opt/rust/bin:$PATH
+
+COPY . /build
+WORKDIR /build
+RUN cargo build --release -p gst-plugin-wayland-display --features cuda
+
+# Stage 2: Overlay into Wolf image + install xhost
+FROM wolf-dual-local:xwayland-fix
+RUN apt-get update && apt-get install -y x11-xserver-utils && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/libgstwaylanddisplaysrc.so /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwaylanddisplaysrc.so

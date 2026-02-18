@@ -1,6 +1,6 @@
 # Gamer - Cloud Gaming Platform
 
-A cloud-streamed emulator and PC gaming platform. User picks a game in the web app, we spin up a GPU VM, launch the emulator/Steam in a Docker container via Wolf (Games on Whales), and stream video to the user's browser via moonlight-web-stream (v1) or MoQ (v2). Dual-screen emulators (DS/3DS) stream to two separate browser clients with client-side crop.
+A cloud-streamed emulator and PC gaming platform. User picks a game in the web app, we spin up a GPU VM, launch the emulator/Steam in a Docker container via Wolf (Games on Whales), and stream video to the user's browser via moonlight-web-stream (v1) or MoQ (v2). Dual-screen emulators (DS/3DS) use Wolf's multi-output compositor (gst-wayland-display fork) to stream each screen as a separate video session to two browser clients.
 
 **Canonical architecture reference**: `ARCHITECTURE.md` — always defer to it for detailed technical decisions. This CLAUDE.md is a working summary for agents.
 
@@ -23,7 +23,7 @@ A cloud-streamed emulator and PC gaming platform. User picks a game in the web a
 ### Key Decisions (from ARCHITECTURE.md)
 
 1. **Wolf replaces Sunshine + custom compositor** — includes Wayland compositor, Moonlight protocol, GStreamer+NVENC encoding, Docker app spawning, virtual input
-2. **Dual-screen solved at the web client layer** — Wolf streams combined frame, two browser clients each crop to their assigned screen
+2. **Dual-screen solved at the compositor layer** — gst-wayland-display fork routes each emulator window to a separate output, Wolf streams each as an independent session
 3. **moonlight-web-stream (Helix fork) is the v1 web client** — WebSocket transport, WebCodecs decode, binary input protocol
 4. **Split storage: Cloudflare R2 for ROMs, GCS for everything else** — zero egress fees for large ROM files on non-GCP providers
 5. **MongoDB for metadata only** — games collection and saves collection; files live in R2/GCS
@@ -289,7 +289,7 @@ gamer/
 - ROM upload (to Cloudflare R2 via presigned URLs)
 - Session launcher (hit Play → Main Server provisions VM)
 - Embedded streaming player (moonlight-web-stream TypeScript client)
-- Dual-screen mode (two browser windows, each cropping to assigned screen)
+- Dual-screen mode (two browser windows, each receiving separate stream via multi-output compositor)
 - Reconnection UI (if browser tab closes, VM still running)
 
 ### Main Server (FastAPI)
@@ -343,23 +343,22 @@ gamer/
 
 **Our additions to Helix fork**:
 - Multi-client per session
-- Crop config per client (for dual-screen)
 - Touch coordinate translation (DS bottom screen)
 - Audio routing (one device only)
 
 ## Dual-Screen Streaming (DS/3DS)
 
-Wolf streams a combined frame (both screens in one image). Two browser clients each decode the full frame with WebCodecs, then crop to their assigned screen:
+A custom gst-wayland-display fork adds Xwayland support and multi-output to Wolf's compositor. Emulators in separated-windows mode create two X11 windows; the compositor routes each to a separate output with its own GStreamer pipeline:
 
 ```
-melonDS (top+bottom in one window)
-    → Wolf compositor → single framebuffer → NVENC encode
-    → moonlight-web-stream → WebSocket
-    ├── Browser A (iPad): decode full frame, crop top 768px, D-pad input
-    └── Browser B (iPhone): decode full frame, crop bottom 768px, touch input
+Azahar (separated windows, layout_option=4)
+    → two X11 windows via Xwayland
+    → gst-wayland-display compositor (Smithay + XWM)
+        ├── Window 1 → PRIMARY output → Wolf session A (top screen)
+        └── Window 2 → SECONDARY output → Wolf session B (bottom screen)
 ```
 
-Crop config comes from the session manifest's `dual_screen` field.
+Wolf config defines two apps: "Dual Screen" (launches emulator, `GST_WD_MULTI_OUTPUT=1`) and "Bottom Screen" (`interpipesrc listen-to=secondary_video`). Each Moonlight client connects to its own app.
 
 ## libfaketime — In-Game Clock Spoofing
 
@@ -457,7 +456,7 @@ Ubuntu 22.04 + NVIDIA driver + Docker + NVIDIA Container Toolkit + rclone + Game
 
 - **MoQ (v2 transport)**: GStreamer moqsink → MoQ relay → WebTransport → browser (eliminates moonlight-web-stream middleman)
 - **Native Moonlight support**: For Apple TV, Android TV (secondary client path)
-- **Server-side dual-screen crop**: Two Wolf instances with GStreamer videocrop (for native Moonlight)
+- **Native Moonlight dual-screen**: Expose multi-output streams as separate Moonlight sessions for native clients
 - **VM pre-warming pool**: Reduce cold start time from 2+ minutes
 - **Steam pre-download**: `steamcmd` headless download before Wolf starts
 

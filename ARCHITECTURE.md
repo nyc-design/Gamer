@@ -2,14 +2,14 @@
 
 ## Summary
 
-Cloud-streamed emulator and PC gaming platform. User picks a game in the web app, we spin up a GPU VM, launch the emulator/Steam in a Docker container via Wolf (Games on Whales), and stream video to the user's browser via moonlight-web-stream (v1) or MoQ (v2). Dual-screen emulators (DS/3DS) stream to two separate browser clients with client-side crop. ROMs live in Cloudflare R2 (zero egress fees); saves, configs, firmware, and Steam files live in GCS. A FastAPI agent on each VM orchestrates setup, and a main server handles metadata, session lifecycle, and VM management.
+Cloud-streamed emulator and PC gaming platform. User picks a game in the web app, we spin up a GPU VM, launch the emulator/Steam in a Docker container via Wolf (Games on Whales), and stream video to the user's browser via moonlight-web-stream (v1) or MoQ (v2). Dual-screen emulators (DS/3DS) use Wolf's multi-output compositor (gst-wayland-display fork) to stream each screen as a separate video session to two browser clients. ROMs live in Cloudflare R2 (zero egress fees); saves, configs, firmware, and Steam files live in GCS. A FastAPI agent on each VM orchestrates setup, and a main server handles metadata, session lifecycle, and VM management.
 
 ---
 
 ## Key Architectural Decisions
 
 1. **Wolf replaces Sunshine + custom compositor.** Wolf includes a Smithay Wayland micro-compositor, Moonlight protocol, GStreamer+NVENC encoding, Docker app spawning, and virtual input via inputtino. No custom streaming infrastructure needed.
-2. **Dual-screen solved at the web client layer.** Wolf streams a combined frame (both DS screens in one image). Two browser clients decode the full frame with WebCodecs, each crops to their assigned screen. No server-side modifications.
+2. **Dual-screen solved at the compositor layer.** A custom gst-wayland-display fork (with Xwayland support and multi-output) routes each emulator window to a separate compositor output. Wolf streams each output as an independent video session — two Moonlight clients each receive their own screen's stream directly. No client-side cropping.
 3. **moonlight-web-stream (Helix fork) is the v1 web client.** WebSocket transport, WebCodecs decode, binary input protocol. Production-proven by Helix. MoQ is the v2 transport — its GStreamer plugin eliminates the middleman and its pub/sub model is ideal for dual-screen fan-out.
 4. **Split storage: Cloudflare R2 for ROMs, GCS for everything else.** ROMs are large (DS 16-512MB, GC 1.4GB, Wii 4.7GB, Switch 16-32GB), read-heavy, and pulled to VMs on non-GCP providers (TensorDock). R2 has zero egress fees, S3-compatible API, and no rate limits — perfect for this. Saves, configs, firmware, and Steam files are small, write-heavy, and benefit from GCS object versioning. rclone mounts both into VMs. No custom file sync, no inotify-based save management (with one exception: save event timestamps for game clock tracking).
 5. **MongoDB for metadata only.** Games collection and saves collection. The web app reads MongoDB; files live in R2/GCS.
@@ -602,51 +602,37 @@ The `games` collection can have a `gpu_tier` field to override per game.
 
 ## Dual-Screen Streaming
 
-### The Constraint
+### Solution: Multi-Output Compositor (gst-wayland-display fork)
 
-Wolf's compositor (`gst-wayland-display`) is single-output: one framebuffer, one GStreamer pipeline, one video stream per session. The Moonlight protocol is also single-stream. Neither supports multiple outputs natively.
-
-### Solution: Client-Side Crop via moonlight-web-stream
-
-Wolf streams a combined frame (both DS screens in one image). Two browser clients each decode the full frame with WebCodecs, then crop:
+A custom fork of `gst-wayland-display` (`nyc-design/gst-wayland-display`, branch `feature/xwayland-support`) adds Xwayland support and multi-output routing to Wolf's Smithay compositor. Emulators running in separated-windows mode create two X11 windows; the compositor's XWM routes the first to the primary output and the second to the secondary output. Each output feeds its own GStreamer interpipesink, and Wolf streams them as independent Moonlight sessions.
 
 ```
-melonDS (top+bottom in one window, e.g., 1024x1536)
-    ↓ single Wayland surface
-Wolf compositor → single framebuffer → NVENC encode
-    ↓ Moonlight RTP
-moonlight-web-stream (Rust server on VM)
-    ↓ H264 NAL units via WebSocket (to both clients)
+Azahar (separated windows mode, layout_option=4)
+    ↓ two X11 windows via Xwayland
+gst-wayland-display compositor (Smithay + XWM)
+    ├── Window 1 → PRIMARY output → interpipesink → Wolf session A → NVENC encode
+    └── Window 2 → SECONDARY output → interpipesink → Wolf session B → NVENC encode
+         ↓                                    ↓
 ┌────────────────────┐    ┌────────────────────┐
-│ Browser A (iPad)   │    │ Browser B (iPhone)  │
-│ decode full frame  │    │ decode full frame    │
-│ crop: top 768px    │    │ crop: bottom 768px   │
+│ Moonlight Client A │    │ Moonlight Client B  │
+│ (iPad — top screen)│    │ (iPhone — bottom)   │
 │ D-pad/button input │    │ Touch input          │
 └────────────────────┘    └────────────────────┘
 ```
 
-Crop config comes from the session manifest. The JavaScript is trivial:
-
-```javascript
-ctx.drawImage(frame,
-  cropX, cropY, cropW, cropH,  // source rect (which screen)
-  0, 0, canvas.width, canvas.height)  // dest (full canvas)
-```
+Wolf config defines two apps per dual-screen emulator:
+- **"Dual Screen"** — launches the emulator container with `start_virtual_compositor=true`, env vars `GST_WD_MULTI_OUTPUT=1` and `GST_WD_SECONDARY_SINK_NAME=secondary_video`
+- **"Bottom Screen"** — `start_virtual_compositor=false`, video source is `interpipesrc listen-to=secondary_video`
 
 ### Audio Routing
 
-Audio plays on one device only (top-screen iPad). Bottom-screen iPhone is muted. The web client config specifies `"audio": true/false` per client.
+Audio plays on one device only (top-screen iPad). Bottom-screen client receives silence. The Wolf config specifies `audiotestsrc wave=silence` for the bottom screen app.
 
-### Native Moonlight Dual-Screen (Future)
+### Key Fork Changes (gst-wayland-display)
 
-Moonlight apps don't support client-side crop. For native dual-screen, the path is server-side crop in the GStreamer pipeline — two Wolf instances, each with `videocrop`:
-
-```
-Wolf A: waylanddisplaysrc → videocrop top=0 bottom=768 → nvh265enc → session A
-Wolf B: waylanddisplaysrc → videocrop top=768 bottom=0 → nvh265enc → session B
-```
-
-Not v1. Evaluate if there's demand.
+1. **Xwayland support** — Added `xwayland` feature to Smithay, implemented `XwmHandler` trait for X11 window routing
+2. **Multi-output rendering** — Secondary output with its own framebuffer and interpipesink
+3. **Environment variable activation** — `GST_WD_MULTI_OUTPUT=1` and `GST_WD_SECONDARY_SINK_NAME=<name>` enable multi-output without modifying Wolf's hardcoded pipeline strings
 
 ---
 
@@ -662,7 +648,7 @@ moonlight-web-stream (Rust server on same VM)
     ↓ Binary WebSocket frames
 Browser (TypeScript client)
     ↓ WebCodecs API (hardware-accelerated H264 decode)
-    ↓ Render to <canvas> (with optional crop for dual-screen)
+    ↓ Render to <canvas>
     ↑ Input events (keyboard, mouse, touch, gamepad)
     ↑ Binary WebSocket frames back to server
     ↑ Server translates to Moonlight input protocol → Wolf → inputtino
@@ -679,8 +665,8 @@ Helix (helix.ml) built and battle-tested Wolf + browser streaming for their AI c
 
 | Component | Source | Our Additions |
 |-----------|--------|--------------|
-| Rust WebSocket server | `helixml/moonlight-web-stream` | Multi-client per session, crop config per client, input coordinate translation |
-| TypeScript browser client | `helixml/moonlight-web-stream` | Canvas crop rendering, touch-to-DS-bottom mapping, dual-device session join UI, audio routing |
+| Rust WebSocket server | `helixml/moonlight-web-stream` | Multi-client per session, input coordinate translation |
+| TypeScript browser client | `helixml/moonlight-web-stream` | Touch-to-DS-bottom mapping, dual-device session join UI, audio routing |
 
 ### Browser Compatibility
 
@@ -735,7 +721,7 @@ Input back-channel (separate — MoQ is media-delivery only):
   Browser → WebSocket → VM input server → Wolf inputtino → virtual devices
 ```
 
-Dual-screen is trivial with MoQ's pub/sub: one Wolf publisher, two browser subscribers, each crops independently. No custom fan-out code.
+Dual-screen is trivial with MoQ's pub/sub: one Wolf publisher per output, two browser subscribers each receiving their own screen's stream directly.
 
 ### Browser Compatibility
 
@@ -764,7 +750,7 @@ Dual-screen is trivial with MoQ's pub/sub: one Wolf publisher, two browser subsc
 
 ```
 User touches iPad screen
-  → moonlight-web-stream translates touch coords based on crop config
+  → moonlight-web-stream translates touch coords
   → sends as Moonlight touch event to Wolf
   → inputtino creates virtual touchscreen device (/dev/uinput)
   → emulator container receives touch via SDL2/libinput
@@ -921,7 +907,7 @@ services:
 | Wolf stability on cloud GPUs | Medium | Test per cloud provider. Pre-bake validated driver versions. Helix runs Wolf in production — reference their configs. |
 | NVENC session limits | Low | Single-user ephemeral VMs. One session per VM. Not a concern. |
 | WebCodecs browser compatibility | Low | Safari 16.4+, Chrome 94+, Firefox 130+. Covers >95% of targets. |
-| Dual-screen touch accuracy | Medium | Touch coord translation depends on crop alignment with emulator layout. Build debug overlay. Per-emulator calibration. |
+| Dual-screen touch accuracy | Medium | Touch coord translation for bottom screen. Build debug overlay. Per-emulator calibration. |
 | WebSocket latency vs native Moonlight | Medium | ~5-10ms added. Acceptable for emulated games. MoQ migration in v2 addresses this. Native Moonlight available as fallback. |
 | Emulator compatibility with headless Wayland | Medium | Test each emulator in Wolf's compositor. Some may need Sway intermediary (`RUN_SWAY=1`). |
 | Save file corruption | Low | GCS object versioning for automatic rollback. Save-then-copy pattern prevents partial writes. |
@@ -944,7 +930,7 @@ services:
 - **Week 3:** Build Gamer Agent (rclone mounts, Wolf config gen, session manifest, health endpoint).
 
 ### Phase 2: Dual-Screen + More Emulators (Weeks 4-6)
-- **Week 4:** Multi-client moonlight-web-stream. Two browsers, same Wolf session, client-side crop.
+- **Week 4:** Multi-output dual-screen streaming. Two Moonlight sessions via gst-wayland-display fork.
 - **Week 5:** Touch coordinate translation for DS bottom screen. PPSSPP + Azahar images.
 - **Week 6:** Ryujinx (Switch) image. libfaketime integration. Save slot copy logic.
 
@@ -970,7 +956,7 @@ services:
 | **Main Server** | FastAPI: MongoDB CRUD, session lifecycle, cloud VM provisioning, VM health polling, billing |
 | **Web App** | Game library, save slots, ROM upload, session launcher, embedded streaming player |
 | **Emulator Docker Images** | Per-emulator images with baked configs and entrypoint scripts |
-| **moonlight-web-stream fork** | Multi-client, crop config, touch translation, audio routing |
+| **moonlight-web-stream fork** | Multi-client, touch translation, audio routing |
 
 ### Use As-Is
 
