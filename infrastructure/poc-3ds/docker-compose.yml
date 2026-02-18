@@ -37,6 +37,9 @@ services:
       - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
       - WOLF_RENDER_NODE=/dev/dri/renderD128
       - WOLF_LOG_LEVEL=INFO
+      # Enable info-level Rust tracing for gst-wayland-display
+      # Default is WARN which hides Xwayland startup messages
+      - RUST_LOG=info
       # Dual-screen: enable multi-output in gst-wayland-display.
       # This env var is checked by our forked waylanddisplaysrc at startup,
       # bypassing Wolf's hardcoded pipeline string. Harmless on stock Wolf.

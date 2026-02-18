@@ -505,6 +505,10 @@ print('  Config merged: Wolf base + Azahar apps')
         # Verify apps are in config
         app_count=\$(grep -c 'title.*Azahar' /etc/wolf/cfg/config.toml || echo 0)
         echo \"  ✓ Wolf config has \$app_count Azahar app(s)\"
+
+        # Ensure helper script used by Bottom Screen process-runner exists
+        sudo install -m 755 /opt/gamer/infrastructure/poc-3ds/wolf/bottom-screen-keepalive.sh /etc/wolf/cfg/bottom-screen-keepalive.sh
+        echo '  ✓ Installed /etc/wolf/cfg/bottom-screen-keepalive.sh'
     "
 
     # ── Step 5: Start Wolf ────────────────────────────────────────────────

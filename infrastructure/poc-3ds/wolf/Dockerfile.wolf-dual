@@ -106,5 +106,10 @@ COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/gstreamer-1.0/
 COPY --from=builder /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/liblibgstwaylanddisplay.so* \
     /usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/
 
+# Create X11 socket directory for Xwayland
+# Smithay's Xwayland support creates X11 sockets in /tmp/.X11-unix
+# This directory must exist with proper permissions before the compositor starts
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
 # Refresh shared library cache
 RUN ldconfig
