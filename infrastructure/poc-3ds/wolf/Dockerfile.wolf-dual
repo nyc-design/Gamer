@@ -79,6 +79,28 @@ else:
     print('patched secondary pipeline string in gst-wayland-display')
 
 p.write_text(new_s)
+
+# Patch compositor panic for clients without ClientState (seen with Xwayland clients).
+# Root cause: `client_compositor_state` unconditionally unwraps client data.
+# In some paths Smithay binds wl_output for a client without injected ClientState,
+# causing panic and stream abort ("no video received from host").
+cp = Path('/tmp/gst-wayland-display/wayland-display-core/src/wayland/handlers/compositor.rs')
+cs = cp.read_text()
+old = '&client.get_data::<ClientState>().unwrap().compositor_state'
+new = '''client
+            .get_data::<ClientState>()
+            .map(|d| &d.compositor_state)
+            .unwrap_or_else(|| {
+                static FALLBACK: std::sync::OnceLock<CompositorClientState> = std::sync::OnceLock::new();
+                tracing::warn!("Client missing ClientState, using fallback compositor state");
+                FALLBACK.get_or_init(CompositorClientState::default)
+            })'''
+if old in cs:
+    cs = cs.replace(old, new, 1)
+    cp.write_text(cs)
+    print('patched compositor client state unwrap to fallback')
+else:
+    raise SystemExit('ERROR: Could not patch compositor.rs client_compositor_state unwrap')
 PY
 
 # Build with CUDA support (matching upstream Wolf build)
