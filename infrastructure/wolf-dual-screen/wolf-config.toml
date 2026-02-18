@@ -275,7 +275,7 @@ id = 'moonlight-profile-id'
         type = 'process'
 
         [profiles.apps.video]
-        source = 'interpipesrc listen-to=secondary_video is-live=true stream-sync=compensate-ts max-bytes=0 max-buffers=2 block=false allow-renegotiation=true accept-events=true ! queue max-size-buffers=8 leaky=downstream'
+        source = 'interpipesrc listen-to=secondary_video is-live=true stream-sync=restart-ts max-bytes=0 max-buffers=1 leaky-type=downstream block=false ! queue max-size-buffers=2 leaky=downstream'
 
     [[profiles.apps]]
     start_audio_server = true

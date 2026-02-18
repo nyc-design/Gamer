@@ -132,6 +132,8 @@ pub struct State {
     surpressed_keys: HashSet<u32>,
     pub pending_windows: Vec<Window>,
     input_context: Libinput,
+    /// Tracks which /dev/input/event* devices have already been added to libinput
+    known_input_devices: HashSet<String>,
 
     // multi-output management
     pub multi_output_enabled: bool,
@@ -270,6 +272,7 @@ impl State {
             surpressed_keys: HashSet::new(),
             pending_windows: Vec::new(),
             input_context: input_context.clone(),
+            known_input_devices: HashSet::new(),
 
             // multi-output management
             multi_output_enabled: false,
@@ -330,6 +333,35 @@ pub(crate) fn init(
             state.process_input_event(event)
         })
         .unwrap();
+
+    // Periodically scan /dev/input/ for new event devices created by Wolf's inputtino.
+    // Wolf creates virtual input devices on the host and bind-mounts them into containers,
+    // but our compositor runs in the Wolf container and needs to pick them up via libinput.
+    state
+        .handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(500)),
+            move |_, _, state: &mut State| {
+                let input_dir = std::path::Path::new("/dev/input");
+                if let Ok(entries) = std::fs::read_dir(input_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let path_str = path.to_string_lossy().to_string();
+                        // Only add event* devices (not js*, mice, etc.)
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if name.starts_with("event") && !state.known_input_devices.contains(&path_str) {
+                                tracing::info!("Auto-discovered input device: {}", path_str);
+                                state.input_context.path_add_device(&path_str);
+                                state.known_input_devices.insert(path_str);
+                            }
+                        }
+                    }
+                }
+                // Re-arm the timer
+                TimeoutAction::ToDuration(Duration::from_millis(500))
+            },
+        )
+        .expect("Failed to insert input device scanner timer");
 
     state
         .handle
@@ -949,6 +981,26 @@ pub(crate) fn init(
             },
         )
         .unwrap();
+
+    // Kill any orphaned Xwayland processes from previous sessions.
+    // If old Xwayland holds :0, our new one gets :1 or :2, causing DISPLAY mismatch
+    // since Azahar containers may hardcode DISPLAY=:0.
+    match std::process::Command::new("killall")
+        .arg("-9")
+        .arg("Xwayland")
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                tracing::info!("Killed orphaned Xwayland processes from previous sessions");
+                // Brief sleep to let sockets be released
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Err(_) => {
+            // killall not found or no processes — fine, continue
+        }
+    }
 
     // Initialize Xwayland for X11 app support
     let xwayland_handle = event_loop.handle();
