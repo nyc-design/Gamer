@@ -61,6 +61,8 @@ env = [
     # sees Azahar's windows directly as separate Wayland surfaces.
     "RUN_GAMESCOPE=0",
     "RUN_SWAY=0",
+    # Enable Xwayland support in wolf-dual compositor for X11 apps
+    "USE_XWAYLAND=1",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
     "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",

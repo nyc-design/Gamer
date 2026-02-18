@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libfaketime \
         # Qt6 deps that Azahar may need
         qt6-base-dev \
+        qt6-wayland \
         libqt6multimedia6 \
         libqt6opengl6-dev \
         # OpenGL/EGL for 3DS GPU emulation
