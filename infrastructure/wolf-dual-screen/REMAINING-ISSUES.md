@@ -1,6 +1,24 @@
 # Remaining Issues — Root Cause Analysis
 
-Status: Dual-screen streaming WORKS (both screens visible). These 3 issues remain.
+Status: Dual-screen streaming WORKS (both screens visible).  
+This file contains original root-cause analysis plus the codex follow-up fixes now applied on branch `dual-screen-codex-improve-upon-checkpoint`.
+
+## Codex Follow-up Fixes Applied
+
+1. **Bottom-screen latency tuning (config-only)**
+   - Updated bottom screen source in `wolf-config.toml`:
+     - `stream-sync=restart-ts`
+     - `max-buffers=1`
+     - `leaky-type=downstream`
+     - queue reduced to `max-size-buffers=2`
+
+2. **Input reliability fallback in compositor**
+   - Added periodic `/dev/input/event*` discovery in `comp_mod.rs` (1s timer).
+   - Added deduplicated attach path (`attach_input_device_if_needed`) so input devices are added even if Wolf's `Command::InputDevice` path is missed.
+
+3. **Reconnect robustness for DISPLAY=:0 setups**
+   - Added best-effort stale Xwayland cleanup (`pkill -f Xwayland`) before compositor spawns a new Xwayland.
+   - Changed Xwayland spawn to request `Some(0)` to keep display stable at `:0`.
 
 ---
 

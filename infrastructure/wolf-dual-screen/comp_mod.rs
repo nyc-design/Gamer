@@ -65,6 +65,7 @@ use smithay::{
 use std::sync::Mutex;
 use std::{
     collections::HashSet,
+    fs,
     ffi::CString,
     sync::{Arc, mpsc::Sender},
     time::{Duration, Instant},
@@ -159,6 +160,7 @@ pub struct State {
     viewporter_state: ViewporterState,
     cursor_event_count: i32,
     pub single_pixel_buffer_state: SinglePixelBufferState,
+    attached_input_devices: HashSet<String>,
 }
 
 impl State {
@@ -294,6 +296,35 @@ impl State {
             shm_state,
             viewporter_state,
             single_pixel_buffer_state,
+            attached_input_devices: HashSet::new(),
+        }
+    }
+
+    fn attach_input_device_if_needed(&mut self, path: &str) {
+        if self.attached_input_devices.contains(path) {
+            return;
+        }
+        tracing::info!(path, "Adding input device.");
+        self.input_context.path_add_device(path);
+        self.attached_input_devices.insert(path.to_string());
+    }
+
+    fn discover_input_devices(&mut self) {
+        let Ok(entries) = fs::read_dir("/dev/input") else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("event") {
+                continue;
+            }
+            if let Some(path_str) = path.to_str() {
+                self.attach_input_device_if_needed(path_str);
+            }
         }
     }
 }
@@ -454,8 +485,7 @@ pub(crate) fn init(
                     }
                 }
                 Event::Msg(Command::InputDevice(path)) => {
-                    tracing::info!(path, "Adding input device.");
-                    state.input_context.path_add_device(&path);
+                    state.attach_input_device_if_needed(&path);
                 }
                 Event::Msg(Command::Buffer(buffer_sender, tracer)) => {
                     let wait = if let Some(last_render) = state.last_render {
@@ -921,6 +951,18 @@ pub(crate) fn init(
         })
         .unwrap();
 
+    // Fallback input discovery loop:
+    // In some Wolf + Xwayland setups, Command::InputDevice is not delivered for
+    // all virtual devices. Periodically scan /dev/input/event* and attach any
+    // new devices to libinput to keep keyboard/mouse/controller input working.
+    state
+        .handle
+        .insert_source(Timer::immediate(), |_, _, state| {
+            state.discover_input_devices();
+            TimeoutAction::ToDuration(Duration::from_millis(1000))
+        })
+        .expect("Failed to start input discovery timer");
+
     let source = ListeningSocketSource::new_auto().unwrap();
     let socket_name = source.socket_name().to_string_lossy().into_owned();
     tracing::info!(?socket_name, "Listening on wayland socket.");
@@ -950,11 +992,24 @@ pub(crate) fn init(
         )
         .unwrap();
 
+    // Best-effort cleanup of stale Xwayland processes from previous sessions.
+    // If stale instances keep :0 occupied while app config pins DISPLAY=:0,
+    // reconnect can fail with "no video from host".
+    match std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("Xwayland")
+        .status()
+    {
+        Ok(status) if status.success() => tracing::info!("Cleaned up stale Xwayland processes"),
+        Ok(_) => tracing::debug!("No stale Xwayland processes to clean"),
+        Err(err) => tracing::warn!(?err, "Failed to run stale Xwayland cleanup"),
+    }
+
     // Initialize Xwayland for X11 app support
     let xwayland_handle = event_loop.handle();
     match XWayland::spawn(
         &state.dh,
-        None, // Let Xwayland find its own display number
+        Some(0), // Keep DISPLAY stable (:0) for app containers
         std::iter::empty::<(&str, &str)>(), // No extra env vars
         true, // Use abstract socket
         std::process::Stdio::null(),
