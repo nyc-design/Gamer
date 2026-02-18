@@ -33,9 +33,10 @@ support_hevc = true
 [[profiles]]
 id = "moonlight-profile-id"
 
-# ── Dual Screen: Primary (Top Screen) ─────────────────────────────────────
-# Launches Azahar with SeparateWindows mode. The custom gst-wayland-display
-# routes Azahar's second window to a secondary compositor output.
+# ── Dual Screen (Single Client, low-latency baseline) ─────────────────────
+# Launches Azahar with SeparateWindows mode under Sway.
+# This keeps client-A latency close to single-screen while still using
+# layout_option=4 (two windows visible in one stream).
 [[profiles.apps]]
 title = "Azahar 3DS (Dual Screen)"
 start_virtual_compositor = true
@@ -57,11 +58,53 @@ env = [
     "LAYOUT_OPTION=4",
     # Don't fullscreen — let compositor handle window placement
     "AZAHAR_FULLSCREEN=0",
-    # IMPORTANT: Disable nested compositors so Wolf's waylanddisplaysrc
-    # sees Azahar's windows directly as separate Wayland surfaces.
+    # Keep Sway enabled for low-latency single-client baseline.
+    "RUN_SWAY=1",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
+    "NVIDIA_VISIBLE_DEVICES=all",
+    "GOW_REQUIRED_DEVICES=/dev/input/event* /dev/dri/* /dev/nvidia*",
+]
+devices = []
+ports = []
+base_create_json = """
+{
+    "ReadonlyRootfs": false,
+    "HostConfig": {
+        "Runtime": "nvidia",
+        "IpcMode": "host",
+        "NetworkMode": "host",
+        "ReadonlyRootfs": false,
+        "CapAdd": ["SYS_ADMIN", "NET_RAW", "NET_ADMIN", "MKNOD", "SYS_NICE"],
+        "DeviceCgroupRules": ["c 13:* rmw", "c 244:* rmw"]
+    }
+}
+"""
+
+# ── Dual Screen: Split-stream primary (for client A + client B) ───────────
+# Uses wolf-dual compositor Xwayland path so top and bottom windows are routed
+# to separate outputs/streams. This is the mode used for two-device routing.
+[[profiles.apps]]
+title = "Azahar 3DS (Dual Screen Split)"
+start_virtual_compositor = true
+start_audio_server = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "GamerAzaharDualSplit"
+image = "gamer/azahar:poc"
+mounts = [
+    "/home/gamer/roms:/home/retro/roms:ro",
+    "/home/gamer/saves:/home/retro/saves:rw",
+    "/home/gamer/config:/home/retro/config:rw",
+    "/home/gamer/firmware:/home/retro/firmware:ro",
+]
+env = [
+    "ROM_FILENAME=pokemon-alpha-sapphire.3ds",
+    "LAYOUT_OPTION=4",
+    "AZAHAR_FULLSCREEN=0",
+    # Disable nested compositor and use wolf-dual Xwayland routing.
     "RUN_GAMESCOPE=0",
     "RUN_SWAY=0",
-    # Enable Xwayland support in wolf-dual compositor for X11 apps
     "USE_XWAYLAND=1",
     "NVIDIA_DRIVER_CAPABILITIES=all",
     "NVIDIA_VISIBLE_DEVICES=all",
