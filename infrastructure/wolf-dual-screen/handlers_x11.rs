@@ -51,6 +51,17 @@ fn get_x11_surface(window: &Window) -> Option<X11Surface> {
     }
 }
 
+impl State {
+    fn should_route_next_window_to_secondary(&self) -> bool {
+        let primary_count = self.space.elements().count();
+        let secondary_count = self.secondary_space.elements().count();
+        self.multi_output_enabled
+            && self.secondary_output.is_some()
+            && primary_count >= 1
+            && secondary_count == 0
+    }
+}
+
 // Implement XWaylandShellHandler for the xwayland-shell protocol
 impl XWaylandShellHandler for State {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
@@ -88,12 +99,7 @@ impl XwmHandler for State {
 
         // Route to primary or secondary space using multi-output logic
         // This is the SAME logic as for Wayland toplevels in compositor.rs
-        let primary_count = self.space.elements().count();
-        let secondary_count = self.secondary_space.elements().count();
-        let use_secondary = self.multi_output_enabled
-            && self.secondary_output.is_some()
-            && primary_count >= 1
-            && secondary_count == 0;
+        let use_secondary = self.should_route_next_window_to_secondary();
 
         let loc = (0, 0);
 
@@ -155,11 +161,33 @@ impl XwmHandler for State {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        // Override redirect windows (like menus, tooltips) are always mapped to primary space
-        // at their requested location
-        let location = window.geometry().loc;
-        let win = Window::new_x11_window(window);
-        self.space.map_element(win, location, true);
+        // Most override-redirect windows are menus/tooltips and should stay on primary.
+        // However, some apps (including dual-window emulator setups) can transiently use
+        // override-redirect windows for real render surfaces. If we still need a secondary
+        // surface and this window is "large enough", route it to secondary.
+        let geometry = window.geometry();
+        let location = geometry.loc;
+        let win = Window::new_x11_window(window.clone());
+        let looks_like_render_surface = geometry.size.w >= 320 && geometry.size.h >= 180;
+        let use_secondary = self.should_route_next_window_to_secondary() && looks_like_render_surface;
+
+        if use_secondary {
+            info!(
+                "Mapping X11 override_redirect window {:?} to SECONDARY space (size={}x{})",
+                window.window_id(),
+                geometry.size.w,
+                geometry.size.h
+            );
+            self.secondary_space.map_element(win, (0, 0), true);
+        } else {
+            debug!(
+                "Mapping X11 override_redirect window {:?} to PRIMARY space (size={}x{})",
+                window.window_id(),
+                geometry.size.w,
+                geometry.size.h
+            );
+            self.space.map_element(win, location, true);
+        }
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
