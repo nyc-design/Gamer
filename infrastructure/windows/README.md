@@ -34,6 +34,12 @@ source .venv/bin/activate
 python infrastructure/windows/deploy_via_ssh.py
 ```
 
+Faster iteration (push updated scripts/agent without reinstalling Apollo/ShaderGlass):
+
+```bash
+python infrastructure/windows/deploy_via_ssh.py --skip-bootstrap
+```
+
 One-shot orchestrator (pure Python, production-style flow):
 
 ```bash

@@ -73,6 +73,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--shaderglass-installer-url", default="", help="Optional explicit ShaderGlass package URL")
     p.add_argument("--ssh-retries", type=int, default=8, help="SSH connect retries")
     p.add_argument("--bootstrap-only", action="store_true", help="Run only bootstrap-windows.ps1")
+    p.add_argument("--skip-bootstrap", action="store_true", help="Skip bootstrap-windows.ps1")
+    p.add_argument("--skip-agent-install", action="store_true", help="Skip install-agent-service.ps1")
     return p.parse_args()
 
 
@@ -156,20 +158,21 @@ def main() -> None:
                 print(f"Warning: failed to resolve ShaderGlass URL: {e}")
                 shader_url = ""
 
-        bootstrap_cmd = "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1"
-        if apollo_url:
-            bootstrap_cmd += f' -ApolloInstallerUrl "{apollo_url}"'
-        if shader_url:
-            bootstrap_cmd += f' -ShaderGlassInstallerUrl "{shader_url}"'
-        code, out, err = run(
-            ssh,
-            bootstrap_cmd,
-        )
-        print(out)
-        if code != 0:
-            raise RuntimeError(f"bootstrap-windows.ps1 failed: {err}")
+        if not args.skip_bootstrap:
+            bootstrap_cmd = "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1"
+            if apollo_url:
+                bootstrap_cmd += f' -ApolloInstallerUrl "{apollo_url}"'
+            if shader_url:
+                bootstrap_cmd += f' -ShaderGlassInstallerUrl "{shader_url}"'
+            code, out, err = run(
+                ssh,
+                bootstrap_cmd,
+            )
+            print(out)
+            if code != 0:
+                raise RuntimeError(f"bootstrap-windows.ps1 failed: {err}")
 
-        if not args.bootstrap_only:
+        if not args.bootstrap_only and not args.skip_agent_install:
             code, out, err = run(
                 ssh,
                 "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\install-agent-service.ps1 -AgentRoot C:\\gamer\\client-agent",
