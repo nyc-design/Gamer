@@ -67,6 +67,11 @@ class ClientEvent(BaseModel):
     connected_clients: int = 1
 
 
+class ProcessInfo(BaseModel):
+    name: str
+    pid: Optional[int] = None
+
+
 class AgentState:
     def __init__(self) -> None:
         self.started = False
@@ -273,7 +278,20 @@ def _run_powershell_script(script_name: str, extra_args: list[str]) -> None:
 
 @APP.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "started": STATE.started, "processes": list(STATE.processes.keys())}
+    proc_data = []
+    for name, proc in STATE.processes.items():
+        pid = None
+        try:
+            pid = proc.pid
+        except Exception:
+            pass
+        proc_data.append({"name": name, "pid": pid})
+    return {
+        "ok": True,
+        "started": STATE.started,
+        "connected_clients": STATE.connected_clients,
+        "processes": proc_data,
+    }
 
 
 @APP.get("/manifest")
@@ -334,3 +352,9 @@ def client_disconnected(event: ClientEvent) -> StartResponse:
     STATE.connected_clients = max(0, event.connected_clients)
     _run_powershell_script("apollo-on-client-disconnect.ps1", ["-ConnectedClients", str(STATE.connected_clients)])
     return StartResponse(ok=True, message=f"client-disconnected={STATE.connected_clients}")
+
+
+@APP.post("/position-dual-now", response_model=StartResponse)
+def position_dual_now() -> StartResponse:
+    _run_powershell_script("position-azahar-dual.ps1", [])
+    return StartResponse(ok=True, message="position script invoked")

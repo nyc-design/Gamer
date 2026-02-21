@@ -16,6 +16,7 @@ The agent currently supports:
 - `POST /start` → load hardcoded manifest (or `SESSION_MANIFEST_PATH`), ensure paths, start Apollo/shader/emulator helpers.
 - `POST /stop` → stop launched processes.
 - `POST /client-connected` and `POST /client-disconnected` → trigger Apollo connect/disconnect hook scripts with client count.
+- `POST /position-dual-now` → force-run window placement script.
 - `GET /manifest` and `GET /health`.
 
 Manifest hardcoded at:
