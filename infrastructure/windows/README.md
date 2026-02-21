@@ -48,3 +48,6 @@ Notes:
 - `provision-tensordock-windows.py` now stores state by default in:
   - `infrastructure/windows/state/windows-vm.local.json`
   - override with `--state-file` when running multiple VMs in parallel.
+- Apollo install fallback:
+  - if silent installer path does not produce `C:/Program Files/Apollo/Apollo.exe`, bootstrap stages a runnable binary at:
+  - `C:/ProgramData/gamer/bin/Apollo/Apollo.exe`

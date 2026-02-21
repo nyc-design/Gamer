@@ -87,6 +87,20 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=check, capture_output=True, text=True)
 
 
+def _resolve_exe(configured: str | None, fallbacks: list[str]) -> Optional[Path]:
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend(Path(x) for x in fallbacks)
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            continue
+    return None
+
+
 def _find_windows_script(script_name: str) -> Optional[Path]:
     # 1) Explicit override.
     base = os.getenv("WINDOWS_SETUP_DIR")
@@ -154,14 +168,20 @@ def start_apollo(manifest: Dict[str, Any]) -> None:
     if not cfg.get("enabled"):
         return
 
-    exe = cfg.get("exe_path")
-    if not exe or not Path(exe).exists():
-        logger.warning("Apollo not found at %s; skipping start", exe)
+    exe = _resolve_exe(
+        cfg.get("exe_path"),
+        [
+            "C:/ProgramData/gamer/bin/Apollo/Apollo.exe",
+            "C:/Users/user/AppData/Local/Apollo/Apollo.exe",
+        ],
+    )
+    if exe is None:
+        logger.warning("Apollo not found; skipping start")
         return
 
-    proc = subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen([str(exe)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     STATE.processes["apollo"] = proc
-    logger.info("Apollo started (pid=%s)", proc.pid)
+    logger.info("Apollo started from %s (pid=%s)", exe, proc.pid)
 
 
 def start_shader_glass(manifest: Dict[str, Any]) -> None:
@@ -169,12 +189,18 @@ def start_shader_glass(manifest: Dict[str, Any]) -> None:
     if not cfg.get("enabled"):
         return
 
-    exe = cfg.get("exe_path")
-    if not exe or not Path(exe).exists():
-        logger.warning("ShaderGlass not found at %s; skipping start", exe)
+    exe = _resolve_exe(
+        cfg.get("exe_path"),
+        [
+            "C:/ProgramData/gamer/bin/ShaderGlass/ShaderGlass.exe",
+            "C:/Program Files/ShaderGlass/ShaderGlass.exe",
+        ],
+    )
+    if exe is None:
+        logger.warning("ShaderGlass not found; skipping start")
         return
 
-    args = [exe]
+    args = [str(exe)]
     preset = cfg.get("preset")
     if preset:
         args.extend(["--preset", preset])

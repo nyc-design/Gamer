@@ -96,15 +96,32 @@ Write-Host "Apollo URL: $ApolloInstallerUrl"
 if ($ApolloInstallerUrl -ne "") {
   try {
     $tmp = "$env:TEMP\\apollo-installer.exe"
+    $fallbackDir = "C:\\ProgramData\\gamer\\bin\\Apollo"
+    Ensure-Dir $fallbackDir | Out-Null
     Download-File $ApolloInstallerUrl $tmp
     # Apollo release installers are NSIS/Inno-like. Try common silent switches.
     $proc = Start-Process $tmp -ArgumentList "/S" -Wait -PassThru
     if ($proc.ExitCode -ne 0) {
       Write-Warning "Apollo /S exit code: $($proc.ExitCode). Retrying /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
-      Start-Process $tmp -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+      $proc2 = Start-Process $tmp -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+      if ($proc2.ExitCode -ne 0) {
+        Write-Warning "Apollo silent installer exits non-zero ($($proc2.ExitCode)); using portable fallback copy"
+      }
+    }
+    if (-not (Test-Path "C:\\Program Files\\Apollo\\Apollo.exe")) {
+      Copy-Item $tmp (Join-Path $fallbackDir "Apollo.exe") -Force
+      Write-Host "Apollo fallback binary staged at $fallbackDir\\Apollo.exe"
     }
   } catch {
     Write-Warning "Apollo install failed: $($_.Exception.Message)"
+    try {
+      $fallbackDir = "C:\\ProgramData\\gamer\\bin\\Apollo"
+      Ensure-Dir $fallbackDir | Out-Null
+      if (Test-Path "$env:TEMP\\apollo-installer.exe") {
+        Copy-Item "$env:TEMP\\apollo-installer.exe" (Join-Path $fallbackDir "Apollo.exe") -Force
+        Write-Host "Apollo fallback binary staged after exception: $fallbackDir\\Apollo.exe"
+      }
+    } catch {}
   }
 } else {
   Write-Warning "Apollo installer URL not found; skipping automatic install"
