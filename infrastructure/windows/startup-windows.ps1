@@ -25,6 +25,18 @@ Start-Service Audiosrv -ErrorAction SilentlyContinue
 
 # rclone install (portable fallback, no winget dependency)
 try {
+  # WinFsp is required for stable Windows mount behavior.
+  $wfsp = Get-Service WinFsp.Launcher -ErrorAction SilentlyContinue
+  if (-not $wfsp) {
+    $wfspMsi = 'C:\ProgramData\gamer\setup\winfsp.msi'
+    $wfspApi = Invoke-RestMethod -Uri 'https://api.github.com/repos/winfsp/winfsp/releases/latest' -Headers @{ 'User-Agent'='gamer-setup' }
+    $wfspAsset = $wfspApi.assets | Where-Object { $_.name -match '\.msi$' } | Select-Object -First 1
+    if ($wfspAsset) {
+      Invoke-WebRequest -Uri $wfspAsset.browser_download_url -OutFile $wfspMsi
+      Start-Process msiexec.exe -ArgumentList '/i', $wfspMsi, '/qn', '/norestart' -Wait
+    }
+  }
+
   $rcloneExe = Get-Command rclone.exe -ErrorAction SilentlyContinue
   if (-not $rcloneExe) {
     $rDir = 'C:\ProgramData\gamer\bin\rclone'
@@ -34,7 +46,10 @@ try {
     Expand-Archive -Path $zip -DestinationPath $rDir -Force
     $exe = Get-ChildItem -Path $rDir -Filter rclone.exe -Recurse | Select-Object -First 1
     if ($exe) {
-      Copy-Item $exe.FullName (Join-Path $rDir 'rclone.exe') -Force
+      $dstExe = Join-Path $rDir 'rclone.exe'
+      if ($exe.FullName -ne $dstExe) {
+        Copy-Item $exe.FullName $dstExe -Force
+      }
       $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
       if ($machinePath -notlike "*$rDir*") {
         [Environment]::SetEnvironmentVariable('Path', "$machinePath;$rDir", 'Machine')

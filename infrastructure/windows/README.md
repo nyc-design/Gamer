@@ -71,6 +71,11 @@ python infrastructure/windows/deploy_azahar.py --state-file infrastructure/windo
 python infrastructure/windows/deploy_agent.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
 ```
 
+Symlink/mount behavior:
+- Apollo config dir is symlinked to `C:\gamer\mounts\gcs\configs\apollo`
+- Azahar config dir is symlinked to `C:\gamer\mounts\gcs\configs\azahar`
+- Both live on rclone mount, so config edits during play persist back through the mounted remote path.
+
 One-shot with explicit Chubbuck placement:
 
 ```bash

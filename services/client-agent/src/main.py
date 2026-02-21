@@ -256,6 +256,44 @@ def start_emulator(manifest: Dict[str, Any]) -> None:
     logger.info("Emulator started (pid=%s)", proc.pid)
 
 
+def rewrite_apollo_apps(manifest: Dict[str, Any]) -> None:
+    if not _is_windows():
+        return
+    emu = manifest.get("windows", {}).get("emulator", {})
+    exe = emu.get("exe_path")
+    if not exe:
+        return
+    exe_path = Path(exe)
+    exe_dir = str(exe_path.parent).replace("\\", "/")
+    app_name = f"{emu.get('name', 'Emulator').capitalize()} Session"
+    app_payload = {
+        "apps": [
+            {"name": "Desktop", "image-path": "desktop.png", "allow-client-commands": False},
+            {"name": "Virtual Display", "image-path": "virtual_desktop.png", "allow-client-commands": False},
+            {
+                "name": app_name,
+                "cmd": exe,
+                "working-dir": exe_dir,
+                "allow-client-commands": True,
+                "virtual-display": True,
+                "image-path": "desktop.png",
+            },
+        ],
+        "env": {},
+        "version": 2,
+    }
+    for path in [
+        Path("C:/Program Files/Apollo/config/apps.json"),
+        Path("C:/Program Files/Apollo/config/apps2.json"),
+    ]:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(app_payload, indent=2), encoding="utf-8")
+            logger.info("rewrote Apollo app list: %s", path)
+        except Exception as e:
+            logger.warning("failed to rewrite app list %s: %s", path, e)
+
+
 def maybe_install_window_hotkeys() -> None:
     if not _is_windows():
         logger.info("Non-windows environment: skipping hotkey helper")
@@ -456,6 +494,7 @@ def start() -> StartResponse:
         ensure_dirs(STATE.manifest)
         setup_storage(STATE.manifest)
         sync_session_files_in(STATE.manifest)
+        rewrite_apollo_apps(STATE.manifest)
         start_apollo(STATE.manifest)
         maybe_install_window_hotkeys()
         start_shader_glass(STATE.manifest)
