@@ -99,13 +99,47 @@ fn find_windows_by_name(display: *mut xlib::Display, root: c_ulong, name_pattern
     Ok(results)
 }
 
+/// Get window name, trying _NET_WM_NAME (UTF-8) first, then WM_NAME (legacy)
+fn get_window_name(display: *mut xlib::Display, window: c_ulong) -> Option<String> {
+    unsafe {
+        // Try _NET_WM_NAME first (UTF-8, used by modern apps like Qt)
+        let utf8_string = xlib::XInternAtom(display, b"UTF8_STRING\0".as_ptr() as *const _, 0);
+        let net_wm_name = xlib::XInternAtom(display, b"_NET_WM_NAME\0".as_ptr() as *const _, 0);
+
+        let mut actual_type: c_ulong = 0;
+        let mut actual_format: i32 = 0;
+        let mut nitems: c_ulong = 0;
+        let mut bytes_after: c_ulong = 0;
+        let mut prop: *mut u8 = ptr::null_mut();
+
+        if xlib::XGetWindowProperty(
+            display, window, net_wm_name, 0, 1024, 0,
+            utf8_string, &mut actual_type, &mut actual_format,
+            &mut nitems, &mut bytes_after, &mut prop,
+        ) == 0 && !prop.is_null() && nitems > 0 {
+            let name = String::from_utf8_lossy(std::slice::from_raw_parts(prop, nitems as usize)).to_string();
+            xlib::XFree(prop as *mut std::os::raw::c_void);
+            return Some(name);
+        }
+        if !prop.is_null() { xlib::XFree(prop as *mut std::os::raw::c_void); }
+
+        // Fall back to WM_NAME (legacy Latin-1)
+        let mut name_ptr: *mut std::os::raw::c_char = ptr::null_mut();
+        if xlib::XFetchName(display, window, &mut name_ptr) != 0 && !name_ptr.is_null() {
+            let name = std::ffi::CStr::from_ptr(name_ptr as *const _).to_string_lossy().to_string();
+            xlib::XFree(name_ptr as *mut std::os::raw::c_void);
+            return Some(name);
+        }
+
+        None
+    }
+}
+
 fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern: &str, results: &mut Vec<WindowInfo>) -> Result<()> {
     unsafe {
         // Check this window's name
-        let mut name_ptr: *mut std::os::raw::c_char = ptr::null_mut();
-        if xlib::XFetchName(display, window, &mut name_ptr) != 0 && !name_ptr.is_null() {
-            let name = std::ffi::CStr::from_ptr(name_ptr as *const _).to_string_lossy().to_lowercase();
-            if name.contains(pattern) {
+        if let Some(name) = get_window_name(display, window) {
+            if name.to_lowercase().contains(pattern) {
                 // Only include mapped, visible windows with nonzero size
                 let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
                 if xlib::XGetWindowAttributes(display, window, &mut attrs) != 0
@@ -118,7 +152,6 @@ fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern:
                     }
                 }
             }
-            xlib::XFree(name_ptr as *mut std::os::raw::c_void);
         }
 
         // Recurse into children
