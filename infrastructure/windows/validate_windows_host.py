@@ -143,6 +143,10 @@ def main() -> None:
 
     # 2) start
     post_json(base, "/stop", {})
+    try:
+        post_json(base, "/manifest-clear", {})
+    except Exception:
+        pass
     start = post_json(base, "/start", {})
     health = wait_health(base, timeout_s=30)
     alive = health.get("alive_processes", 0)

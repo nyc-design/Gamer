@@ -74,6 +74,11 @@ class ProcessInfo(BaseModel):
     pid: Optional[int] = None
 
 
+class ManifestSetRequest(BaseModel):
+    manifest: Dict[str, Any]
+    persist_path: Optional[str] = None
+
+
 class AgentState:
     def __init__(self) -> None:
         self.started = False
@@ -343,13 +348,34 @@ def manifest() -> Dict[str, Any]:
     return STATE.manifest
 
 
+@APP.post("/manifest-set", response_model=StartResponse)
+def manifest_set(req: ManifestSetRequest) -> StartResponse:
+    if STATE.started:
+        raise HTTPException(status_code=409, detail="stop first")
+    STATE.manifest = req.manifest
+    if req.persist_path:
+        out = Path(req.persist_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(req.manifest, indent=2), encoding="utf-8")
+    return StartResponse(ok=True, message="manifest set", manifest_path=req.persist_path)
+
+
+@APP.post("/manifest-clear", response_model=StartResponse)
+def manifest_clear() -> StartResponse:
+    if STATE.started:
+        raise HTTPException(status_code=409, detail="stop first")
+    STATE.manifest = {}
+    return StartResponse(ok=True, message="manifest cleared")
+
+
 @APP.post("/start", response_model=StartResponse)
 def start() -> StartResponse:
     try:
         if STATE.started:
             return StartResponse(ok=True, message="already started")
 
-        STATE.manifest = load_manifest()
+        if not STATE.manifest:
+            STATE.manifest = load_manifest()
         manifest_path = os.getenv("SESSION_MANIFEST_PATH")
 
         ensure_dirs(STATE.manifest)
