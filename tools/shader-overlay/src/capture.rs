@@ -18,6 +18,7 @@ pub struct WindowCapture {
     width: u32,
     height: u32,
     dirty: bool,
+    nvidia_driver: bool,
     // X Damage tracking
     damage: c_ulong,
     damage_event_base: c_int,
@@ -102,7 +103,10 @@ impl WindowCapture {
                 bail!("Failed to create damage tracker for window 0x{:x}", source_window);
             }
 
-            log::info!("Capturing window 0x{:x} ({}x{}) via XComposite", source_window, width, height);
+            // Detect NVIDIA driver — texture_from_pixmap behaves differently
+            let vendor = gl.glow_ctx.get_parameter_string(glow::VENDOR);
+            let nvidia_driver = vendor.to_lowercase().contains("nvidia");
+            log::info!("Capturing window 0x{:x} ({}x{}) via XComposite (vendor={}, nvidia={})", source_window, width, height, vendor, nvidia_driver);
 
             Ok(Self {
                 display,
@@ -114,22 +118,31 @@ impl WindowCapture {
                 width,
                 height,
                 dirty: true, // render first frame immediately
+                nvidia_driver,
                 damage,
                 damage_event_base,
             })
         }
     }
 
-    /// Rebind the texture if the window content changed
+    /// Update the captured texture. With NVIDIA, the initial bind_tex_image creates
+    /// a live link to the window's backing store — no rebind needed, just sync.
+    /// On Mesa, we do the release/rebind cycle.
     pub fn update_if_dirty(&mut self, gl: &GlState) {
         if !self.dirty {
             return;
         }
         unsafe {
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-            (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT);
-            (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT, ptr::null());
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
+            if self.nvidia_driver {
+                // NVIDIA: texture_from_pixmap is a live binding, just sync
+                glx::glXWaitX();
+            } else {
+                // Mesa/Intel: must release and rebind
+                gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+                (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT);
+                (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT, ptr::null());
+                gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
+            }
         }
         self.dirty = false;
     }

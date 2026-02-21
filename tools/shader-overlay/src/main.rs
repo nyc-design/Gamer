@@ -15,11 +15,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 use x11::xlib;
 
-/// Custom X11 error handler — logs but doesn't abort
+/// Custom X11 error handler — logs but doesn't abort.
+/// Demotes known-benign NVIDIA GLX/Damage errors to debug level.
 unsafe extern "C" fn x11_error_handler(display: *mut xlib::Display, event: *mut xlib::XErrorEvent) -> c_int {
     let _ = display;
     let err = unsafe { &*event };
-    log::warn!("X11 error: request={}, error_code={}, minor={}", err.request_code, err.error_code, err.minor_code);
+    // GLX texture_from_pixmap errors (request 152/156) are benign on NVIDIA
+    if (err.request_code == 152 || err.request_code == 156) && (err.error_code == 9 || err.error_code == 161) {
+        log::debug!("X11 error (benign): request={}, error_code={}, minor={}", err.request_code, err.error_code, err.minor_code);
+    } else {
+        log::warn!("X11 error: request={}, error_code={}, minor={}", err.request_code, err.error_code, err.minor_code);
+    }
     0
 }
 
