@@ -1,6 +1,8 @@
 param(
   [string]$TopTitle = "Azahar",
-  [string]$BottomTitle = "Azahar"
+  [string]$BottomTitle = "Azahar",
+  [int]$MaxAttempts = 20,
+  [int]$SleepMs = 500
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -12,19 +14,28 @@ public class Win32 {
 }
 "@
 
-$wins = Get-Process | Where-Object {
-  $_.MainWindowHandle -ne 0 -and (
-    $_.MainWindowTitle -like "*$TopTitle*" -or $_.MainWindowTitle -like "*$BottomTitle*"
-  )
-} | Sort-Object StartTime
-if ($wins.Count -lt 2) {
-  Write-Host "Need at least 2 Azahar windows; found $($wins.Count)"
-  exit 1
+$wins = @()
+$screenAll = @()
+for ($i = 1; $i -le $MaxAttempts; $i++) {
+  $wins = Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and (
+      $_.MainWindowTitle -like "*$TopTitle*" -or $_.MainWindowTitle -like "*$BottomTitle*"
+    )
+  } | Sort-Object StartTime
+  $screenAll = [System.Windows.Forms.Screen]::AllScreens
+
+  if ($wins.Count -ge 2 -and $screenAll.Count -ge 2) {
+    break
+  }
+  Start-Sleep -Milliseconds $SleepMs
 }
 
-$screenAll = [System.Windows.Forms.Screen]::AllScreens
+if ($wins.Count -lt 2) {
+  Write-Host "Need at least 2 Azahar windows; found $($wins.Count) after $MaxAttempts attempts"
+  exit 1
+}
 if ($screenAll.Count -lt 2) {
-  Write-Host "Need 2 displays; found $($screenAll.Count)"
+  Write-Host "Need 2 displays; found $($screenAll.Count) after $MaxAttempts attempts"
   exit 1
 }
 

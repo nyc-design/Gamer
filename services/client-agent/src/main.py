@@ -64,7 +64,8 @@ class StartResponse(BaseModel):
 
 
 class ClientEvent(BaseModel):
-    connected_clients: int = 1
+    connected_clients: Optional[int] = None
+    client_id: Optional[str] = None
 
 
 class ProcessInfo(BaseModel):
@@ -78,6 +79,7 @@ class AgentState:
         self.manifest: Dict[str, Any] = {}
         self.processes: Dict[str, subprocess.Popen] = {}
         self.connected_clients: int = 0
+        self.connected_client_ids: set[str] = set()
 
 
 STATE = AgentState()
@@ -253,6 +255,7 @@ def stop_all() -> None:
         logger.info("terminated process: %s", name)
     STATE.processes.clear()
     STATE.connected_clients = 0
+    STATE.connected_client_ids.clear()
     STATE.started = False
 
 
@@ -342,14 +345,28 @@ def reload_manifest() -> StartResponse:
 
 @APP.post("/client-connected", response_model=StartResponse)
 def client_connected(event: ClientEvent) -> StartResponse:
-    STATE.connected_clients = max(0, event.connected_clients)
+    if event.connected_clients is not None:
+        STATE.connected_clients = max(0, event.connected_clients)
+    elif event.client_id:
+        STATE.connected_client_ids.add(event.client_id)
+        STATE.connected_clients = len(STATE.connected_client_ids)
+    else:
+        STATE.connected_clients = max(0, STATE.connected_clients + 1)
     _run_powershell_script("apollo-on-client-connect.ps1", ["-ConnectedClients", str(STATE.connected_clients)])
     return StartResponse(ok=True, message=f"client-connected={STATE.connected_clients}")
 
 
 @APP.post("/client-disconnected", response_model=StartResponse)
 def client_disconnected(event: ClientEvent) -> StartResponse:
-    STATE.connected_clients = max(0, event.connected_clients)
+    if event.connected_clients is not None:
+        STATE.connected_clients = max(0, event.connected_clients)
+        if STATE.connected_clients == 0:
+            STATE.connected_client_ids.clear()
+    elif event.client_id:
+        STATE.connected_client_ids.discard(event.client_id)
+        STATE.connected_clients = len(STATE.connected_client_ids)
+    else:
+        STATE.connected_clients = max(0, STATE.connected_clients - 1)
     _run_powershell_script("apollo-on-client-disconnect.ps1", ["-ConnectedClients", str(STATE.connected_clients)])
     return StartResponse(ok=True, message=f"client-disconnected={STATE.connected_clients}")
 

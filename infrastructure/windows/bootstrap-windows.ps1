@@ -52,6 +52,15 @@ function Download-File($url, $outFile) {
   $wc.DownloadFile($url, $outFile)
 }
 
+function Stop-ProcessIfRunningByPath($exePath) {
+  try {
+    $procs = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $exePath }
+    foreach ($p in $procs) {
+      Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
+}
+
 Write-Host "[1/6] Installing core tools"
 $null = Install-WingetPackage "Python.Python.3.12"
 $null = Install-WingetPackage "Rclone.Rclone"
@@ -109,7 +118,14 @@ if ($ApolloInstallerUrl -ne "") {
       }
     }
     if (-not (Test-Path "C:\\Program Files\\Apollo\\Apollo.exe")) {
-      Copy-Item $tmp (Join-Path $fallbackDir "Apollo.exe") -Force
+      $fallbackExe = Join-Path $fallbackDir "Apollo.exe"
+      Stop-ProcessIfRunningByPath $fallbackExe
+      if (Test-Path $fallbackExe) {
+        try {
+          Remove-Item $fallbackExe -Force -ErrorAction SilentlyContinue
+        } catch {}
+      }
+      Copy-Item $tmp $fallbackExe -Force
       Write-Host "Apollo fallback binary staged at $fallbackDir\\Apollo.exe"
     }
   } catch {

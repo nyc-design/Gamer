@@ -46,4 +46,4 @@ VM state saved at:
 ## Dual-screen convenience
 
 - AutoHotkey helper: `Ctrl+Alt+Right` moves active window to next monitor.
-- PowerShell helper `position-azahar-dual.ps1` places first two Azahar windows across first two displays.
+- PowerShell helper `position-azahar-dual.ps1` places first two Azahar windows across first two displays (with retry loop for late window/display availability).
