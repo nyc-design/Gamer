@@ -119,14 +119,20 @@ if ($ApolloInstallerUrl -ne "") {
     }
     if (-not (Test-Path "C:\\Program Files\\Apollo\\Apollo.exe")) {
       $fallbackExe = Join-Path $fallbackDir "Apollo.exe"
+      $fallbackAlt = Join-Path $fallbackDir "Apollo-installer.exe"
       Stop-ProcessIfRunningByPath $fallbackExe
       if (Test-Path $fallbackExe) {
         try {
           Remove-Item $fallbackExe -Force -ErrorAction SilentlyContinue
         } catch {}
       }
-      Copy-Item $tmp $fallbackExe -Force
-      Write-Host "Apollo fallback binary staged at $fallbackDir\\Apollo.exe"
+      try {
+        Copy-Item $tmp $fallbackExe -Force
+        Write-Host "Apollo fallback binary staged at $fallbackDir\\Apollo.exe"
+      } catch {
+        Copy-Item $tmp $fallbackAlt -Force
+        Write-Warning "Could not overwrite Apollo.exe; staged fallback at $fallbackAlt"
+      }
     }
   } catch {
     Write-Warning "Apollo install failed: $($_.Exception.Message)"
@@ -134,8 +140,15 @@ if ($ApolloInstallerUrl -ne "") {
       $fallbackDir = "C:\\ProgramData\\gamer\\bin\\Apollo"
       Ensure-Dir $fallbackDir | Out-Null
       if (Test-Path "$env:TEMP\\apollo-installer.exe") {
-        Copy-Item "$env:TEMP\\apollo-installer.exe" (Join-Path $fallbackDir "Apollo.exe") -Force
-        Write-Host "Apollo fallback binary staged after exception: $fallbackDir\\Apollo.exe"
+        $fallbackExe = Join-Path $fallbackDir "Apollo.exe"
+        $fallbackAlt = Join-Path $fallbackDir "Apollo-installer.exe"
+        try {
+          Copy-Item "$env:TEMP\\apollo-installer.exe" $fallbackExe -Force
+          Write-Host "Apollo fallback binary staged after exception: $fallbackExe"
+        } catch {
+          Copy-Item "$env:TEMP\\apollo-installer.exe" $fallbackAlt -Force
+          Write-Warning "Apollo.exe locked; staged fallback after exception: $fallbackAlt"
+        }
       }
     } catch {}
   }

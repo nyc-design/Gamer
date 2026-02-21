@@ -179,6 +179,7 @@ def start_apollo(manifest: Dict[str, Any]) -> None:
         cfg.get("exe_path"),
         [
             "C:/ProgramData/gamer/bin/Apollo/Apollo.exe",
+            "C:/ProgramData/gamer/bin/Apollo/Apollo-installer.exe",
             "C:/Users/user/AppData/Local/Apollo/Apollo.exe",
         ],
     )
