@@ -30,12 +30,17 @@ pub fn find_window(display: *mut xlib::Display, target: &str) -> Result<WindowIn
 
     // Method 1: Check _NET_CLIENT_LIST (WM's known top-level windows)
     // This is how xdotool finds windows — more reliable than tree traversal
+    // Skip tiny windows (< 32x32) — these are Qt utility windows like "Qt Selection Owner for ..."
     if let Some(client_windows) = get_client_list(display, root) {
         for wid in &client_windows {
             if let Some(name) = get_window_name(display, *wid) {
                 if name.to_lowercase().contains(&pattern_lower) {
                     if let Ok(info) = get_window_info(display, *wid) {
-                        results.push(info);
+                        if info.width >= 32 && info.height >= 32 {
+                            results.push(info);
+                        } else {
+                            log::debug!("Skipping tiny window 0x{:x} '{}' ({}x{})", info.id, name, info.width, info.height);
+                        }
                     }
                 }
             }
@@ -187,8 +192,8 @@ fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern:
             if name.to_lowercase().contains(pattern) {
                 let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
                 if xlib::XGetWindowAttributes(display, window, &mut attrs) != 0
-                    && attrs.width > 1
-                    && attrs.height > 1
+                    && attrs.width >= 32
+                    && attrs.height >= 32
                 {
                     // Map the window if needed — XComposite requires mapped windows
                     if attrs.map_state != xlib::IsViewable {
