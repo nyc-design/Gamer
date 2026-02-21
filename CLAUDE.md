@@ -551,6 +551,7 @@ Design alignment with Linux side:
 
 - Added `infrastructure/windows/validate_windows_host.py`:
   - automated smoke/reliability checks for agent APIs, connect/disconnect semantics, and optional reboot persistence.
+  - reboot verification now uses TCP down/up observation plus Win32 last-boot-time change confirmation.
 
 - `deploy_via_ssh.py` improvements:
   - added `--skip-bootstrap` for fast script/agent iteration without reinstalling Apollo/ShaderGlass.

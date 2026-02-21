@@ -57,6 +57,18 @@ def wait_tcp(ip: str, port: int, timeout_s: int) -> bool:
     return False
 
 
+def wait_tcp_down(ip: str, port: int, timeout_s: int) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((ip, port), timeout=2):
+                pass
+            time.sleep(1)
+        except Exception:
+            return True
+    return False
+
+
 def wait_health(base: str, timeout_s: int = 180) -> dict:
     deadline = time.time() + timeout_s
     last_err = None
@@ -73,8 +85,36 @@ def reboot_windows(ip: str, username: str, password: str) -> None:
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(ip, port=22, username=username, password=password, timeout=20, auth_timeout=20)
-    ssh.exec_command('powershell -NoProfile -Command "Restart-Computer -Force"')
+    # Use shutdown.exe for more reliable behavior over non-interactive SSH sessions.
+    ssh.exec_command("shutdown /r /t 0 /f")
     ssh.close()
+
+
+def get_last_boot_time(ip: str, username: str, password: str) -> str:
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(ip, port=22, username=username, password=password, timeout=20, auth_timeout=20)
+    _, stdout, _ = ssh.exec_command(
+        'powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString(\'o\')"'
+    )
+    val = stdout.read().decode("utf-8", errors="ignore").strip()
+    ssh.close()
+    return val
+
+
+def wait_boot_time_change(ip: str, username: str, password: str, previous: str, timeout_s: int = 300) -> str:
+    deadline = time.time() + timeout_s
+    last = previous
+    while time.time() < deadline:
+        try:
+            cur = get_last_boot_time(ip, username, password)
+            last = cur
+            if cur and cur != previous:
+                return cur
+        except Exception:
+            pass
+        time.sleep(2)
+    return last
 
 
 def main() -> None:
@@ -132,11 +172,26 @@ def main() -> None:
 
     # 4) reboot persistence
     if not args.skip_reboot:
+        boot_before = get_last_boot_time(ip, args.username, password)
         reboot_windows(ip, args.username, password)
-        ssh_down = not wait_tcp(ip, 22, timeout_s=45)
+        ssh_down_observed = wait_tcp_down(ip, 22, timeout_s=90)
         ssh_up = wait_tcp(ip, 22, timeout_s=240)
+        boot_after = wait_boot_time_change(ip, args.username, password, boot_before, timeout_s=240) if ssh_up else ""
+        reboot_observed = bool(boot_before and boot_after and boot_before != boot_after)
         h4 = wait_health(base, timeout_s=240)
-        results["checks"].append({"name": "reboot_ssh_cycle", "ok": ssh_up, "data": {"ssh_went_down": ssh_down, "ssh_back": ssh_up}})
+        results["checks"].append(
+            {
+                "name": "reboot_ssh_cycle",
+                "ok": ssh_up and reboot_observed,
+                "data": {
+                    "ssh_went_down_observed": ssh_down_observed,
+                    "ssh_back": ssh_up,
+                    "boot_before": boot_before,
+                    "boot_after": boot_after,
+                    "reboot_observed": reboot_observed,
+                },
+            }
+        )
         results["checks"].append({"name": "reboot_agent_health", "ok": bool(h4.get("ok")), "data": h4})
 
     overall = all(c["ok"] for c in results["checks"])
@@ -148,4 +203,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
