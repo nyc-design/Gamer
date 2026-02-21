@@ -140,13 +140,18 @@ fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern:
         // Check this window's name
         if let Some(name) = get_window_name(display, window) {
             if name.to_lowercase().contains(pattern) {
-                // Only include mapped, visible windows with nonzero size
+                // Include windows with nonzero size (mapped or unmapped)
                 let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
                 if xlib::XGetWindowAttributes(display, window, &mut attrs) != 0
-                    && attrs.map_state == xlib::IsViewable
                     && attrs.width > 1
                     && attrs.height > 1
                 {
+                    // Map the window if it's not already mapped (needed for XComposite capture)
+                    if attrs.map_state != xlib::IsViewable {
+                        log::info!("Mapping unmapped window 0x{:x} ({})", window, name);
+                        xlib::XMapWindow(display, window);
+                        xlib::XSync(display, 0);
+                    }
                     if let Ok(info) = get_window_info(display, window) {
                         results.push(info);
                     }
