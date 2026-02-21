@@ -122,8 +122,8 @@ function Ensure-ApolloInteractiveTasks {
   Ensure-Dir $setupDir | Out-Null
   $run1 = Join-Path $setupDir "run-apollo1.cmd"
   $run2 = Join-Path $setupDir "run-apollo2.cmd"
-  [System.IO.File]::WriteAllText($run1, "`"$ApolloExe`" `"$ConfigDir\\sunshine.conf`"`r`n", [System.Text.UTF8Encoding]::new($false))
-  [System.IO.File]::WriteAllText($run2, "`"$ApolloExe`" `"$ConfigDir\\sunshine_2.conf`"`r`n", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText($run1, "cd /d `"C:\Program Files\Apollo`" && `"$ApolloExe`" `"$ConfigDir\\sunshine.conf`"", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText($run2, "cd /d `"C:\Program Files\Apollo`" && `"$ApolloExe`" `"$ConfigDir\\sunshine_2.conf`"", [System.Text.UTF8Encoding]::new($false))
 
   schtasks /Create /TN $task1 /TR $run1 /SC ONLOGON /RL HIGHEST /RU $Username /RP $Password /F /IT | Out-Null
   schtasks /Create /TN $task2 /TR $run2 /SC ONLOGON /RL HIGHEST /RU $Username /RP $Password /F /IT | Out-Null
@@ -253,7 +253,10 @@ Write-Host "Now install and start the client agent service"
 
 Write-Host "[extra] Configuring Apollo for interactive user-session launch (GPU capture)"
 try {
-  $apolloExe = "C:\\Program Files\\Apollo\\Apollo.exe"
+  $apolloExe = "C:\\Program Files\\Apollo\\sunshine.exe"
+  if (-not (Test-Path $apolloExe)) {
+    $apolloExe = "C:\\ProgramData\\gamer\\bin\\Apollo\\sunshine.exe"
+  }
   if (-not (Test-Path $apolloExe)) {
     $apolloExe = "C:\\ProgramData\\gamer\\bin\\Apollo\\Apollo.exe"
   }
@@ -268,6 +271,33 @@ try {
 } catch {
   Write-Warning "Apollo interactive setup failed: $($_.Exception.Message)"
 }
+
+# Ensure firewall opens for both Apollo instances.
+try {
+  $rules = @(
+    @{n='Apollo1 TCP 47984';p='TCP';lp='47984'},
+    @{n='Apollo1 TCP 47989';p='TCP';lp='47989'},
+    @{n='Apollo1 TCP 47990';p='TCP';lp='47990'},
+    @{n='Apollo1 TCP 48010';p='TCP';lp='48010'},
+    @{n='Apollo1 UDP 47998';p='UDP';lp='47998'},
+    @{n='Apollo1 UDP 47999';p='UDP';lp='47999'},
+    @{n='Apollo1 UDP 48000';p='UDP';lp='48000'},
+    @{n='Apollo1 UDP 48002';p='UDP';lp='48002'},
+    @{n='Apollo1 UDP 48010';p='UDP';lp='48010'},
+    @{n='Apollo2 TCP 48984';p='TCP';lp='48984'},
+    @{n='Apollo2 TCP 48989';p='TCP';lp='48989'},
+    @{n='Apollo2 TCP 48990';p='TCP';lp='48990'},
+    @{n='Apollo2 TCP 49010';p='TCP';lp='49010'},
+    @{n='Apollo2 UDP 48998';p='UDP';lp='48998'},
+    @{n='Apollo2 UDP 48999';p='UDP';lp='48999'},
+    @{n='Apollo2 UDP 49000';p='UDP';lp='49000'},
+    @{n='Apollo2 UDP 49002';p='UDP';lp='49002'},
+    @{n='Apollo2 UDP 49010';p='UDP';lp='49010'}
+  )
+  foreach ($r in $rules) {
+    netsh advfirewall firewall add rule name=$r.n dir=in action=allow protocol=$r.p localport=$r.lp | Out-Null
+  }
+} catch {}
 
 try {
   Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
