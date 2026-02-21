@@ -42,7 +42,7 @@ echo "[$(date)] reposition: DP-0=${TOP_WIDTH}x${TOP_HEIGHT}+${TOP_X}+${TOP_Y} DP
 # Find emulator windows by title (supports Azahar, melonDS, Dolphin, etc.)
 PRIMARY=""
 SECONDARY=""
-for wid in $(xdotool search --name "Azahar\|melonDS\|Dolphin" 2>/dev/null); do
+for wid in $(xdotool search --name "Azahar|melonDS|Dolphin" 2>/dev/null); do
     name=$(xdotool getwindowname "$wid" 2>/dev/null)
     if echo "$name" | grep -q "Secondary Window"; then
         SECONDARY=$wid
@@ -68,6 +68,12 @@ if [ -n "$SECONDARY" ]; then
     echo "[$(date)] reposition: secondary $SECONDARY -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
     xdotool windowmove "$SECONDARY" "$BOT_X" "$BOT_Y"
     xdotool windowsize "$SECONDARY" "$BOT_WIDTH" "$BOT_HEIGHT"
+fi
+
+# Apply dot cursor to bottom screen window for touch-friendly UX
+SCRIPT_DIR=$(dirname "$0")
+if [ -n "$SECONDARY" ] && [ -f "$SCRIPT_DIR/set-dot-cursor.py" ]; then
+    python3 "$SCRIPT_DIR/set-dot-cursor.py" >> "$LOG" 2>&1 &
 fi
 
 echo "[$(date)] reposition: done" >> "$LOG"
