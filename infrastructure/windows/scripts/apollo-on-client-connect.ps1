@@ -9,8 +9,10 @@ Write-Host "Apollo client connected. connected_clients=$ConnectedClients"
 if ($ConnectedClients -ge 2) {
   $script = Join-Path $PSScriptRoot "position-azahar-dual.ps1"
   if (Test-Path $script) {
-    # Give the second window/display a moment to appear, then place with retries.
-    Start-Sleep -Milliseconds 400
-    & $script -MaxAttempts 30 -SleepMs 400
+    # Fire-and-forget async placement so client-connected API stays responsive.
+    # The positioning script itself has retries for late window/display availability.
+    $args = "-ExecutionPolicy Bypass -File `"$script`" -MaxAttempts 30 -SleepMs 400"
+    Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Hidden | Out-Null
+    Write-Host "Spawned async dual-window placement"
   }
 }

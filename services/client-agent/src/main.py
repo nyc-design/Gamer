@@ -411,5 +411,5 @@ def client_disconnected(event: ClientEvent) -> StartResponse:
 
 @APP.post("/position-dual-now", response_model=StartResponse)
 def position_dual_now() -> StartResponse:
-    _run_powershell_script("position-azahar-dual.ps1", [])
+    _run_powershell_script("position-azahar-dual.ps1", ["-MaxAttempts", "30", "-SleepMs", "300"])
     return StartResponse(ok=True, message="position script invoked")

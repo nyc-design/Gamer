@@ -542,3 +542,25 @@ Design alignment with Linux side:
     - falls back to NuGet Python package extraction when winget unavailable,
     - creates venv reliably,
     - opens inbound firewall rule for agent port.
+
+### Windows Reliability Iteration — 2026-02-21 (continued)
+
+- Added `infrastructure/windows/orchestrate_windows_host.py`:
+  - one-shot pure-Python workflow: create/reuse VM → status/IP wait → RDP bootstrap → SSH deploy → `/health` validation.
+  - supports no-token mode when reusing an existing state file with known IP.
+
+- `deploy_via_ssh.py` improvements:
+  - added `--skip-bootstrap` for fast script/agent iteration without reinstalling Apollo/ShaderGlass.
+  - added `--skip-agent-install` for selective deploy flows.
+
+- Agent + hooks hardening:
+  - `/client-connected` and `/client-disconnected` now handle both absolute-count payloads and edge/event payloads robustly.
+  - `/health` now returns:
+    - process liveness,
+    - started timestamp,
+    - last PowerShell hook execution details (exit code/stdout/stderr) for fast debugging.
+  - `apollo-on-client-connect.ps1` now spawns dual-window placement asynchronously so API calls return quickly.
+  - `position-dual-now` now uses retry args by default.
+
+- Boot persistence validated:
+  - startup task now runs as `SYSTEM` with restart policy and survives reboot without user logon.
