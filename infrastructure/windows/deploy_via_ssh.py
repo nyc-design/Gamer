@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Deploy Windows host scripts over OpenSSH after RDP bootstrap."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import paramiko
+
+STATE_DEFAULT = Path(__file__).resolve().parent / "state" / "windows-vm.local.json"
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_state(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(f"State file missing: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run(ssh: paramiko.SSHClient, command: str) -> tuple[int, str, str]:
+    stdin, stdout, stderr = ssh.exec_command(command)
+    out = stdout.read().decode("utf-8", errors="ignore")
+    err = stderr.read().decode("utf-8", errors="ignore")
+    code = stdout.channel.recv_exit_status()
+    return code, out, err
+
+
+def upload_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
+    parent = str(Path(remote).parent).replace("\\", "/")
+    try:
+        sftp.stat(parent)
+    except FileNotFoundError:
+        parts = parent.split("/")
+        cur = ""
+        for p in parts:
+            if not p:
+                continue
+            cur = f"{cur}/{p}" if cur else p
+            try:
+                sftp.stat(cur)
+            except FileNotFoundError:
+                sftp.mkdir(cur)
+    sftp.put(str(local), remote)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Upload and execute Windows setup scripts via SSH")
+    p.add_argument("--state-file", type=Path, default=STATE_DEFAULT)
+    p.add_argument("--ip")
+    p.add_argument("--username", default="user")
+    p.add_argument("--password")
+    p.add_argument("--bootstrap-only", action="store_true", help="Run only bootstrap-windows.ps1")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    state = load_state(args.state_file)
+    ip = args.ip or state.get("ip")
+    username = args.username
+    password = args.password or state.get("password")
+    if not ip or not password:
+        raise SystemExit("Missing ip/password. Provide --ip --password or valid state file.")
+
+    local_bootstrap = ROOT / "infrastructure" / "windows" / "bootstrap-windows.ps1"
+    local_install = ROOT / "infrastructure" / "windows" / "install-agent-service.ps1"
+    local_connect = ROOT / "infrastructure" / "windows" / "scripts" / "apollo-on-client-connect.ps1"
+    local_disconnect = ROOT / "infrastructure" / "windows" / "scripts" / "apollo-on-client-disconnect.ps1"
+    local_position = ROOT / "infrastructure" / "windows" / "scripts" / "position-azahar-dual.ps1"
+    local_move = ROOT / "infrastructure" / "windows" / "scripts" / "move-window-next-monitor.ahk"
+    local_agent_main = ROOT / "services" / "client-agent" / "src" / "main.py"
+    local_agent_requirements = ROOT / "services" / "client-agent" / "requirements.txt"
+    local_agent_manifest = ROOT / "services" / "client-agent" / "manifests" / "session_manifest.windows.dev.json"
+
+    remote_root = "C:/ProgramData/gamer/setup"
+    remote_bootstrap = f"{remote_root}/bootstrap-windows.ps1"
+    remote_install = f"{remote_root}/install-agent-service.ps1"
+    remote_connect = f"{remote_root}/apollo-on-client-connect.ps1"
+    remote_disconnect = f"{remote_root}/apollo-on-client-disconnect.ps1"
+    remote_position = f"{remote_root}/position-azahar-dual.ps1"
+    remote_move = f"{remote_root}/move-window-next-monitor.ahk"
+    remote_agent_root = "C:/gamer/client-agent"
+    remote_agent_main = f"{remote_agent_root}/src/main.py"
+    remote_agent_requirements = f"{remote_agent_root}/requirements.txt"
+    remote_agent_manifest = f"{remote_agent_root}/manifests/session_manifest.windows.dev.json"
+
+    print(f"Connecting to {username}@{ip}:22 ...")
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(ip, port=22, username=username, password=password, timeout=20, allow_agent=False, look_for_keys=False)
+    print("SSH connected.")
+
+    try:
+        code, out, err = run(ssh, "powershell -NoProfile -Command \"New-Item -ItemType Directory -Path 'C:\\ProgramData\\gamer\\setup' -Force | Out-Null\"")
+        if code != 0:
+            raise RuntimeError(f"mkdir failed: {err or out}")
+
+        with ssh.open_sftp() as sftp:
+            upload_file(sftp, local_bootstrap, remote_bootstrap)
+            upload_file(sftp, local_install, remote_install)
+            upload_file(sftp, local_connect, remote_connect)
+            upload_file(sftp, local_disconnect, remote_disconnect)
+            upload_file(sftp, local_position, remote_position)
+            upload_file(sftp, local_move, remote_move)
+            upload_file(sftp, local_agent_main, remote_agent_main)
+            upload_file(sftp, local_agent_requirements, remote_agent_requirements)
+            upload_file(sftp, local_agent_manifest, remote_agent_manifest)
+        print("Uploaded setup scripts.")
+
+        code, out, err = run(
+            ssh,
+            "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1",
+        )
+        print(out)
+        if code != 0:
+            raise RuntimeError(f"bootstrap-windows.ps1 failed: {err}")
+
+        if not args.bootstrap_only:
+            code, out, err = run(
+                ssh,
+                "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\install-agent-service.ps1 -AgentRoot C:\\gamer\\client-agent",
+            )
+            print(out)
+            if code != 0:
+                raise RuntimeError(f"install-agent-service.ps1 failed: {err}")
+
+        code, out, err = run(ssh, "powershell -NoProfile -Command \"Get-Service sshd,WinRM | Format-Table Name,Status,StartType -AutoSize\"")
+        print(out)
+        if err.strip():
+            print("stderr:", err.strip())
+
+        print("Windows deploy via SSH completed.")
+    finally:
+        ssh.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -20,7 +20,13 @@ python infrastructure/windows/provision-tensordock-windows.py delete
 
 ## Current connectivity note
 
-At time of implementation, instance API reports `running`, but direct checks from this workspace to common remote-management ports (3389/5985/5986/22) timed out.
+Current validated bootstrap path:
 
-That means code-level implementation proceeded, but full remote in-VM bootstrap automation from this environment could not be completed end-to-end yet.
+1. VM reports `running` and is reachable on RDP `3390`.
+2. `infrastructure/windows/rdp_bootstrap.py` (pure Python, `aardwolf`) logs in and launches elevated PowerShell.
+3. Script enables:
+   - OpenSSH server (`sshd`) + firewall rule on TCP 22
+   - WinRM service + firewall rule on TCP 5985
+4. SSH login from workspace succeeds (`user@<vm-ip>`).
 
+Follow-up deployment runs through `infrastructure/windows/deploy_via_ssh.py`.

@@ -19,12 +19,21 @@ python infrastructure/windows/provision-tensordock-windows.py create
 python infrastructure/windows/provision-tensordock-windows.py status
 ```
 
-Then on Windows VM:
+Then bootstrap remote-management from this workspace (pure Python + RDP, no manual RDP client):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File infrastructure/windows/bootstrap-windows.ps1
-powershell -ExecutionPolicy Bypass -File infrastructure/windows/install-agent-service.ps1
+source .venv/bin/activate
+python -m pip install aardwolf paramiko
+python infrastructure/windows/rdp_bootstrap.py
 ```
 
-Agent API should then expose `/health`, `/start`, `/stop`.
+If bootstrap succeeds, port 22/5985 are reachable and you can deploy scripts over SSH:
 
+```bash
+source .venv/bin/activate
+python infrastructure/windows/deploy_via_ssh.py
+```
+
+Notes:
+- For current TensorDock v2 API behavior, `port_forwards` cannot be set when `useDedicatedIp=true`.
+- The current Windows path uses dedicated IP + RDP bootstrap to enable OpenSSH/WinRM from inside the guest.

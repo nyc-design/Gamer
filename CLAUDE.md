@@ -522,3 +522,23 @@ Design alignment with Linux side:
 - Same manifest shape and session semantics (temporary hardcoded source).
 - Same storage split assumptions (R2 ROMs + GCS saves/config/firmware/steam) via rclone.
 - Same client-agent contract intent (Windows agent still talks to same server API once ready).
+
+### Windows Bootstrap Validation Update — 2026-02-21
+
+- Added `infrastructure/windows/rdp_bootstrap.py`:
+  - Pure-Python RDP automation using `aardwolf` (no manual RDP client).
+  - Launches elevated PowerShell, enables OpenSSH + WinRM, and opens firewall.
+  - Validated on active TensorDock Windows VM (`66.172.10.81`): TCP 22 and 5985 reachable after bootstrap.
+
+- Added `infrastructure/windows/deploy_via_ssh.py`:
+  - Uploads Windows setup scripts + agent files via SFTP.
+  - Executes `bootstrap-windows.ps1` and `install-agent-service.ps1` over SSH.
+  - Validated end-to-end: scheduled task `GamerClientAgent` created and agent process listening on 8081.
+
+- Hardened Windows scripts:
+  - `bootstrap-windows.ps1` now tolerates winget/package failures and continues setup.
+  - `install-agent-service.ps1` now:
+    - resolves Python robustly,
+    - falls back to NuGet Python package extraction when winget unavailable,
+    - creates venv reliably,
+    - opens inbound firewall rule for agent port.
