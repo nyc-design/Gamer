@@ -7,7 +7,8 @@ use x11::xlib;
 
 use crate::gl_context::GlState;
 
-/// An overlay window positioned on top of a source window, used to display shader output
+/// An overlay window positioned on top of a source window, used to display shader output.
+/// Uses XFixes input shape to be fully click-through — all input passes to the window below.
 pub struct OverlayWindow {
     display: *mut xlib::Display,
     window: c_ulong,
@@ -16,10 +17,15 @@ pub struct OverlayWindow {
     pub height: u32,
 }
 
-// Atoms for window type
+// Atoms and XFixes FFI
 extern "C" {
     fn XInternAtom(display: *mut xlib::Display, name: *const i8, only_if_exists: c_int) -> c_ulong;
+    fn XFixesCreateRegion(display: *mut xlib::Display, rectangles: *const xlib::XRectangle, count: c_int) -> c_ulong;
+    fn XFixesSetWindowShapeRegion(display: *mut xlib::Display, window: c_ulong, shape_kind: c_int, x_off: c_int, y_off: c_int, region: c_ulong);
+    fn XFixesDestroyRegion(display: *mut xlib::Display, region: c_ulong);
 }
+
+const SHAPE_INPUT: c_int = 2; // ShapeInput — input region only, visual remains
 
 impl OverlayWindow {
     pub fn new(gl: &GlState, x: i32, y: i32, width: u32, height: u32) -> Result<Self> {
@@ -79,9 +85,16 @@ impl OverlayWindow {
 
             // Map the window
             xlib::XMapWindow(display, window);
+
+            // Make the overlay fully click-through using XFixes input shape.
+            // Set the input region to empty — all clicks pass to the window below.
+            let empty_region = XFixesCreateRegion(display, ptr::null(), 0);
+            XFixesSetWindowShapeRegion(display, window, SHAPE_INPUT, 0, 0, empty_region);
+            XFixesDestroyRegion(display, empty_region);
+
             xlib::XFlush(display);
 
-            log::info!("Created overlay window 0x{:x} at ({},{}) {}x{}", window, x, y, width, height);
+            log::info!("Created overlay window 0x{:x} at ({},{}) {}x{} (click-through)", window, x, y, width, height);
 
             Ok(Self {
                 display,
@@ -98,6 +111,10 @@ impl OverlayWindow {
         unsafe {
             // Switch GLX drawable to this overlay window
             gl.make_current(self.glx_window);
+
+            // Clear to magenta first — if we see magenta, blit is failing
+            gl.glow_ctx.clear_color(1.0, 0.0, 1.0, 1.0);
+            gl.glow_ctx.clear(glow::COLOR_BUFFER_BIT);
 
             gl.glow_ctx.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(shader_fbo));
             gl.glow_ctx.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);

@@ -7,7 +7,8 @@ use x11::xlib;
 
 use crate::gl_context::*;
 
-/// Captures an X11 window via XComposite + GLX_EXT_texture_from_pixmap (zero-copy)
+/// Captures an X11 window via XComposite + GLX_EXT_texture_from_pixmap (zero-copy).
+/// The window is redirected offscreen; the overlay window replaces it visually.
 pub struct WindowCapture {
     display: *mut xlib::Display,
     source_window: c_ulong,
@@ -18,7 +19,6 @@ pub struct WindowCapture {
     width: u32,
     height: u32,
     dirty: bool,
-    nvidia_driver: bool,
     // X Damage tracking
     damage: c_ulong,
     damage_event_base: c_int,
@@ -103,10 +103,7 @@ impl WindowCapture {
                 bail!("Failed to create damage tracker for window 0x{:x}", source_window);
             }
 
-            // Detect NVIDIA driver — texture_from_pixmap behaves differently
-            let vendor = gl.glow_ctx.get_parameter_string(glow::VENDOR);
-            let nvidia_driver = vendor.to_lowercase().contains("nvidia");
-            log::info!("Capturing window 0x{:x} ({}x{}) via XComposite (vendor={}, nvidia={})", source_window, width, height, vendor, nvidia_driver);
+            log::info!("Capturing window 0x{:x} ({}x{}) via XComposite (zero-copy)", source_window, width, height);
 
             Ok(Self {
                 display,
@@ -118,7 +115,6 @@ impl WindowCapture {
                 width,
                 height,
                 dirty: true, // render first frame immediately
-                nvidia_driver,
                 damage,
                 damage_event_base,
             })
@@ -126,7 +122,8 @@ impl WindowCapture {
     }
 
     /// Rebind the texture to pick up new window content.
-    /// On NVIDIA this generates benign X11 errors (demoted to debug in error handler).
+    /// On NVIDIA this generates X11 errors that are suppressed in the error handler.
+    /// The errors are cosmetic — the rebind is functionally required for texture updates.
     pub fn update_if_dirty(&mut self, gl: &GlState) {
         if !self.dirty {
             return;

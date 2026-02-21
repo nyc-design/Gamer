@@ -32,7 +32,6 @@ pub const GLX_TEXTURE_FORMAT_RGBA_EXT: c_int = 0x20DA;
 pub const GLX_FRONT_EXT: c_int = 0x20DE;
 pub const GLX_BIND_TO_TEXTURE_TARGETS_EXT: c_int = 0x20D3;
 pub const GLX_TEXTURE_2D_BIT_EXT: c_int = 0x0002;
-pub const GLX_Y_INVERTED_EXT: c_int = 0x20D4;
 
 impl GlState {
     pub fn new() -> Result<Self> {

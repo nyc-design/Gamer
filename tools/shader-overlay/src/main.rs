@@ -194,6 +194,7 @@ fn main() -> Result<()> {
     let mut last_poll = Instant::now();
 
     let mut frame_count: usize = 0;
+    let mut damage_count: usize = 0;
     let mut last_frame_log = Instant::now();
     let mut event: xlib::XEvent = unsafe { std::mem::zeroed() };
 
@@ -245,15 +246,13 @@ fn main() -> Result<()> {
                 let mut is_damage = false;
                 for entry in &mut pipelines {
                     if event_type == entry.capture.damage_event_base() {
-                        let damage_event_ptr = &event as *const xlib::XEvent as *const u8;
-                        let drawable = *(damage_event_ptr.add(32) as *const c_ulong);
-
-                        if drawable == entry.source_window {
-                            entry.capture.mark_dirty();
-                            entry.capture.acknowledge_damage();
-                            is_damage = true;
-                            break;
-                        }
+                        // XDamageNotifyEvent: damage ID is at a known offset
+                        // Accept all damage events for windows we're tracking
+                        entry.capture.mark_dirty();
+                        entry.capture.acknowledge_damage();
+                        is_damage = true;
+                        damage_count += 1;
+                        break;
                     }
                 }
 
@@ -345,7 +344,7 @@ fn main() -> Result<()> {
 
         // Periodic stats logging
         if last_frame_log.elapsed() >= Duration::from_secs(5) {
-            log::info!("Stats: {} frames rendered, {} pipeline(s) active", frame_count, pipelines.len());
+            log::info!("Stats: {} frames rendered, {} damage events, {} pipeline(s) active", frame_count, damage_count, pipelines.len());
             last_frame_log = Instant::now();
         }
 
