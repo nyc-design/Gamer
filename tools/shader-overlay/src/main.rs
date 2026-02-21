@@ -194,6 +194,7 @@ fn main() -> Result<()> {
     let mut last_poll = Instant::now();
 
     let mut frame_count: usize = 0;
+    let mut last_frame_log = Instant::now();
     let mut event: xlib::XEvent = unsafe { std::mem::zeroed() };
 
     'main: loop {
@@ -340,6 +341,12 @@ fn main() -> Result<()> {
 
         if any_rendered {
             frame_count += 1;
+        }
+
+        // Periodic stats logging
+        if last_frame_log.elapsed() >= Duration::from_secs(5) {
+            log::info!("Stats: {} frames rendered, {} pipeline(s) active", frame_count, pipelines.len());
+            last_frame_log = Instant::now();
         }
 
         // Sleep briefly if no events and nothing to render

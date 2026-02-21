@@ -125,24 +125,17 @@ impl WindowCapture {
         }
     }
 
-    /// Update the captured texture. With NVIDIA, the initial bind_tex_image creates
-    /// a live link to the window's backing store — no rebind needed, just sync.
-    /// On Mesa, we do the release/rebind cycle.
+    /// Rebind the texture to pick up new window content.
+    /// On NVIDIA this generates benign X11 errors (demoted to debug in error handler).
     pub fn update_if_dirty(&mut self, gl: &GlState) {
         if !self.dirty {
             return;
         }
         unsafe {
-            if self.nvidia_driver {
-                // NVIDIA: texture_from_pixmap is a live binding, just sync
-                glx::glXWaitX();
-            } else {
-                // Mesa/Intel: must release and rebind
-                gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-                (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT);
-                (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT, ptr::null());
-                gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
-            }
+            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT);
+            (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT, ptr::null());
+            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
         }
         self.dirty = false;
     }
