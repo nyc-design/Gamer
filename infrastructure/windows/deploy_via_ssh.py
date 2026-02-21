@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--apollo-installer-url", default="", help="Optional explicit Apollo installer URL")
     p.add_argument("--shaderglass-installer-url", default="", help="Optional explicit ShaderGlass package URL")
     p.add_argument("--ssh-retries", type=int, default=8, help="SSH connect retries")
+    p.add_argument("--windows-username", default="user", help="Windows username for interactive Apollo tasks")
     p.add_argument("--bootstrap-only", action="store_true", help="Run only bootstrap-windows.ps1")
     p.add_argument("--skip-bootstrap", action="store_true", help="Skip bootstrap-windows.ps1")
     p.add_argument("--skip-agent-install", action="store_true", help="Skip install-agent-service.ps1")
@@ -159,11 +160,18 @@ def main() -> None:
                 shader_url = ""
 
         if not args.skip_bootstrap:
+            def _ps_single_quote(v: str) -> str:
+                return "'" + v.replace("'", "''") + "'"
+
             bootstrap_cmd = "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1"
             if apollo_url:
                 bootstrap_cmd += f' -ApolloInstallerUrl "{apollo_url}"'
             if shader_url:
                 bootstrap_cmd += f' -ShaderGlassInstallerUrl "{shader_url}"'
+            if args.windows_username:
+                bootstrap_cmd += f" -WindowsUsername {_ps_single_quote(args.windows_username)}"
+            if password:
+                bootstrap_cmd += f" -WindowsPassword {_ps_single_quote(password)}"
             code, out, err = run(
                 ssh,
                 bootstrap_cmd,
@@ -181,8 +189,46 @@ def main() -> None:
             if code != 0:
                 raise RuntimeError(f"install-agent-service.ps1 failed: {err}")
 
+        # Enforce Apollo launch in interactive user session (avoid SYSTEM/session0 capture path).
+        if password:
+            safe_pw = password.replace('"', '\\"')
+            safe_user = (args.windows_username or "user").replace('"', '\\"')
+            run(
+                ssh,
+                "powershell -NoProfile -Command "
+                "\"$ErrorActionPreference='Continue'; "
+                "$setup='C:\\ProgramData\\gamer\\setup'; New-Item -ItemType Directory -Path $setup -Force | Out-Null; "
+                "$run1=Join-Path $setup 'run-apollo1.cmd'; "
+                "$run2=Join-Path $setup 'run-apollo2.cmd'; "
+                "[IO.File]::WriteAllText($run1,'\\\"C:\\ProgramData\\gamer\\bin\\Apollo\\Apollo.exe\\\" \\\"C:\\Program Files\\Apollo\\config\\sunshine.conf\\\"`r`n'); "
+                "[IO.File]::WriteAllText($run2,'\\\"C:\\ProgramData\\gamer\\bin\\Apollo\\Apollo.exe\\\" \\\"C:\\Program Files\\Apollo\\config\\sunshine_2.conf\\\"`r`n'); "
+                "Stop-Service ApolloService -Force -ErrorAction SilentlyContinue; "
+                "Set-Service ApolloService -StartupType Disabled -ErrorAction SilentlyContinue; "
+                "taskkill /IM sunshinesvc.exe /F 2>$null; taskkill /IM Apollo.exe /F 2>$null; "
+                f"schtasks /Create /TN GamerApollo1 /TR $run1 /SC ONLOGON /RL HIGHEST /RU \\\"{safe_user}\\\" /RP \\\"{safe_pw}\\\" /F /IT | Out-Null; "
+                f"schtasks /Create /TN GamerApollo2 /TR $run2 /SC ONLOGON /RL HIGHEST /RU \\\"{safe_user}\\\" /RP \\\"{safe_pw}\\\" /F /IT | Out-Null; "
+                "schtasks /Run /TN GamerApollo1 | Out-Null; "
+                "schtasks /Run /TN GamerApollo2 | Out-Null; "
+                "Start-Sleep -Seconds 2; "
+                "Get-Process Apollo -IncludeUserName -ErrorAction SilentlyContinue | "
+                "Select-Object Name,Id,SessionId,UserName,Path | Format-Table -AutoSize\"",
+            )
+
         code, out, err = run(ssh, "powershell -NoProfile -Command \"Get-Service sshd,WinRM | Format-Table Name,Status,StartType -AutoSize\"")
         print(out)
+        if err.strip():
+            print("stderr:", err.strip())
+
+        # Quick diagnostic: verify Apollo is not SYSTEM/session0 if interactive tasks are configured.
+        code, out, err = run(
+            ssh,
+            "powershell -NoProfile -Command \"Get-Service ApolloService -ErrorAction SilentlyContinue | "
+            "Select-Object Name,Status,StartType | Format-Table -AutoSize; "
+            "Get-Process Apollo -IncludeUserName -ErrorAction SilentlyContinue | "
+            "Select-Object Name,Id,SessionId,UserName,Path | Format-Table -AutoSize\"",
+        )
+        if out.strip():
+            print(out)
         if err.strip():
             print("stderr:", err.strip())
 

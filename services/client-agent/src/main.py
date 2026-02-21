@@ -179,6 +179,13 @@ def setup_storage(manifest: Dict[str, Any]) -> None:
 
 
 def start_apollo(manifest: Dict[str, Any]) -> None:
+    # Apollo must run in the interactive Windows user session (not SYSTEM/session0),
+    # otherwise capture can bind to Microsoft Basic Render Driver (1Hz) and software encode.
+    managed_externally = os.getenv("APOLLO_MANAGED_EXTERNALLY", "true").lower() in {"1", "true", "yes"}
+    if managed_externally and _is_windows():
+        logger.info("APOLLO_MANAGED_EXTERNALLY=true; skipping Apollo spawn from agent")
+        return
+
     cfg = manifest.get("windows", {}).get("apollo", {})
     if not cfg.get("enabled"):
         return

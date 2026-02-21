@@ -104,6 +104,9 @@ if (-not (Test-Path "$venv\\Scripts\\python.exe")) {
 $svcName = "GamerClientAgent"
 $cmd = "`"$venv\\Scripts\\python.exe`" -m uvicorn src.main:APP --host 0.0.0.0 --port $Port"
 
+# Apollo is managed via interactive scheduled tasks; prevent agent from launching it in session0.
+[Environment]::SetEnvironmentVariable("APOLLO_MANAGED_EXTERNALLY", "true", "Machine")
+
 # Stop existing task/processes for idempotent restart
 try { Stop-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue | Out-Null } catch {}
 Get-CimInstance Win32_Process | Where-Object {

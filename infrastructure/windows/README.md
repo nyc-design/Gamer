@@ -100,3 +100,47 @@ Notes:
 - Apollo install fallback:
   - if silent installer path does not produce `C:/Program Files/Apollo/Apollo.exe`, bootstrap stages a runnable binary at:
   - `C:/ProgramData/gamer/bin/Apollo/Apollo.exe`
+
+## Critical GPU/NVENC fix (Windows)
+
+If Apollo runs as `SYSTEM` (session 0), it can capture `Microsoft Basic Render Driver` at `1Hz` and fall back to software (`libx264`), even when NVIDIA drivers are installed.
+
+This setup now hardens against that by:
+
+1. Installing NVIDIA driver (RTX host must show `NVIDIA GeForce RTX 4090` in `Get-PnpDevice -Class Display`)
+2. Disabling/stopping `ApolloService` (SYSTEM service)
+3. Launching Apollo via **interactive per-user scheduled tasks** (`/IT`) for both instances:
+   - `GamerApollo1` → `sunshine.conf`
+   - `GamerApollo2` → `sunshine_2.conf`
+4. Pinning Apollo adapter selection in config:
+   - `adapter_name = NVIDIA GeForce RTX 4090`
+5. Preventing client-agent from spawning Apollo in session0:
+   - `APOLLO_MANAGED_EXTERNALLY=true`
+
+Quick verification commands:
+
+```powershell
+Get-Process Apollo -IncludeUserName | ft Name,Id,SessionId,UserName,Path -AutoSize
+Get-Service ApolloService | ft Name,Status,StartType -AutoSize
+Get-PnpDevice -Class Display | ft Status,FriendlyName,InstanceId -AutoSize
+```
+
+Expected:
+- Apollo processes run as `WIN10-NEW\\user` and **not** session 0 service-owned capture path.
+- `ApolloService` is `Disabled`/stopped.
+- NVIDIA display adapter status is `OK`.
+
+## Production readiness target (3-5 minutes)
+
+For sub-5-minute host readiness, use a pre-baked Windows image with:
+- NVIDIA driver preinstalled
+- Apollo + ShaderGlass preinstalled
+- Python + dependencies preinstalled
+
+Then runtime flow is only:
+1) Provision VM
+2) RDP bootstrap mgmt ports (22/5985)
+3) Push manifests/scripts + restart tasks
+4) Health check and pair/connect
+
+This avoids repeated large installer downloads during session startup.
