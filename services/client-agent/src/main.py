@@ -63,11 +63,16 @@ class StartResponse(BaseModel):
     manifest_path: Optional[str] = None
 
 
+class ClientEvent(BaseModel):
+    connected_clients: int = 1
+
+
 class AgentState:
     def __init__(self) -> None:
         self.started = False
         self.manifest: Dict[str, Any] = {}
         self.processes: Dict[str, subprocess.Popen] = {}
+        self.connected_clients: int = 0
 
 
 STATE = AgentState()
@@ -80,6 +85,28 @@ def _is_windows() -> bool:
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     logger.info("run: %s", " ".join(cmd))
     return subprocess.run(cmd, check=check, capture_output=True, text=True)
+
+
+def _find_windows_script(script_name: str) -> Optional[Path]:
+    # 1) Explicit override.
+    base = os.getenv("WINDOWS_SETUP_DIR")
+    if base:
+        p = Path(base) / script_name
+        if p.exists():
+            return p
+
+    # 2) Deployed setup path.
+    deployed = Path("C:/ProgramData/gamer/setup")
+    p = deployed / script_name
+    if p.exists():
+        return p
+
+    # 3) Repo checkout relative path (dev).
+    repo_rel = Path(__file__).resolve().parents[3] / "infrastructure" / "windows" / "scripts" / script_name
+    if repo_rel.exists():
+        return repo_rel
+
+    return None
 
 
 def load_manifest() -> Dict[str, Any]:
@@ -162,7 +189,7 @@ def maybe_install_window_hotkeys() -> None:
         return
 
     ahk = shutil.which("AutoHotkey64.exe") or shutil.which("autohotkey")
-    helper = Path(__file__).resolve().parents[2] / "infrastructure" / "windows" / "scripts" / "move-window-next-monitor.ahk"
+    helper = _find_windows_script("move-window-next-monitor.ahk")
     if not ahk or not helper.exists():
         logger.warning("AHK/helper missing; window move hotkey not installed")
         return
@@ -180,7 +207,28 @@ def stop_all() -> None:
             pass
         logger.info("terminated process: %s", name)
     STATE.processes.clear()
+    STATE.connected_clients = 0
     STATE.started = False
+
+
+def _run_powershell_script(script_name: str, extra_args: list[str]) -> None:
+    script = _find_windows_script(script_name)
+    if not script:
+        logger.warning("script not found: %s", script_name)
+        return
+
+    args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] + extra_args
+    try:
+        result = _run(args, check=False)
+        logger.info(
+            "script %s exit=%s stdout=%s stderr=%s",
+            script_name,
+            result.returncode,
+            (result.stdout or "").strip()[:600],
+            (result.stderr or "").strip()[:600],
+        )
+    except Exception as e:
+        logger.warning("failed to run script %s: %s", script_name, e)
 
 
 @APP.get("/health")
@@ -228,3 +276,17 @@ def reload_manifest() -> StartResponse:
         raise HTTPException(status_code=409, detail="stop first")
     STATE.manifest = load_manifest()
     return StartResponse(ok=True, message="manifest reloaded")
+
+
+@APP.post("/client-connected", response_model=StartResponse)
+def client_connected(event: ClientEvent) -> StartResponse:
+    STATE.connected_clients = max(0, event.connected_clients)
+    _run_powershell_script("apollo-on-client-connect.ps1", ["-ConnectedClients", str(STATE.connected_clients)])
+    return StartResponse(ok=True, message=f"client-connected={STATE.connected_clients}")
+
+
+@APP.post("/client-disconnected", response_model=StartResponse)
+def client_disconnected(event: ClientEvent) -> StartResponse:
+    STATE.connected_clients = max(0, event.connected_clients)
+    _run_powershell_script("apollo-on-client-disconnect.ps1", ["-ConnectedClients", str(STATE.connected_clients)])
+    return StartResponse(ok=True, message=f"client-disconnected={STATE.connected_clients}")

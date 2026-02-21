@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import urllib.request
 from pathlib import Path
 
 import paramiko
@@ -45,12 +47,29 @@ def upload_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
     sftp.put(str(local), remote)
 
 
+def resolve_github_latest_asset(repo: str, asset_regex: str) -> str:
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/latest",
+        headers={"User-Agent": "gamer-windows-deployer"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        release = json.loads(resp.read().decode("utf-8"))
+    pattern = re.compile(asset_regex)
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        if pattern.search(name):
+            return asset.get("browser_download_url", "")
+    return ""
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Upload and execute Windows setup scripts via SSH")
     p.add_argument("--state-file", type=Path, default=STATE_DEFAULT)
     p.add_argument("--ip")
     p.add_argument("--username", default="user")
     p.add_argument("--password")
+    p.add_argument("--apollo-installer-url", default="", help="Optional explicit Apollo installer URL")
+    p.add_argument("--shaderglass-installer-url", default="", help="Optional explicit ShaderGlass package URL")
     p.add_argument("--bootstrap-only", action="store_true", help="Run only bootstrap-windows.ps1")
     return p.parse_args()
 
@@ -109,9 +128,29 @@ def main() -> None:
             upload_file(sftp, local_agent_manifest, remote_agent_manifest)
         print("Uploaded setup scripts.")
 
+        apollo_url = args.apollo_installer_url
+        shader_url = args.shaderglass_installer_url
+        if not apollo_url:
+            try:
+                apollo_url = resolve_github_latest_asset("ClassicOldSong/Apollo", r"\\.exe$")
+            except Exception as e:
+                print(f"Warning: failed to resolve Apollo URL: {e}")
+                apollo_url = ""
+        if not shader_url:
+            try:
+                shader_url = resolve_github_latest_asset("mausimus/ShaderGlass", r"win-x64\\.zip$")
+            except Exception as e:
+                print(f"Warning: failed to resolve ShaderGlass URL: {e}")
+                shader_url = ""
+
+        bootstrap_cmd = "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1"
+        if apollo_url:
+            bootstrap_cmd += f" -ApolloInstallerUrl '{apollo_url}'"
+        if shader_url:
+            bootstrap_cmd += f" -ShaderGlassInstallerUrl '{shader_url}'"
         code, out, err = run(
             ssh,
-            "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1",
+            bootstrap_cmd,
         )
         print(out)
         if code != 0:

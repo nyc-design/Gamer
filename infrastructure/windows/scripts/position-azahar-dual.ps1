@@ -3,6 +3,7 @@ param(
   [string]$BottomTitle = "Azahar"
 )
 
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -11,7 +12,11 @@ public class Win32 {
 }
 "@
 
-$wins = Get-Process | Where-Object { $_.MainWindowTitle -like "*$TopTitle*" -or $_.MainWindowTitle -like "*$BottomTitle*" } | Sort-Object StartTime
+$wins = Get-Process | Where-Object {
+  $_.MainWindowHandle -ne 0 -and (
+    $_.MainWindowTitle -like "*$TopTitle*" -or $_.MainWindowTitle -like "*$BottomTitle*"
+  )
+} | Sort-Object StartTime
 if ($wins.Count -lt 2) {
   Write-Host "Need at least 2 Azahar windows; found $($wins.Count)"
   exit 1

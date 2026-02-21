@@ -15,6 +15,7 @@ The agent currently supports:
 
 - `POST /start` → load hardcoded manifest (or `SESSION_MANIFEST_PATH`), ensure paths, start Apollo/shader/emulator helpers.
 - `POST /stop` → stop launched processes.
+- `POST /client-connected` and `POST /client-disconnected` → trigger Apollo connect/disconnect hook scripts with client count.
 - `GET /manifest` and `GET /health`.
 
 Manifest hardcoded at:
@@ -33,15 +34,15 @@ VM state saved at:
 
 - `infrastructure/windows/state/windows-vm.json`
 
-## On-VM bootstrap flow
+## On-VM bootstrap flow (pure Python orchestration)
 
-1. Copy repo to VM
-2. Run `infrastructure/windows/bootstrap-windows.ps1`
-3. Run `infrastructure/windows/install-agent-service.ps1`
-4. Call agent `POST /start`
+1. Run RDP bootstrap from workspace:
+   - `python infrastructure/windows/rdp_bootstrap.py`
+2. Deploy scripts and agent over SSH:
+   - `python infrastructure/windows/deploy_via_ssh.py`
+3. Call agent `POST /start`
 
 ## Dual-screen convenience
 
 - AutoHotkey helper: `Ctrl+Alt+Right` moves active window to next monitor.
 - PowerShell helper `position-azahar-dual.ps1` places first two Azahar windows across first two displays.
-

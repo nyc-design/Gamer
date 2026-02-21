@@ -1,10 +1,11 @@
 param(
   [string]$ApolloInstallerUrl = "",
-  [string]$ShaderGlassInstallerUrl = "https://github.com/mausimus/ShaderGlass/releases/latest/download/ShaderGlass.msi",
+  [string]$ShaderGlassInstallerUrl = "",
   [string]$RcloneConfigBase64 = ""
 )
 
 $ErrorActionPreference = "Continue"
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
 
 function Install-WingetPackage($id) {
   try {
@@ -27,6 +28,20 @@ function Ensure-Dir($path) {
   }
 }
 
+function Get-GitHubLatestAssetUrl($repo, $assetPattern) {
+  try {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "gamer-bootstrap" }
+    foreach ($asset in $release.assets) {
+      if ($asset.name -match $assetPattern) {
+        return $asset.browser_download_url
+      }
+    }
+  } catch {
+    Write-Warning "Failed to resolve latest asset for ${repo}: $($_.Exception.Message)"
+  }
+  return ""
+}
+
 Write-Host "[1/6] Installing core tools"
 $null = Install-WingetPackage "Python.Python.3.12"
 $null = Install-WingetPackage "Rclone.Rclone"
@@ -44,27 +59,45 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "[2/6] Installing ShaderGlass"
+if ($ShaderGlassInstallerUrl -eq "") {
+  $ShaderGlassInstallerUrl = Get-GitHubLatestAssetUrl "mausimus/ShaderGlass" "win-x64\\.zip$"
+}
+Write-Host "ShaderGlass URL: $ShaderGlassInstallerUrl"
 if ($ShaderGlassInstallerUrl -ne "") {
   try {
-    $tmp = "$env:TEMP\\shaderglass.msi"
+    $tmp = "$env:TEMP\\shaderglass.zip"
+    $dest = "C:\\Program Files\\ShaderGlass"
     Invoke-WebRequest -Uri $ShaderGlassInstallerUrl -OutFile $tmp
-    Start-Process msiexec.exe -ArgumentList "/i `"$tmp`" /qn" -Wait
+    Ensure-Dir $dest | Out-Null
+    Expand-Archive -Path $tmp -DestinationPath $dest -Force
+    Write-Host "ShaderGlass extracted to $dest"
   } catch {
     Write-Warning "ShaderGlass install failed: $($_.Exception.Message)"
   }
+} else {
+  Write-Warning "ShaderGlass installer URL not found; skipping."
 }
 
 Write-Host "[3/6] Installing Apollo"
+if ($ApolloInstallerUrl -eq "") {
+  $ApolloInstallerUrl = Get-GitHubLatestAssetUrl "ClassicOldSong/Apollo" "\\.exe$"
+}
+Write-Host "Apollo URL: $ApolloInstallerUrl"
 if ($ApolloInstallerUrl -ne "") {
   try {
     $tmp = "$env:TEMP\\apollo-installer.exe"
     Invoke-WebRequest -Uri $ApolloInstallerUrl -OutFile $tmp
-    Start-Process $tmp -ArgumentList "/S" -Wait
+    # Apollo release installers are NSIS/Inno-like. Try common silent switches.
+    $proc = Start-Process $tmp -ArgumentList "/S" -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+      Write-Warning "Apollo /S exit code: $($proc.ExitCode). Retrying /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+      Start-Process $tmp -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+    }
   } catch {
     Write-Warning "Apollo install failed: $($_.Exception.Message)"
   }
 } else {
-  Write-Warning "ApolloInstallerUrl not provided; skipping automatic install"
+  Write-Warning "Apollo installer URL not found; skipping automatic install"
 }
 
 Write-Host "[4/6] Preparing gamer folders"

@@ -34,6 +34,14 @@ source .venv/bin/activate
 python infrastructure/windows/deploy_via_ssh.py
 ```
 
+Optional override URLs:
+
+```bash
+python infrastructure/windows/deploy_via_ssh.py \
+  --apollo-installer-url "https://github.com/ClassicOldSong/Apollo/releases/download/v0.4.6/Apollo-0.4.6.exe" \
+  --shaderglass-installer-url "https://github.com/mausimus/ShaderGlass/releases/download/v1.2.3/ShaderGlass-1.2.3.1-win-x64.zip"
+```
+
 Notes:
 - For current TensorDock v2 API behavior, `port_forwards` cannot be set when `useDedicatedIp=true`.
 - The current Windows path uses dedicated IP + RDP bootstrap to enable OpenSSH/WinRM from inside the guest.
