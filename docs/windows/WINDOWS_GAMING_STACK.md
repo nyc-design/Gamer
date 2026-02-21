@@ -47,3 +47,7 @@ VM state saved at:
 
 - AutoHotkey helper: `Ctrl+Alt+Right` moves active window to next monitor.
 - PowerShell helper `position-azahar-dual.ps1` places first two Azahar windows across first two displays (with retry loop for late window/display availability).
+- Agent `/client-connected` and `/client-disconnected` now support either:
+  - absolute counts (`connected_clients`), or
+  - edge-style events (`client_id`), with stale-count resilience.
+- Client agent startup task runs as `SYSTEM` at boot (no user logon required), with automatic restart policy.

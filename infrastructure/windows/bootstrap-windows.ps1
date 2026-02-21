@@ -180,3 +180,12 @@ if ($RcloneConfigBase64 -ne "") {
 
 Write-Host "[6/6] Done"
 Write-Host "Now install and start the client agent service"
+
+try {
+  Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
+  Start-Service sshd -ErrorAction SilentlyContinue
+} catch {}
+try {
+  Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue
+  Start-Service WinRM -ErrorAction SilentlyContinue
+} catch {}

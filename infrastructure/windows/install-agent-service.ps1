@@ -127,7 +127,13 @@ if ($nssm) {
 } else {
   $action = New-ScheduledTaskAction -Execute "$venv\\Scripts\\python.exe" -Argument "-m uvicorn src.main:APP --host 0.0.0.0 --port $Port" -WorkingDirectory $AgentRoot
   $trigger = New-ScheduledTaskTrigger -AtStartup
-  Register-ScheduledTask -TaskName $svcName -Action $action -Trigger $trigger -RunLevel Highest -Force | Out-Null
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+  Register-ScheduledTask -TaskName $svcName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
   Start-ScheduledTask -TaskName $svcName
   Write-Host "Startup task installed: $svcName"
 }
