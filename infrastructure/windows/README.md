@@ -5,11 +5,16 @@ This folder contains scripts to provision and bootstrap Windows GPU hosts for Ga
 ## Files
 
 - `provision-tensordock-windows.py` — create/status/delete/list TensorDock Windows VM capacity.
-- `bootstrap-windows.ps1` — installs core runtime tools (Apollo/rclone/ShaderGlass/AutoHotkey) and folder layout.
+- `startup-windows.ps1` — first-phase host hardening: services, SSH/WinRM, audio services, optional NVIDIA driver, VB-CABLE install.
+- `base-windows.ps1` — base gamer stack: rclone pull, Apollo config, display/audio options.
+- `azahar-windows.ps1` — installs Azahar and wires Apollo app entry.
+- `agent-windows.ps1` — installs/starts client-agent service.
+- `bootstrap-windows.ps1` — legacy all-in-one bootstrap (still available).
 - `install-agent-service.ps1` — installs and starts the Gamer client-agent as startup service/task.
 - `scripts/position-azahar-dual.ps1` — place two Azahar windows across two displays.
 - `scripts/move-window-next-monitor.ahk` — hotkey helper (`Ctrl+Alt+Right`) to move active window to next display.
 - `scripts/apollo-on-client-connect.ps1` / `apollo-on-client-disconnect.ps1` — simple hooks for dual-screen behavior.
+- `deploy_startup.py` / `deploy_base.py` / `deploy_azahar.py` / `deploy_agent.py` — staged deploy runners over SSH.
 
 ## Quick start
 
@@ -55,6 +60,15 @@ One-shot orchestrator (pure Python, production-style flow):
 ```bash
 source .venv/bin/activate
 python infrastructure/windows/orchestrate_windows_host.py --create
+```
+
+Staged deploy (recommended for production hardening):
+
+```bash
+python infrastructure/windows/deploy_startup.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
+python infrastructure/windows/deploy_base.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
+python infrastructure/windows/deploy_azahar.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
+python infrastructure/windows/deploy_agent.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
 ```
 
 One-shot with explicit Chubbuck placement:
@@ -130,6 +144,19 @@ Expected:
 - `ApolloService` is `Disabled`/stopped.
 - NVIDIA display adapter status is `OK`.
 
+## Display routing hardening (hide physical monitor while streaming)
+
+Per Sunshine/Apollo display-device options, we now set in `sunshine.conf`:
+
+```ini
+dd_configuration_option = ensure_only_display
+dd_resolution_option = auto
+dd_refresh_rate_option = auto
+dd_config_revert_delay = 1500
+```
+
+`ensure_only_display` = **“Deactivate other displays and activate only the specified display.”**
+
 ## Production readiness target (3-5 minutes)
 
 For sub-5-minute host readiness, use a pre-baked Windows image with:
@@ -144,3 +171,56 @@ Then runtime flow is only:
 4) Health check and pair/connect
 
 This avoids repeated large installer downloads during session startup.
+
+## Pairing runbook (do this every time)
+
+### Golden rules
+
+1. Pair against the **right instance**:
+   - Apollo1 UI/API: `https://<host>:47990`
+   - Apollo2 UI/API: `https://<host>:48990`
+2. Use `sunshine.exe` (not `Apollo.exe`) for server runtime.
+3. Avoid malformed JSON/quoting when calling API from shell.
+
+### API pairing flow
+
+1. Authenticate (creates session cookie)
+2. POST PIN to `/api/pin` with that session
+
+Recommended (automated, avoids remote 403 issues by posting from localhost on VM via SSH):
+
+```bash
+python infrastructure/windows/pair_apollo_pin.py \
+  --state-file infrastructure/windows/state/windows-vm-manassas.local.json \
+  --pin 1234
+```
+
+Example (PowerShell, local to VM):
+
+```powershell
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+$s = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$login = @{ username = "gamer"; password = "gamer" } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri "https://127.0.0.1:47990/api/login" -WebSession $s -ContentType "application/json" -Body $login
+$pinBody = @{ pin = "1234" } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri "https://127.0.0.1:47990/api/pin" -WebSession $s -ContentType "application/json" -Body $pinBody
+```
+
+### Fallback pairing (CLI stdin mode)
+
+```powershell
+Set-Location "C:\Program Files\Apollo"
+"1234" | .\sunshine.exe "C:\Program Files\Apollo\config\sunshine.conf" -0
+```
+
+### Common failure causes
+
+- `401 Unauthorized`: auth cookie/session missing or wrong instance port.
+- JSON parse errors in logs: shell quoting broke JSON payload.
+- Pairing to wrong instance (A vs B port mix-up).
+- `permission denied` when launching apps from Moonlight:
+  - Apollo/Sunshine client permissions are per-client cert. If the pairing is not the first/primary client, app-launch permission may be missing by default.
+  - Fix from Apollo docs/issues: open Apollo Web UI and explicitly enable app launch permission for that client, or clear paired clients and re-pair in intended order.
+- Azahar exits immediately:
+  - Do **not** pass `--layout separate` on launch in Apollo app `cmd`; Azahar interprets trailing token as a game path in this setup.
+  - Launch plain `azahar.exe` and handle layout from Azahar UI/config.

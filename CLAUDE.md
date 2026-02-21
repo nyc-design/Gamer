@@ -277,6 +277,20 @@ gamer/
     └── DEVELOPMENT.md
 ```
 
+## Windows deployment status (current)
+
+- Apollo + Azahar path is now managed by staged scripts in `infrastructure/windows/`:
+  - `startup-windows.ps1` (host services + audio device bootstrap)
+  - `base-windows.ps1` (rclone baseline + Apollo base config)
+  - `azahar-windows.ps1` (Azahar install + Apollo app entry)
+  - `agent-windows.ps1` (client-agent install/start)
+- Corresponding Python deploy runners:
+  - `deploy_startup.py`, `deploy_base.py`, `deploy_azahar.py`, `deploy_agent.py`
+- Agent (`services/client-agent/src/main.py`) now includes:
+  - hardcoded session-file contract for dev
+  - ROM/save pre-session copy
+  - save-file monitor loop with periodic copy-back
+
 **Note on current state**: The existing `services/provisioner-api/` has partial implementation (TensorDock/GCP service scaffolds, geocoding, gaming router). This will be consolidated into `services/main-server/` as part of the restructure. The existing `services/agent-api/` and `services/client-agent/` are skeleton-only and will be replaced by `services/gamer-agent/`.
 
 ## Component Specifications

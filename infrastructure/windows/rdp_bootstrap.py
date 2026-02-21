@@ -251,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--out-dir", type=Path, default=Path("/tmp/windows-rdp-bootstrap"))
+    p.add_argument("--retries", type=int, default=3)
     return p.parse_args()
 
 
@@ -264,14 +265,26 @@ if __name__ == "__main__":
     if not ip or not password:
         raise SystemExit("Missing ip/password. Provide --ip --password or valid state file.")
 
-    asyncio.run(
-        run_bootstrap(
-            ip=ip,
-            username=username,
-            password=password,
-            width=args.width,
-            height=args.height,
-            out_dir=args.out_dir,
-            rdp_port=args.rdp_port,
-        )
-    )
+    last_err = None
+    for attempt in range(1, max(1, args.retries) + 1):
+        try:
+            print(f"RDP bootstrap attempt {attempt}/{args.retries}")
+            asyncio.run(
+                run_bootstrap(
+                    ip=ip,
+                    username=username,
+                    password=password,
+                    width=args.width,
+                    height=args.height,
+                    out_dir=args.out_dir,
+                    rdp_port=args.rdp_port,
+                )
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            print(f"attempt {attempt} failed: {e}")
+            time.sleep(5)
+    if last_err is not None:
+        raise SystemExit(f"RDP bootstrap failed after {args.retries} attempts: {last_err}")

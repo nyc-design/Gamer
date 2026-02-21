@@ -189,47 +189,45 @@ def main() -> None:
             if code != 0:
                 raise RuntimeError(f"install-agent-service.ps1 failed: {err}")
 
-        # Enforce Apollo launch in interactive user session (avoid SYSTEM/session0 capture path).
-        if password:
-            safe_pw = password.replace('"', '\\"')
-            safe_user = (args.windows_username or "user").replace('"', '\\"')
-            run(
-                ssh,
-                "powershell -NoProfile -Command "
-                "\"$ErrorActionPreference='Continue'; "
-                "$setup='C:\\ProgramData\\gamer\\setup'; New-Item -ItemType Directory -Path $setup -Force | Out-Null; "
-                "$run1=Join-Path $setup 'run-apollo1.cmd'; "
-                "$run2=Join-Path $setup 'run-apollo2.cmd'; "
-                "$sun='C:\\Program Files\\Apollo\\sunshine.exe'; "
-                "if (-not (Test-Path $sun)) { $sun='C:\\ProgramData\\gamer\\bin\\Apollo\\sunshine.exe' }; "
-                "if (-not (Test-Path $sun)) { $sun='C:\\ProgramData\\gamer\\bin\\Apollo\\Apollo.exe' }; "
-                "[IO.File]::WriteAllText($run1,'cd /d \\\"C:\\Program Files\\Apollo\\\" && \\\"' + $sun + '\\\" \\\"C:\\Program Files\\Apollo\\config\\sunshine.conf\\\"'); "
-                "[IO.File]::WriteAllText($run2,'cd /d \\\"C:\\Program Files\\Apollo\\\" && \\\"' + $sun + '\\\" \\\"C:\\Program Files\\Apollo\\config\\sunshine_2.conf\\\"'); "
-                "Stop-Service ApolloService -Force -ErrorAction SilentlyContinue; "
-                "Set-Service ApolloService -StartupType Disabled -ErrorAction SilentlyContinue; "
-                "taskkill /IM sunshinesvc.exe /F 2>$null; taskkill /IM Apollo.exe /F 2>$null; "
-                "taskkill /IM sunshine.exe /F 2>$null; "
-                f"schtasks /Create /TN GamerApollo1 /TR $run1 /SC ONLOGON /RL HIGHEST /RU \\\"{safe_user}\\\" /RP \\\"{safe_pw}\\\" /F /IT | Out-Null; "
-                f"schtasks /Create /TN GamerApollo2 /TR $run2 /SC ONLOGON /RL HIGHEST /RU \\\"{safe_user}\\\" /RP \\\"{safe_pw}\\\" /F /IT | Out-Null; "
-                "schtasks /Run /TN GamerApollo1 | Out-Null; "
-                "schtasks /Run /TN GamerApollo2 | Out-Null; "
-                "Start-Sleep -Seconds 2; "
-                "Get-Process Apollo -IncludeUserName -ErrorAction SilentlyContinue | "
-                "Select-Object Name,Id,SessionId,UserName,Path | Format-Table -AutoSize\"",
-            )
+        # Align with Apollo docs:
+        # - Instance 1 via ApolloService (default ports)
+        # - Instance 2 via dedicated config on alternate ports
+        run(
+            ssh,
+            "powershell -NoProfile -Command "
+            "\"$ErrorActionPreference='Continue'; "
+            "$setup='C:\\ProgramData\\gamer\\setup'; New-Item -ItemType Directory -Path $setup -Force | Out-Null; "
+            "$sun='C:\\Program Files\\Apollo\\sunshine.exe'; "
+            "if (-not (Test-Path $sun)) { $sun='C:\\ProgramData\\gamer\\bin\\Apollo\\sunshine.exe' }; "
+            "$cfg='C:\\Program Files\\Apollo\\config\\sunshine_2.conf'; "
+            "$run2=Join-Path $setup 'run-apollo2.ps1'; "
+            "[IO.File]::WriteAllText($run2,'Start-Process -FilePath \\\"' + $sun + '\\\" -ArgumentList \\\"' + $cfg + '\\\" -WindowStyle Hidden'); "
+            "taskkill /IM sunshine.exe /F 2>$null; "
+            "taskkill /IM sunshinesvc.exe /F 2>$null; "
+            "sc.exe config ApolloService start= auto | Out-Null; "
+            "sc.exe start ApolloService | Out-Null; "
+            "schtasks /Delete /TN GamerApollo2 /F 2>$null; "
+            "schtasks /Create /TN GamerApollo2 /TR ('powershell -NoProfile -ExecutionPolicy Bypass -File \"' + $run2 + '\"') /SC ONSTART /RL HIGHEST /RU SYSTEM /F | Out-Null; "
+            "schtasks /Run /TN GamerApollo2 | Out-Null; "
+            "Start-Sleep -Seconds 2; "
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'sunshine|Apollo|sunshinesvc' } | "
+            "Select-Object Name,ProcessId,CommandLine | Format-Table -AutoSize\"",
+        )
 
         code, out, err = run(ssh, "powershell -NoProfile -Command \"Get-Service sshd,WinRM | Format-Table Name,Status,StartType -AutoSize\"")
         print(out)
         if err.strip():
             print("stderr:", err.strip())
 
-        # Quick diagnostic: verify Apollo is not SYSTEM/session0 if interactive tasks are configured.
+        # Quick diagnostics: service + second-instance ports.
         code, out, err = run(
             ssh,
             "powershell -NoProfile -Command \"Get-Service ApolloService -ErrorAction SilentlyContinue | "
             "Select-Object Name,Status,StartType | Format-Table -AutoSize; "
-            "Get-Process Apollo -IncludeUserName -ErrorAction SilentlyContinue | "
-            "Select-Object Name,Id,SessionId,UserName,Path | Format-Table -AutoSize\"",
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'sunshine.exe' } | "
+            "Select-Object ProcessId,CommandLine | Format-Table -AutoSize; "
+            "netstat -ano | findstr LISTENING | findstr 47990; "
+            "netstat -ano | findstr LISTENING | findstr 48990\"",
         )
         if out.strip():
             print(out)

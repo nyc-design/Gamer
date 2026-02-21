@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -45,7 +46,13 @@ DEFAULT_MANIFEST = {
         "emulator": {
             "name": "azahar",
             "exe_path": "C:/Emulators/Azahar/azahar.exe",
-            "args": ["--fullscreen", "--layout", "separate"],
+            "args": [],
+        },
+        "session_files": {
+            "rom_source_path": "C:/gamer/roms/Pokemon Alpha Sapphire (USA) (Rev 2).3ds",
+            "rom_runtime_path": "C:/Users/user/Downloads/roms/current.3ds",
+            "save_source_path": "C:/gamer/saves/azahar/main.sav",
+            "save_runtime_path": "C:/Users/user/AppData/Roaming/Azahar/sdmc/main.sav",
         },
     },
     "mounts": {
@@ -88,6 +95,9 @@ class AgentState:
         self.connected_clients: int = 0
         self.connected_client_ids: set[str] = set()
         self.last_script_runs: Dict[str, Dict[str, Any]] = {}
+        self.save_monitor_stop = threading.Event()
+        self.save_monitor_thread: Optional[threading.Thread] = None
+        self.save_monitor_stats: Dict[str, Any] = {"copies": 0, "last_copy_ts": None, "last_error": None}
 
 
 STATE = AgentState()
@@ -263,6 +273,9 @@ def maybe_install_window_hotkeys() -> None:
 
 
 def stop_all() -> None:
+    STATE.save_monitor_stop.set()
+    if STATE.save_monitor_thread and STATE.save_monitor_thread.is_alive():
+        STATE.save_monitor_thread.join(timeout=2)
     for name, proc in list(STATE.processes.items()):
         try:
             proc.terminate()
@@ -274,6 +287,57 @@ def stop_all() -> None:
     STATE.connected_client_ids.clear()
     STATE.started = False
     STATE.started_at = None
+    STATE.save_monitor_stop = threading.Event()
+    STATE.save_monitor_thread = None
+
+
+def _copy_if_exists(src: Path, dst: Path) -> bool:
+    if not src.exists():
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    return True
+
+
+def sync_session_files_in(manifest: Dict[str, Any]) -> None:
+    files = manifest.get("windows", {}).get("session_files", {})
+    rom_src = Path(files.get("rom_source_path", ""))
+    rom_dst = Path(files.get("rom_runtime_path", ""))
+    save_src = Path(files.get("save_source_path", ""))
+    save_dst = Path(files.get("save_runtime_path", ""))
+    if rom_src and rom_dst:
+        _copy_if_exists(rom_src, rom_dst)
+    if save_src and save_dst:
+        _copy_if_exists(save_src, save_dst)
+
+
+def _save_monitor_loop(manifest: Dict[str, Any]) -> None:
+    files = manifest.get("windows", {}).get("session_files", {})
+    save_src = Path(files.get("save_runtime_path", ""))
+    save_dst = Path(files.get("save_source_path", ""))
+    if not save_src or not save_dst:
+        return
+    last_mtime = None
+    while not STATE.save_monitor_stop.is_set():
+        try:
+            if save_src.exists():
+                mtime = save_src.stat().st_mtime
+                if last_mtime is None or mtime > last_mtime:
+                    save_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(save_src, save_dst)
+                    last_mtime = mtime
+                    STATE.save_monitor_stats["copies"] = int(STATE.save_monitor_stats.get("copies", 0)) + 1
+                    STATE.save_monitor_stats["last_copy_ts"] = time.time()
+        except Exception as e:
+            STATE.save_monitor_stats["last_error"] = str(e)
+        time.sleep(2)
+
+
+def start_save_monitor(manifest: Dict[str, Any]) -> None:
+    STATE.save_monitor_stop.clear()
+    t = threading.Thread(target=_save_monitor_loop, args=(manifest,), daemon=True, name="save-monitor")
+    t.start()
+    STATE.save_monitor_thread = t
 
 
 def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str, Any]:
@@ -345,6 +409,10 @@ def health() -> Dict[str, Any]:
         "alive_processes": alive_count,
         "processes": proc_data,
         "last_script_runs": STATE.last_script_runs,
+        "save_monitor": {
+            "running": bool(STATE.save_monitor_thread and STATE.save_monitor_thread.is_alive()),
+            **STATE.save_monitor_stats,
+        },
     }
 
 
@@ -387,10 +455,12 @@ def start() -> StartResponse:
 
         ensure_dirs(STATE.manifest)
         setup_storage(STATE.manifest)
+        sync_session_files_in(STATE.manifest)
         start_apollo(STATE.manifest)
         maybe_install_window_hotkeys()
         start_shader_glass(STATE.manifest)
         start_emulator(STATE.manifest)
+        start_save_monitor(STATE.manifest)
 
         STATE.started = True
         STATE.started_at = time.time()

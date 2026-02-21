@@ -76,7 +76,12 @@ sunshine_name = Apollo
 port = 47989
 file_state = sunshine_state.json
 log_path = sunshine.log
+file_apps = apps.json
 adapter_name = $GpuName
+dd_configuration_option = ensure_only_display
+dd_resolution_option = auto
+dd_refresh_rate_option = auto
+dd_config_revert_delay = 1500
 "@
   $sunshine2Conf = @"
 port = 48989
@@ -90,44 +95,92 @@ adapter_name = $GpuName
   [System.IO.File]::WriteAllText((Join-Path $ConfigDir "sunshine_2.conf"), $sunshine2Conf, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Ensure-ApolloInteractiveTasks {
+function Resolve-AzaharExePath {
+  param(
+    [string]$WindowsUsername
+  )
+  $candidates = @(
+    "C:\\Emulators\\Azahar\\azahar.exe",
+    "C:\\Emulators\\Azahar\\azahar-2124.3-windows-msvc\\azahar.exe",
+    "C:\\Users\\$WindowsUsername\\AppData\\Local\\Azahar\\azahar.exe",
+    "C:\\Program Files\\Azahar\\azahar.exe"
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c) { return $c }
+  }
+  try {
+    $found = Get-ChildItem -Path "C:\\Emulators\\Azahar" -Filter "azahar.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { return $found.FullName }
+  } catch {}
+  return ""
+}
+
+function Write-ApolloAppsConfig {
+  param(
+    [string]$ConfigDir,
+    [string]$WindowsUsername
+  )
+
+  $azaharExe = Resolve-AzaharExePath -WindowsUsername $WindowsUsername
+  $azaharWorkingDir = ""
+  if ($azaharExe) {
+    $azaharWorkingDir = Split-Path -Parent $azaharExe
+  }
+  if (-not $azaharExe) {
+    # Keep launch path valid for smoke tests if Azahar isn't present yet.
+    $azaharExe = "C:\\Windows\\System32\\notepad.exe"
+    $azaharWorkingDir = "C:\\Windows\\System32"
+  }
+
+  $apps = @{
+    apps = @(
+      @{
+        name = "Desktop"
+        "image-path" = "desktop.png"
+        "allow-client-commands" = $false
+      },
+      @{
+        name = "Virtual Display"
+        "image-path" = "virtual_desktop.png"
+        "allow-client-commands" = $false
+      },
+      @{
+        name = "Azahar Dual"
+        cmd = $azaharExe
+        "working-dir" = $azaharWorkingDir
+        "allow-client-commands" = $true
+        "virtual-display" = $true
+        "image-path" = "desktop.png"
+      }
+    )
+    env = @{}
+    version = 2
+  }
+
+  $appsPath = Join-Path $ConfigDir "apps.json"
+  $apps | ConvertTo-Json -Depth 10 | Set-Content -Path $appsPath -Encoding UTF8
+}
+
+function Ensure-ApolloInstances {
   param(
     [string]$ApolloExe,
     [string]$ConfigDir,
-    [string]$Username,
-    [string]$Password
+    [string]$WindowsUsername
   )
-
-  # Apollo service in SYSTEM/session0 frequently captures Microsoft Basic Render Driver.
-  # We force interactive user-session launch via scheduled tasks.
-  try {
-    Stop-Service ApolloService -Force -ErrorAction SilentlyContinue
-    Set-Service ApolloService -StartupType Disabled -ErrorAction SilentlyContinue
-  } catch {}
-
-  try { taskkill /IM sunshinesvc.exe /F | Out-Null } catch {}
-  try { taskkill /IM Apollo.exe /F | Out-Null } catch {}
-
-  $task1 = "GamerApollo1"
-  $task2 = "GamerApollo2"
-  try { schtasks /Delete /TN $task1 /F | Out-Null } catch {}
-  try { schtasks /Delete /TN $task2 /F | Out-Null } catch {}
-
-  if (-not $Password) {
-    Write-Warning "WindowsPassword not provided; cannot create /IT Apollo tasks."
-    return
-  }
 
   $setupDir = "C:\\ProgramData\\gamer\\setup"
   Ensure-Dir $setupDir | Out-Null
-  $run1 = Join-Path $setupDir "run-apollo1.cmd"
-  $run2 = Join-Path $setupDir "run-apollo2.cmd"
-  [System.IO.File]::WriteAllText($run1, "cd /d `"C:\Program Files\Apollo`" && `"$ApolloExe`" `"$ConfigDir\\sunshine.conf`"", [System.Text.UTF8Encoding]::new($false))
-  [System.IO.File]::WriteAllText($run2, "cd /d `"C:\Program Files\Apollo`" && `"$ApolloExe`" `"$ConfigDir\\sunshine_2.conf`"", [System.Text.UTF8Encoding]::new($false))
+  $run2Ps = Join-Path $setupDir "run-apollo2.ps1"
+  [System.IO.File]::WriteAllText($run2Ps, "Start-Process -FilePath `"$ApolloExe`" -ArgumentList `"$ConfigDir\\sunshine_2.conf`" -WindowStyle Hidden", [System.Text.UTF8Encoding]::new($false))
 
-  schtasks /Create /TN $task1 /TR $run1 /SC ONLOGON /RL HIGHEST /RU $Username /RP $Password /F /IT | Out-Null
-  schtasks /Create /TN $task2 /TR $run2 /SC ONLOGON /RL HIGHEST /RU $Username /RP $Password /F /IT | Out-Null
-  schtasks /Run /TN $task1 | Out-Null
+  # Instance 1: official Apollo service.
+  sc.exe config ApolloService start= auto | Out-Null
+  sc.exe start ApolloService | Out-Null
+
+  # Instance 2: dedicated SYSTEM startup task on alternate ports/config.
+  $task2 = "GamerApollo2"
+  try { schtasks /Delete /TN $task2 /F | Out-Null } catch {}
+  schtasks /Create /TN $task2 /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$run2Ps`"" /SC ONSTART /RL HIGHEST /RU SYSTEM /F | Out-Null
   schtasks /Run /TN $task2 | Out-Null
 }
 
@@ -264,7 +317,8 @@ try {
     $configDir = "C:\\Program Files\\Apollo\\config"
     Ensure-Dir $configDir | Out-Null
     Write-ApolloConfig -ConfigDir $configDir -GpuName "NVIDIA GeForce RTX 4090"
-    Ensure-ApolloInteractiveTasks -ApolloExe $apolloExe -ConfigDir $configDir -Username $WindowsUsername -Password $WindowsPassword
+    Write-ApolloAppsConfig -ConfigDir $configDir -WindowsUsername $WindowsUsername
+    Ensure-ApolloInstances -ApolloExe $apolloExe -ConfigDir $configDir -WindowsUsername $WindowsUsername
   } else {
     Write-Warning "Apollo executable not found; skipping Apollo interactive task setup."
   }
