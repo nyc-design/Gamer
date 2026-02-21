@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc"
+                xmlns:xi="http://www.w3.org/2001/XInclude">
+
+  <resistance>
+    <strength>10</strength>
+    <screen_edge_strength>20</screen_edge_strength>
+  </resistance>
+
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>yes</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>200</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+
+  <placement>
+    <policy>Smart</policy>
+    <center>yes</center>
+    <monitor>Primary</monitor>
+    <primaryMonitor>1</primaryMonitor>
+  </placement>
+
+  <theme>
+    <name>Clearlooks</name>
+    <!-- No title bar or borders by default — emulator windows should be borderless -->
+    <titleLayout></titleLayout>
+    <keepBorder>no</keepBorder>
+    <animateIconify>no</animateIconify>
+    <font place="ActiveWindow"><name>sans</name><size>9</size></font>
+    <font place="InactiveWindow"><name>sans</name><size>9</size></font>
+  </theme>
+
+  <!-- All windows: no decorations (borderless fullscreen-like) -->
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+    </application>
+  </applications>
+
+  <keyboard>
+    <!-- Alt+F4 to close window -->
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+    <!-- Alt+F11 toggle fullscreen -->
+    <keybind key="A-F11">
+      <action name="ToggleFullscreen"/>
+    </keybind>
+    <!-- Alt+F9 toggle decorations (title bar) for manual resize/drag -->
+    <keybind key="A-F9">
+      <action name="ToggleDecorations"/>
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <!-- Alt+Left-drag to move any window (even without title bar) -->
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="A-Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+      <!-- Alt+Right-drag to resize any window -->
+      <mousebind button="A-Right" action="Drag">
+        <action name="Resize"/>
+      </mousebind>
+    </context>
+
+    <!-- Title bar actions (when decorations are enabled) -->
+    <context name="Titlebar">
+      <mousebind button="Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+      <mousebind button="Left" action="DoubleClick">
+        <action name="ToggleMaximizeFull"/>
+      </mousebind>
+    </context>
+
+    <!-- Click anywhere in window to focus/raise -->
+    <context name="Client">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+
+    <!-- Desktop / root window -->
+    <context name="Root">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+      </mousebind>
+    </context>
+  </mouse>
+
+</openbox_config>

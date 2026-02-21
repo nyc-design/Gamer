@@ -11,8 +11,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Deploying dual-screen fixes to $VM_IP ==="
 
-# 1. Upload fixed source files
+# 1. Upload fixed source files + Dockerfile
 echo "[1/5] Uploading fixed source files..."
+$SCP "$SCRIPT_DIR/Dockerfile.fix" "user@$VM_IP:/tmp/gst-wd-xwayland/Dockerfile.fix"
 $SCP "$SCRIPT_DIR/comp_mod.rs" "user@$VM_IP:/tmp/gst-wd-xwayland/wayland-display-core/src/comp/mod.rs"
 $SCP "$SCRIPT_DIR/waylandsecondary_imp.rs" "user@$VM_IP:/tmp/gst-wd-xwayland/gst-plugin-wayland-display/src/waylandsecondary/imp.rs"
 $SCP "$SCRIPT_DIR/waylandsrc_imp.rs" "user@$VM_IP:/tmp/gst-wd-xwayland/gst-plugin-wayland-display/src/waylandsrc/imp.rs"
@@ -33,7 +34,7 @@ sleep 2
 
 # 4. Rebuild Docker image
 echo "[4/5] Rebuilding Docker image (this takes ~90 seconds)..."
-$SSH "cd /tmp/gst-wd-xwayland && sudo docker build -f Dockerfile.fix -t wolf-dual-local:fixed . 2>&1 | tail -5"
+$SSH "cd /tmp/gst-wd-xwayland && sudo docker build --no-cache -f Dockerfile.fix -t wolf-dual-local:fixed . 2>&1 | tail -5"
 
 # 5. Start Wolf
 echo "[5/5] Starting Wolf..."
