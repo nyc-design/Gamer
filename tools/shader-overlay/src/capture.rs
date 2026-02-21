@@ -68,11 +68,15 @@ impl WindowCapture {
             // Subscribe to structure events on source window
             xlib::XSelectInput(display, source_window, xlib::StructureNotifyMask);
 
-            // Redirect window to offscreen composite buffer
+            // Redirect window for XComposite backing pixmap.
+            // AUTOMATIC mode: window is still drawn to screen AND we get a pixmap copy.
             XCompositeRedirectWindow(display, source_window, COMPOSITE_REDIRECT_AUTOMATIC);
+            xlib::XSync(display, 0);
 
             // Get the backing pixmap
             let x_pixmap = XCompositeNameWindowPixmap(display, source_window);
+            xlib::XSync(display, 0);
+            log::info!("Composite pixmap for window 0x{:x}: pixmap=0x{:x}", source_window, x_pixmap);
             if x_pixmap == 0 {
                 bail!("Failed to get composite pixmap for window 0x{:x}", source_window);
             }
@@ -122,19 +126,15 @@ impl WindowCapture {
     }
 
     /// Rebind the texture to pick up new window content.
-    /// On NVIDIA this generates X11 errors that are suppressed in the error handler.
-    /// The errors are cosmetic — the rebind is functionally required for texture updates.
+    /// Called every frame — on NVIDIA the texture_from_pixmap binding is live,
+    /// so glXWaitX() ensures we see the latest content.
     pub fn update_if_dirty(&mut self, gl: &GlState) {
-        if !self.dirty {
-            return;
-        }
         unsafe {
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-            (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT);
-            (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_EXT, ptr::null());
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
+            // Sync X rendering to ensure window content is flushed to GPU
+            glx::glXWaitX();
+            // The texture remains bound to the composite pixmap — no rebind needed on NVIDIA.
+            // Content is live via the GPU texture backing.
         }
-        self.dirty = false;
     }
 
     /// Handle window resize — recreate pixmap and texture

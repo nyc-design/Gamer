@@ -312,34 +312,29 @@ fn main() -> Result<()> {
             last_poll = Instant::now() - poll_interval;
         }
 
-        // Render all dirty pipelines
-        let mut any_rendered = false;
+        // Render all pipelines every frame (~60fps).
+        // XComposite texture_from_pixmap provides live GPU texture —
+        // just rebind and render, no need to wait for damage events.
         for entry in &mut pipelines {
-            if entry.capture.is_dirty() {
-                unsafe { gl.make_current_offscreen(); }
+            unsafe { gl.make_current_offscreen(); }
 
-                entry.capture.update_if_dirty(&gl);
+            entry.capture.update_if_dirty(&gl);
 
-                if let Err(e) = entry.shader.process(
-                    &gl.glow_ctx,
-                    entry.capture.texture(),
-                    entry.capture.width(),
-                    entry.capture.height(),
-                    frame_count,
-                ) {
-                    log::error!("Shader process error: {}", e);
-                    continue;
-                }
-
-                let out_size = entry.shader.output_size();
-                entry.overlay.present(&gl, entry.shader.output_fbo(), out_size.width, out_size.height);
-                any_rendered = true;
+            if let Err(e) = entry.shader.process(
+                &gl.glow_ctx,
+                entry.capture.texture(),
+                entry.capture.width(),
+                entry.capture.height(),
+                frame_count,
+            ) {
+                log::error!("Shader process error: {}", e);
+                continue;
             }
-        }
 
-        if any_rendered {
-            frame_count += 1;
+            let out_size = entry.shader.output_size();
+            entry.overlay.present(&gl, entry.shader.output_fbo(), out_size.width, out_size.height);
         }
+        frame_count += 1;
 
         // Periodic stats logging
         if last_frame_log.elapsed() >= Duration::from_secs(5) {
@@ -347,10 +342,8 @@ fn main() -> Result<()> {
             last_frame_log = Instant::now();
         }
 
-        // Sleep briefly if no events and nothing to render
-        if !got_events && !any_rendered {
-            thread::sleep(Duration::from_millis(1));
-        }
+        // Target ~60fps — sleep for remainder of frame time
+        thread::sleep(Duration::from_millis(16));
     }
 
     log::info!("shader-overlay shutting down ({} pipeline(s) active)", pipelines.len());
