@@ -51,10 +51,17 @@ pub fn find_window(display: *mut xlib::Display, target: &str) -> Result<WindowIn
         bail!("No window found matching '{}'", target);
     }
 
+    // Sort by area (largest first) — prefer real windows over tiny Qt widgets
+    results.sort_by(|a, b| {
+        let area_a = (a.width as u64) * (a.height as u64);
+        let area_b = (b.width as u64) * (b.height as u64);
+        area_b.cmp(&area_a)
+    });
+
     if results.len() > 1 {
-        log::warn!("Multiple windows match '{}', using first (0x{:x}). All matches:", target, results[0].id);
+        log::info!("Multiple windows match '{}', using largest (0x{:x} {}x{}). All matches:", target, results[0].id, results[0].width, results[0].height);
         for w in &results {
-            log::warn!("  0x{:x} ({}x{} at {},{})", w.id, w.width, w.height, w.x, w.y);
+            log::info!("  0x{:x} ({}x{} at {},{})", w.id, w.width, w.height, w.x, w.y);
         }
     }
 
