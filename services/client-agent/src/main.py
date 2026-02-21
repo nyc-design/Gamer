@@ -92,9 +92,9 @@ def _is_windows() -> bool:
     return platform.system().lower() == "windows"
 
 
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], check: bool = True, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
     logger.info("run: %s", " ".join(cmd))
-    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+    return subprocess.run(cmd, check=check, capture_output=True, text=True, timeout=timeout)
 
 
 def _resolve_exe(configured: str | None, fallbacks: list[str]) -> Optional[Path]:
@@ -265,6 +265,7 @@ def stop_all() -> None:
 
 
 def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str, Any]:
+    timeout_s = int(os.getenv("POWERSHELL_SCRIPT_TIMEOUT_SEC", "20"))
     run_info: Dict[str, Any] = {
         "script": script_name,
         "timestamp": time.time(),
@@ -272,6 +273,7 @@ def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str,
         "exit_code": None,
         "stdout": "",
         "stderr": "",
+        "duration_ms": None,
     }
     script = _find_windows_script(script_name)
     if not script:
@@ -281,8 +283,9 @@ def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str,
         return run_info
 
     args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] + extra_args
+    t0 = time.time()
     try:
-        result = _run(args, check=False)
+        result = _run(args, check=False, timeout=timeout_s)
         run_info["exit_code"] = result.returncode
         run_info["ok"] = result.returncode == 0
         run_info["stdout"] = (result.stdout or "").strip()[:600]
@@ -294,9 +297,14 @@ def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str,
             run_info["stdout"],
             run_info["stderr"],
         )
+    except subprocess.TimeoutExpired:
+        run_info["stderr"] = f"script timed out after {timeout_s}s"
+        run_info["exit_code"] = -1
+        logger.warning("script %s timed out after %ss", script_name, timeout_s)
     except Exception as e:
         logger.warning("failed to run script %s: %s", script_name, e)
         run_info["stderr"] = str(e)
+    run_info["duration_ms"] = int((time.time() - t0) * 1000)
     STATE.last_script_runs[script_name] = run_info
     return run_info
 
@@ -304,12 +312,15 @@ def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str,
 @APP.get("/health")
 def health() -> Dict[str, Any]:
     proc_data = []
+    alive_count = 0
     for name, proc in STATE.processes.items():
         pid = None
         alive = None
         try:
             pid = proc.pid
             alive = proc.poll() is None
+            if alive:
+                alive_count += 1
         except Exception:
             pass
         proc_data.append({"name": name, "pid": pid, "alive": alive})
@@ -319,6 +330,7 @@ def health() -> Dict[str, Any]:
         "started_at": STATE.started_at,
         "connected_clients": STATE.connected_clients,
         "connected_client_ids": sorted(list(STATE.connected_client_ids)),
+        "alive_processes": alive_count,
         "processes": proc_data,
         "last_script_runs": STATE.last_script_runs,
     }
@@ -361,6 +373,20 @@ def stop() -> StartResponse:
         return StartResponse(ok=True, message="already stopped")
     stop_all()
     return StartResponse(ok=True, message="stopped")
+
+
+@APP.post("/cleanup-processes", response_model=StartResponse)
+def cleanup_processes() -> StartResponse:
+    removed: list[str] = []
+    for name, proc in list(STATE.processes.items()):
+        try:
+            if proc.poll() is not None:
+                removed.append(name)
+                del STATE.processes[name]
+        except Exception:
+            removed.append(name)
+            del STATE.processes[name]
+    return StartResponse(ok=True, message=f"removed={','.join(removed) if removed else 'none'}")
 
 
 @APP.post("/reload-manifest", response_model=StartResponse)

@@ -17,7 +17,11 @@ The agent currently supports:
 - `POST /stop` → stop launched processes.
 - `POST /client-connected` and `POST /client-disconnected` → trigger Apollo connect/disconnect hook scripts with client count.
 - `POST /position-dual-now` → force-run window placement script.
+- `POST /cleanup-processes` → prune exited process handles from in-memory state.
 - `GET /manifest` and `GET /health` (includes script-exit diagnostics and per-process alive status).
+
+Optional env:
+- `POWERSHELL_SCRIPT_TIMEOUT_SEC` (default `20`) limits hook script execution time.
 
 Manifest hardcoded at:
 

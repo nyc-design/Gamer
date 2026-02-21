@@ -561,6 +561,8 @@ Design alignment with Linux side:
     - last PowerShell hook execution details (exit code/stdout/stderr) for fast debugging.
   - `apollo-on-client-connect.ps1` now spawns dual-window placement asynchronously so API calls return quickly.
   - `position-dual-now` now uses retry args by default.
+  - PowerShell hook execution now records duration and supports timeout (`POWERSHELL_SCRIPT_TIMEOUT_SEC`, default 20s).
+  - Added `POST /cleanup-processes` to prune stale exited process handles from in-memory agent state.
 
 - Boot persistence validated:
   - startup task now runs as `SYSTEM` with restart policy and survives reboot without user logon.
