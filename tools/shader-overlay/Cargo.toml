@@ -1,0 +1,21 @@
+[package]
+name = "shader-overlay"
+version = "0.1.0"
+edition = "2021"
+description = "Capture X11 windows and apply RetroArch .slangp shader presets via librashader"
+
+[dependencies]
+librashader = { version = "0.10", features = ["runtime-gl", "stable"] }
+glow = "0.16"
+x11rb = { version = "0.13", features = ["composite", "xfixes", "damage", "randr"] }
+x11 = { version = "2.21", features = ["xlib", "glx"] }
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+signal-hook = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

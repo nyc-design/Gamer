@@ -5,6 +5,16 @@
 # Based on CloudyPad's proven Sunshine container patterns:
 # https://github.com/PierreBeucher/cloudypad/tree/master/containers/sunshine
 
+# Build shader-overlay from source
+FROM rust:1.85-bookworm AS build-shader-overlay
+WORKDIR /build
+RUN apt-get update && apt-get install -y \
+    libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
+    libgl-dev libglu1-mesa-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/shader-overlay/ .
+RUN cargo build --release && strip target/release/shader-overlay
+
 # Download Sunshine .deb in a separate stage
 FROM alpine/curl:8.14.1 AS download-sunshine
 WORKDIR /app
@@ -113,6 +123,16 @@ ENV SUNSHINE_CAPTURE=nvfbc
 ENV SUNSHINE_USERNAME=admin
 ENV SUNSHINE_PASSWORD_BASE64=YWRtaW4=
 
+# Shader overlay config (optional — set to enable)
+# SHADER_PRESET: path to .slangp file for primary window
+# SHADER_PRESET_BOTTOM: path to .slangp file for secondary window (dual-screen)
+# SHADER_WINDOW: window name/title to apply primary shader to
+# SHADER_WINDOW_BOTTOM: window name/title to apply secondary shader to
+ENV SHADER_PRESET=""
+ENV SHADER_PRESET_BOTTOM=""
+ENV SHADER_WINDOW=""
+ENV SHADER_WINDOW_BOTTOM=""
+
 # NVIDIA driver env (set by host/orchestrator)
 ENV NVIDIA_ENABLE=true
 ENV NVIDIA_DRIVER_VERSION=""
@@ -123,6 +143,23 @@ RUN useradd -m -d /home/gamer -s /bin/bash -u 1001 gamer
 
 # Copy overlay (scripts, configs)
 COPY overlay/ /
+
+# shader-overlay binary (from Rust build stage)
+COPY --from=build-shader-overlay /build/target/release/shader-overlay /gamer/bin/shader-overlay
+
+# Bundle RetroArch shader presets (subset of slang-shaders)
+RUN --mount=type=cache,target=/var/cache <<EOF
+set -e
+apt-get update && apt-get install -y git
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/libretro/slang-shaders.git /tmp/slang-shaders
+cd /tmp/slang-shaders
+git sparse-checkout set crt handheld interpolation misc/shaders
+mkdir -p /gamer/shaders
+cp -r crt handheld interpolation misc /gamer/shaders/
+rm -rf /tmp/slang-shaders
+apt-get remove -y git && apt-get autoremove -y
+EOF
 
 # Make scripts executable
 RUN chmod +x /gamer/bin/*.sh /gamer/entrypoint.sh

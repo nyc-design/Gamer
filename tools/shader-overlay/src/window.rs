@@ -1,0 +1,140 @@
+use anyhow::{bail, Result};
+use std::os::raw::c_ulong;
+use std::ptr;
+use std::thread;
+use std::time::Duration;
+use x11::xlib;
+
+/// Information about a discovered X11 window
+pub struct WindowInfo {
+    pub id: c_ulong,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Find a window by target string. Target can be:
+/// - A hex window ID (0x1234 or 0X1234)
+/// - A decimal window ID (4660)
+/// - A window name/title substring match
+pub fn find_window(display: *mut xlib::Display, target: &str) -> Result<WindowInfo> {
+    // Try parsing as window ID first
+    if let Some(id) = parse_window_id(target) {
+        return get_window_info(display, id);
+    }
+
+    // Search by name/title substring
+    let root = unsafe { xlib::XDefaultRootWindow(display) };
+    let results = find_windows_by_name(display, root, target)?;
+
+    if results.is_empty() {
+        bail!("No window found matching '{}'", target);
+    }
+
+    if results.len() > 1 {
+        log::warn!("Multiple windows match '{}', using first (0x{:x}). All matches:", target, results[0].id);
+        for w in &results {
+            log::warn!("  0x{:x} ({}x{} at {},{})", w.id, w.width, w.height, w.x, w.y);
+        }
+    }
+
+    Ok(results.into_iter().next().unwrap())
+}
+
+/// Wait for a window matching the target to appear, polling every 500ms
+pub fn wait_for_window(display: *mut xlib::Display, target: &str, timeout_secs: u32) -> Result<WindowInfo> {
+    let attempts = timeout_secs * 2;
+    for i in 0..attempts {
+        match find_window(display, target) {
+            Ok(info) => return Ok(info),
+            Err(_) if i < attempts - 1 => {
+                thread::sleep(Duration::from_millis(500));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    bail!("Timed out after {}s waiting for window '{}'", timeout_secs, target)
+}
+
+fn parse_window_id(target: &str) -> Option<c_ulong> {
+    let trimmed = target.trim();
+    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        c_ulong::from_str_radix(&trimmed[2..], 16).ok()
+    } else {
+        trimmed.parse::<c_ulong>().ok()
+    }
+}
+
+fn get_window_info(display: *mut xlib::Display, window: c_ulong) -> Result<WindowInfo> {
+    unsafe {
+        let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+        if xlib::XGetWindowAttributes(display, window, &mut attrs) == 0 {
+            bail!("Failed to get attributes for window 0x{:x}", window);
+        }
+
+        // Translate coordinates to root window space
+        let mut x: i32 = 0;
+        let mut y: i32 = 0;
+        let mut child: c_ulong = 0;
+        let root = xlib::XDefaultRootWindow(display);
+        xlib::XTranslateCoordinates(
+            display, window, root, 0, 0, &mut x, &mut y, &mut child,
+        );
+
+        Ok(WindowInfo {
+            id: window,
+            x,
+            y,
+            width: attrs.width as u32,
+            height: attrs.height as u32,
+        })
+    }
+}
+
+fn find_windows_by_name(display: *mut xlib::Display, root: c_ulong, name_pattern: &str) -> Result<Vec<WindowInfo>> {
+    let mut results = Vec::new();
+    let pattern_lower = name_pattern.to_lowercase();
+    find_windows_recursive(display, root, &pattern_lower, &mut results)?;
+    Ok(results)
+}
+
+fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern: &str, results: &mut Vec<WindowInfo>) -> Result<()> {
+    unsafe {
+        // Check this window's name
+        let mut name_ptr: *mut std::os::raw::c_char = ptr::null_mut();
+        if xlib::XFetchName(display, window, &mut name_ptr) != 0 && !name_ptr.is_null() {
+            let name = std::ffi::CStr::from_ptr(name_ptr as *const _).to_string_lossy().to_lowercase();
+            if name.contains(pattern) {
+                // Only include mapped, visible windows with nonzero size
+                let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+                if xlib::XGetWindowAttributes(display, window, &mut attrs) != 0
+                    && attrs.map_state == xlib::IsViewable
+                    && attrs.width > 1
+                    && attrs.height > 1
+                {
+                    if let Ok(info) = get_window_info(display, window) {
+                        results.push(info);
+                    }
+                }
+            }
+            xlib::XFree(name_ptr as *mut std::os::raw::c_void);
+        }
+
+        // Recurse into children
+        let mut root_return: c_ulong = 0;
+        let mut parent_return: c_ulong = 0;
+        let mut children: *mut c_ulong = ptr::null_mut();
+        let mut nchildren: u32 = 0;
+
+        if xlib::XQueryTree(display, window, &mut root_return, &mut parent_return, &mut children, &mut nchildren) != 0 {
+            for i in 0..nchildren as isize {
+                find_windows_recursive(display, *children.offset(i), pattern, results)?;
+            }
+            if !children.is_null() {
+                xlib::XFree(children as *mut std::os::raw::c_void);
+            }
+        }
+    }
+    Ok(())
+}
