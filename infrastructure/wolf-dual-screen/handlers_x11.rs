@@ -86,12 +86,14 @@ impl XwmHandler for State {
         // Wrap X11 surface in a Window for the desktop space
         let win = Window::new_x11_window(window.clone());
 
-        // Route to primary or secondary space using multi-output logic
-        // This is the SAME logic as for Wayland toplevels in compositor.rs
+        // Route to primary or secondary space using multi-output logic.
+        // Route based on multi_output_enabled alone — don't require secondary_output
+        // to exist yet. If Client B hasn't connected, the window still goes to
+        // secondary_space and will render once the output is created.
+        // This makes routing resilient to startup ordering.
         let primary_count = self.space.elements().count();
         let secondary_count = self.secondary_space.elements().count();
         let use_secondary = self.multi_output_enabled
-            && self.secondary_output.is_some()
             && primary_count >= 1
             && secondary_count == 0;
 
@@ -146,12 +148,34 @@ impl XwmHandler for State {
         // Track toplevel count for routing future windows
         self.toplevel_count += 1;
 
-        // Give keyboard focus to the new window
-        self.seat.get_keyboard().unwrap().set_focus(
-            self,
-            Some(FocusTarget::from(win)),
-            SERIAL_COUNTER.next_serial(),
-        );
+        // Only give keyboard focus to PRIMARY space windows.
+        // Secondary space windows should not steal focus — input for them
+        // comes from a separate Moonlight session but routes through the
+        // same compositor seat, and keyboard focus must stay on the primary
+        // window so the game receives key events.
+        if !use_secondary {
+            // Deactivate any previously focused X11 window first.
+            // This clears _NET_WM_STATE_FOCUSED on the old window.
+            if let Some(FocusTarget::Window(prev)) = self.seat.get_keyboard().unwrap().current_focus() {
+                if let Some(prev_x11) = get_x11_surface(&prev) {
+                    let _ = prev_x11.set_activated(false);
+                }
+            }
+
+            self.seat.get_keyboard().unwrap().set_focus(
+                self,
+                Some(FocusTarget::from(win)),
+                SERIAL_COUNTER.next_serial(),
+            );
+
+            // Explicitly activate the X11 window. This sets _NET_WM_STATE_FOCUSED
+            // which Qt apps (like Azahar) check before processing input events.
+            // Smithay's XWM also updates _NET_ACTIVE_WINDOW on the root window
+            // when the resulting xcb_set_input_focus triggers a FocusIn event.
+            if let Err(e) = window.set_activated(true) {
+                warn!("Failed to set X11 window activated: {:?}", e);
+            }
+        }
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {

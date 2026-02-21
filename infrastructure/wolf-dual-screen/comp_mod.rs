@@ -132,8 +132,6 @@ pub struct State {
     surpressed_keys: HashSet<u32>,
     pub pending_windows: Vec<Window>,
     input_context: Libinput,
-    /// Tracks which /dev/input/event* devices have already been added to libinput
-    known_input_devices: HashSet<String>,
 
     // multi-output management
     pub multi_output_enabled: bool,
@@ -272,7 +270,6 @@ impl State {
             surpressed_keys: HashSet::new(),
             pending_windows: Vec::new(),
             input_context: input_context.clone(),
-            known_input_devices: HashSet::new(),
 
             // multi-output management
             multi_output_enabled: false,
@@ -334,34 +331,10 @@ pub(crate) fn init(
         })
         .unwrap();
 
-    // Periodically scan /dev/input/ for new event devices created by Wolf's inputtino.
-    // Wolf creates virtual input devices on the host and bind-mounts them into containers,
-    // but our compositor runs in the Wolf container and needs to pick them up via libinput.
-    state
-        .handle
-        .insert_source(
-            Timer::from_duration(Duration::from_millis(500)),
-            move |_, _, state: &mut State| {
-                let input_dir = std::path::Path::new("/dev/input");
-                if let Ok(entries) = std::fs::read_dir(input_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        let path_str = path.to_string_lossy().to_string();
-                        // Only add event* devices (not js*, mice, etc.)
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if name.starts_with("event") && !state.known_input_devices.contains(&path_str) {
-                                tracing::info!("Auto-discovered input device: {}", path_str);
-                                state.input_context.path_add_device(&path_str);
-                                state.known_input_devices.insert(path_str);
-                            }
-                        }
-                    }
-                }
-                // Re-arm the timer
-                TimeoutAction::ToDuration(Duration::from_millis(500))
-            },
-        )
-        .expect("Failed to insert input device scanner timer");
+    // Input from Moonlight clients arrives via GStreamer custom upstream events
+    // (MouseMoveRelative, KeyboardKey, etc.) sent by Wolf's WaylandMouse/WaylandKeyboard.
+    // These are handled in waylandsrc_imp.rs::handle_event() → Command dispatch below.
+    // No libinput device scanning is needed.
 
     state
         .handle
@@ -729,21 +702,19 @@ pub(crate) fn init(
                         || state.secondary_video_info.is_none()
                         || state.secondary_output_buffer.is_none()
                     {
-                        // Secondary output not ready yet — send a black frame or error
+                        // Secondary output not ready yet — send a temporary error.
+                        // The secondary element will retry after a brief sleep.
                         let _ = buffer_sender.send(Err(SwapBuffersError::TemporaryFailure(
                             smithay::backend::renderer::gles::GlesError::MappingError.into(),
                         )));
                         return;
                     }
 
-                    // If no windows mapped to secondary space, skip rendering to avoid
-                    // stealing calloop thread time and GPU resources from the primary output.
-                    if state.secondary_space.elements().count() == 0 {
-                        let _ = buffer_sender.send(Err(SwapBuffersError::TemporaryFailure(
-                            smithay::backend::renderer::gles::GlesError::MappingError.into(),
-                        )));
-                        return;
-                    }
+                    // When no windows are mapped to secondary space, we still render
+                    // a frame (it will be black/empty). This keeps the secondary
+                    // pipeline alive and producing frames so the client stays connected.
+                    // This is critical for resilience: the secondary output works
+                    // regardless of whether Azahar is in single-window or dual-window mode.
 
                     let wait = if let Some(last_render) = state.secondary_last_render {
                         let base_info = state.secondary_video_info.as_ref().unwrap().clone();

@@ -84,7 +84,6 @@ trait EventHandler {
 
 impl EventHandler for WaylandDisplaySrc {
     fn handle_event(&self, event: &Event) -> bool {
-        tracing::debug!("Received event: {:?}", event);
         if event.type_() == gst::EventType::CustomUpstream {
             let structure = event.structure().expect("Unable to get message structure");
             if structure.has_name("VirtualDevicesReady") {
