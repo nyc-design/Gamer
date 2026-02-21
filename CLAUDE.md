@@ -504,3 +504,21 @@ def example_function():
 ```
 
 This guideline ensures that future agents can understand both the original intent (comments) and the implementation (code) when maintaining or modifying functions.
+
+## Windows Host Implementation (Apollo-first) — 2026-02-21
+
+Branch: `windows-gaming-server-impl`
+
+Implemented artifacts:
+- `services/client-agent/src/main.py` — Windows-capable client-agent scaffold with hardcoded session manifest loading, `/start` `/stop` `/health` APIs.
+- `services/client-agent/manifests/session_manifest.windows.dev.json` — hardcoded manifest for current server-not-ready phase.
+- `infrastructure/windows/provision-tensordock-windows.py` — create/status/delete TensorDock Windows GPU VMs.
+- `infrastructure/windows/bootstrap-windows.ps1` — bootstrap Apollo/rclone/ShaderGlass/AutoHotkey and folder layout.
+- `infrastructure/windows/install-agent-service.ps1` — install/start client-agent service on Windows.
+- `infrastructure/windows/scripts/*` — dual-screen placement helper + Apollo connect/disconnect hooks.
+- `docs/windows/*` runbooks.
+
+Design alignment with Linux side:
+- Same manifest shape and session semantics (temporary hardcoded source).
+- Same storage split assumptions (R2 ROMs + GCS saves/config/firmware/steam) via rclone.
+- Same client-agent contract intent (Windows agent still talks to same server API once ready).

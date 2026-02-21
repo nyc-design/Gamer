@@ -68,3 +68,7 @@ logs/
 games/
 saves/
 roms/
+# Windows VM local state/secrets
+infrastructure/windows/state/*.json
+infrastructure/windows-vm/*.json
+infrastructure/windows-vm/.tensordock-windows-instance.json

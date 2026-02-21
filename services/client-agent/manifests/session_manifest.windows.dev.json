@@ -1,0 +1,42 @@
+{
+  "session_id": "dev-windows-session-001",
+  "user_id": "me",
+  "rom_path": "roms/pokemon-alpha-sapphire.3ds",
+  "save_path": "saves/pokemon-alpha-sapphire/slot-1/main.sav",
+  "save_filename": "main.sav",
+  "resolution": "1920x1080",
+  "fps": 60,
+  "codec": "h264",
+  "dual_screen": {
+    "enabled": true,
+    "mode": "apollo_virtual_display",
+    "auto_move_second_window": true
+  },
+  "windows": {
+    "apollo": {
+      "enabled": true,
+      "exe_path": "C:/Program Files/Apollo/Apollo.exe"
+    },
+    "shader_glass": {
+      "enabled": true,
+      "exe_path": "C:/Program Files/ShaderGlass/ShaderGlass.exe",
+      "preset": "retroarch/default.slangp"
+    },
+    "emulator": {
+      "name": "azahar",
+      "exe_path": "C:/Emulators/Azahar/azahar.exe",
+      "args": [
+        "--fullscreen",
+        "--layout",
+        "separate"
+      ]
+    }
+  },
+  "mounts": {
+    "roms": "D:/gamer/roms",
+    "saves": "D:/gamer/saves",
+    "configs": "D:/gamer/configs",
+    "firmware": "D:/gamer/firmware",
+    "steam": "D:/gamer/steam"
+  }
+}
