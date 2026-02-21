@@ -6,7 +6,7 @@
 # https://github.com/PierreBeucher/cloudypad/tree/master/containers/sunshine
 
 # Build shader-overlay from source
-FROM rust:1.85-bookworm AS build-shader-overlay
+FROM rust:latest AS build-shader-overlay
 WORKDIR /build
 RUN apt-get update && apt-get install -y \
     libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
