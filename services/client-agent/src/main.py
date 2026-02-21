@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -76,10 +77,12 @@ class ProcessInfo(BaseModel):
 class AgentState:
     def __init__(self) -> None:
         self.started = False
+        self.started_at: Optional[float] = None
         self.manifest: Dict[str, Any] = {}
         self.processes: Dict[str, subprocess.Popen] = {}
         self.connected_clients: int = 0
         self.connected_client_ids: set[str] = set()
+        self.last_script_runs: Dict[str, Dict[str, Any]] = {}
 
 
 STATE = AgentState()
@@ -258,26 +261,44 @@ def stop_all() -> None:
     STATE.connected_clients = 0
     STATE.connected_client_ids.clear()
     STATE.started = False
+    STATE.started_at = None
 
 
-def _run_powershell_script(script_name: str, extra_args: list[str]) -> None:
+def _run_powershell_script(script_name: str, extra_args: list[str]) -> Dict[str, Any]:
+    run_info: Dict[str, Any] = {
+        "script": script_name,
+        "timestamp": time.time(),
+        "ok": False,
+        "exit_code": None,
+        "stdout": "",
+        "stderr": "",
+    }
     script = _find_windows_script(script_name)
     if not script:
         logger.warning("script not found: %s", script_name)
-        return
+        run_info["stderr"] = "script not found"
+        STATE.last_script_runs[script_name] = run_info
+        return run_info
 
     args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] + extra_args
     try:
         result = _run(args, check=False)
+        run_info["exit_code"] = result.returncode
+        run_info["ok"] = result.returncode == 0
+        run_info["stdout"] = (result.stdout or "").strip()[:600]
+        run_info["stderr"] = (result.stderr or "").strip()[:600]
         logger.info(
             "script %s exit=%s stdout=%s stderr=%s",
             script_name,
             result.returncode,
-            (result.stdout or "").strip()[:600],
-            (result.stderr or "").strip()[:600],
+            run_info["stdout"],
+            run_info["stderr"],
         )
     except Exception as e:
         logger.warning("failed to run script %s: %s", script_name, e)
+        run_info["stderr"] = str(e)
+    STATE.last_script_runs[script_name] = run_info
+    return run_info
 
 
 @APP.get("/health")
@@ -285,16 +306,21 @@ def health() -> Dict[str, Any]:
     proc_data = []
     for name, proc in STATE.processes.items():
         pid = None
+        alive = None
         try:
             pid = proc.pid
+            alive = proc.poll() is None
         except Exception:
             pass
-        proc_data.append({"name": name, "pid": pid})
+        proc_data.append({"name": name, "pid": pid, "alive": alive})
     return {
         "ok": True,
         "started": STATE.started,
+        "started_at": STATE.started_at,
         "connected_clients": STATE.connected_clients,
+        "connected_client_ids": sorted(list(STATE.connected_client_ids)),
         "processes": proc_data,
+        "last_script_runs": STATE.last_script_runs,
     }
 
 
@@ -322,6 +348,7 @@ def start() -> StartResponse:
         start_emulator(STATE.manifest)
 
         STATE.started = True
+        STATE.started_at = time.time()
         return StartResponse(ok=True, message="started", manifest_path=manifest_path)
     except Exception as e:
         logger.exception("start failed")

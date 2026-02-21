@@ -17,7 +17,7 @@ The agent currently supports:
 - `POST /stop` → stop launched processes.
 - `POST /client-connected` and `POST /client-disconnected` → trigger Apollo connect/disconnect hook scripts with client count.
 - `POST /position-dual-now` → force-run window placement script.
-- `GET /manifest` and `GET /health`.
+- `GET /manifest` and `GET /health` (includes script-exit diagnostics and per-process alive status).
 
 Manifest hardcoded at:
 
