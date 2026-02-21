@@ -6,6 +6,10 @@ param(
 
 $ErrorActionPreference = "Continue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+$ProgressPreference = "SilentlyContinue"
+
+if ($ApolloInstallerUrl) { $ApolloInstallerUrl = $ApolloInstallerUrl.Trim("'`"") }
+if ($ShaderGlassInstallerUrl) { $ShaderGlassInstallerUrl = $ShaderGlassInstallerUrl.Trim("'`"") }
 
 function Install-WingetPackage($id) {
   try {
@@ -42,6 +46,12 @@ function Get-GitHubLatestAssetUrl($repo, $assetPattern) {
   return ""
 }
 
+function Download-File($url, $outFile) {
+  $wc = New-Object System.Net.WebClient
+  $wc.Headers.Add("User-Agent", "gamer-bootstrap")
+  $wc.DownloadFile($url, $outFile)
+}
+
 Write-Host "[1/6] Installing core tools"
 $null = Install-WingetPackage "Python.Python.3.12"
 $null = Install-WingetPackage "Rclone.Rclone"
@@ -67,7 +77,7 @@ if ($ShaderGlassInstallerUrl -ne "") {
   try {
     $tmp = "$env:TEMP\\shaderglass.zip"
     $dest = "C:\\Program Files\\ShaderGlass"
-    Invoke-WebRequest -Uri $ShaderGlassInstallerUrl -OutFile $tmp
+    Download-File $ShaderGlassInstallerUrl $tmp
     Ensure-Dir $dest | Out-Null
     Expand-Archive -Path $tmp -DestinationPath $dest -Force
     Write-Host "ShaderGlass extracted to $dest"
@@ -86,7 +96,7 @@ Write-Host "Apollo URL: $ApolloInstallerUrl"
 if ($ApolloInstallerUrl -ne "") {
   try {
     $tmp = "$env:TEMP\\apollo-installer.exe"
-    Invoke-WebRequest -Uri $ApolloInstallerUrl -OutFile $tmp
+    Download-File $ApolloInstallerUrl $tmp
     # Apollo release installers are NSIS/Inno-like. Try common silent switches.
     $proc = Start-Process $tmp -ArgumentList "/S" -Wait -PassThru
     if ($proc.ExitCode -ne 0) {

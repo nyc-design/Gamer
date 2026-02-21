@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 import urllib.request
 from pathlib import Path
 
@@ -70,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--password")
     p.add_argument("--apollo-installer-url", default="", help="Optional explicit Apollo installer URL")
     p.add_argument("--shaderglass-installer-url", default="", help="Optional explicit ShaderGlass package URL")
+    p.add_argument("--ssh-retries", type=int, default=8, help="SSH connect retries")
     p.add_argument("--bootstrap-only", action="store_true", help="Run only bootstrap-windows.ps1")
     return p.parse_args()
 
@@ -105,10 +107,21 @@ def main() -> None:
     remote_agent_requirements = f"{remote_agent_root}/requirements.txt"
     remote_agent_manifest = f"{remote_agent_root}/manifests/session_manifest.windows.dev.json"
 
-    print(f"Connecting to {username}@{ip}:22 ...")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(ip, port=22, username=username, password=password, timeout=20, allow_agent=False, look_for_keys=False)
+    print(f"Connecting to {username}@{ip}:22 ...")
+    last_err = None
+    for attempt in range(1, args.ssh_retries + 1):
+        try:
+            ssh.connect(ip, port=22, username=username, password=password, timeout=20, allow_agent=False, look_for_keys=False)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            print(f"SSH connect attempt {attempt}/{args.ssh_retries} failed: {e}")
+            time.sleep(2.0)
+    if last_err is not None:
+        raise SystemExit(f"SSH connection failed after retries: {last_err}")
     print("SSH connected.")
 
     try:
@@ -132,22 +145,22 @@ def main() -> None:
         shader_url = args.shaderglass_installer_url
         if not apollo_url:
             try:
-                apollo_url = resolve_github_latest_asset("ClassicOldSong/Apollo", r"\\.exe$")
+                apollo_url = resolve_github_latest_asset("ClassicOldSong/Apollo", r"\.exe$")
             except Exception as e:
                 print(f"Warning: failed to resolve Apollo URL: {e}")
                 apollo_url = ""
         if not shader_url:
             try:
-                shader_url = resolve_github_latest_asset("mausimus/ShaderGlass", r"win-x64\\.zip$")
+                shader_url = resolve_github_latest_asset("mausimus/ShaderGlass", r"win-x64\.zip$")
             except Exception as e:
                 print(f"Warning: failed to resolve ShaderGlass URL: {e}")
                 shader_url = ""
 
         bootstrap_cmd = "powershell -ExecutionPolicy Bypass -File C:\\ProgramData\\gamer\\setup\\bootstrap-windows.ps1"
         if apollo_url:
-            bootstrap_cmd += f" -ApolloInstallerUrl '{apollo_url}'"
+            bootstrap_cmd += f' -ApolloInstallerUrl "{apollo_url}"'
         if shader_url:
-            bootstrap_cmd += f" -ShaderGlassInstallerUrl '{shader_url}'"
+            bootstrap_cmd += f' -ShaderGlassInstallerUrl "{shader_url}"'
         code, out, err = run(
             ssh,
             bootstrap_cmd,

@@ -104,6 +104,19 @@ if (-not (Test-Path "$venv\\Scripts\\python.exe")) {
 $svcName = "GamerClientAgent"
 $cmd = "`"$venv\\Scripts\\python.exe`" -m uvicorn src.main:APP --host 0.0.0.0 --port $Port"
 
+# Stop existing task/processes for idempotent restart
+try { Stop-ScheduledTask -TaskName $svcName -ErrorAction SilentlyContinue | Out-Null } catch {}
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -eq "python.exe" -and $_.CommandLine -like "*uvicorn src.main:APP*"
+} | ForEach-Object {
+  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+}
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -eq "python.exe" -and $_.CommandLine -like "*C:\\tools\\python\\py312\\tools\\python.exe*"
+} | ForEach-Object {
+  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+}
+
 # Use NSSM if available, fallback to scheduled task
 $nssm = Get-Command nssm -ErrorAction SilentlyContinue
 if ($nssm) {

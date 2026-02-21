@@ -123,8 +123,22 @@ def load_manifest() -> Dict[str, Any]:
 
 
 def ensure_dirs(manifest: Dict[str, Any]) -> None:
-    for _, path in manifest.get("mounts", {}).items():
-        Path(path).mkdir(parents=True, exist_ok=True)
+    mounts = manifest.get("mounts", {})
+    try:
+        has_d = Path("D:/").exists()
+    except Exception:
+        has_d = False
+    for key, path in mounts.items():
+        p = Path(path)
+        if p.drive.lower() == "d:" and not has_d:
+            raw = str(p)
+            if raw.lower().startswith("d:/"):
+                raw = raw.replace("D:/", "C:/", 1)
+            elif raw.lower().startswith("d:\\"):
+                raw = raw.replace("D:\\", "C:\\", 1)
+            p = Path(raw)
+            mounts[key] = str(p).replace("\\", "/")
+        p.mkdir(parents=True, exist_ok=True)
 
 
 def setup_storage(manifest: Dict[str, Any]) -> None:
@@ -190,7 +204,7 @@ def maybe_install_window_hotkeys() -> None:
 
     ahk = shutil.which("AutoHotkey64.exe") or shutil.which("autohotkey")
     helper = _find_windows_script("move-window-next-monitor.ahk")
-    if not ahk or not helper.exists():
+    if not ahk or helper is None or not helper.exists():
         logger.warning("AHK/helper missing; window move hotkey not installed")
         return
 
@@ -245,21 +259,25 @@ def manifest() -> Dict[str, Any]:
 
 @APP.post("/start", response_model=StartResponse)
 def start() -> StartResponse:
-    if STATE.started:
-        return StartResponse(ok=True, message="already started")
+    try:
+        if STATE.started:
+            return StartResponse(ok=True, message="already started")
 
-    STATE.manifest = load_manifest()
-    manifest_path = os.getenv("SESSION_MANIFEST_PATH")
+        STATE.manifest = load_manifest()
+        manifest_path = os.getenv("SESSION_MANIFEST_PATH")
 
-    ensure_dirs(STATE.manifest)
-    setup_storage(STATE.manifest)
-    start_apollo(STATE.manifest)
-    maybe_install_window_hotkeys()
-    start_shader_glass(STATE.manifest)
-    start_emulator(STATE.manifest)
+        ensure_dirs(STATE.manifest)
+        setup_storage(STATE.manifest)
+        start_apollo(STATE.manifest)
+        maybe_install_window_hotkeys()
+        start_shader_glass(STATE.manifest)
+        start_emulator(STATE.manifest)
 
-    STATE.started = True
-    return StartResponse(ok=True, message="started", manifest_path=manifest_path)
+        STATE.started = True
+        return StartResponse(ok=True, message="started", manifest_path=manifest_path)
+    except Exception as e:
+        logger.exception("start failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @APP.post("/stop", response_model=StartResponse)
