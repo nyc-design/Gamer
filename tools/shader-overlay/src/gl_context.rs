@@ -13,12 +13,16 @@ pub struct GlxExtFns {
     pub release_tex_image: unsafe extern "C" fn(*mut xlib::Display, glx::GLXDrawable, c_int),
 }
 
-/// Holds the GLX context, X display, and glow context
+/// Holds the GLX context, X display, and glow context.
+/// Two FBConfigs: one for XComposite pixmap capture, one for output windows.
 pub struct GlState {
     pub glow_ctx: Arc<glow::Context>,
     pub display: *mut xlib::Display,
     pub glx_context: glx::GLXContext,
+    /// FBConfig for XComposite texture_from_pixmap (may be 32-bit ARGB)
     pub fb_config: glx::GLXFBConfig,
+    /// FBConfig for output windows (matches screen depth, guaranteed visible)
+    pub output_fb_config: glx::GLXFBConfig,
     pub glx_ext: GlxExtFns,
     _helper_window: xlib::Window,
 }
@@ -44,9 +48,10 @@ impl GlState {
 
             let screen = xlib::XDefaultScreen(display);
             let root = xlib::XRootWindow(display, screen);
+            let screen_depth = xlib::XDefaultDepth(display, screen);
 
-            // Choose FBConfig with texture_from_pixmap support
-            let fb_attribs: Vec<c_int> = vec![
+            // FBConfig for XComposite texture_from_pixmap (capture)
+            let capture_attribs: Vec<c_int> = vec![
                 glx::GLX_X_RENDERABLE, 1,
                 glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT | glx::GLX_PIXMAP_BIT,
                 glx::GLX_RENDER_TYPE, glx::GLX_RGBA_BIT,
@@ -57,21 +62,58 @@ impl GlState {
                 glx::GLX_BLUE_SIZE, 8,
                 glx::GLX_ALPHA_SIZE, 8,
                 glx::GLX_DOUBLEBUFFER, 1,
-                0, // None terminator
+                0,
             ];
 
             let mut num_configs: c_int = 0;
-            let configs = glx::glXChooseFBConfig(display, screen, fb_attribs.as_ptr(), &mut num_configs);
+            let configs = glx::glXChooseFBConfig(display, screen, capture_attribs.as_ptr(), &mut num_configs);
             if configs.is_null() || num_configs == 0 {
-                bail!("No suitable GLX FBConfig found (need texture_from_pixmap support)");
+                bail!("No suitable GLX FBConfig found for texture_from_pixmap");
             }
-
             let fb_config = *configs;
             xlib::XFree(configs as *mut c_void);
 
+            // FBConfig for output windows — match screen depth, no pixmap/texture requirements
+            let output_attribs: Vec<c_int> = vec![
+                glx::GLX_X_RENDERABLE, 1,
+                glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT,
+                glx::GLX_RENDER_TYPE, glx::GLX_RGBA_BIT,
+                glx::GLX_RED_SIZE, 8,
+                glx::GLX_GREEN_SIZE, 8,
+                glx::GLX_BLUE_SIZE, 8,
+                glx::GLX_DOUBLEBUFFER, 1,
+                glx::GLX_BUFFER_SIZE, screen_depth,
+                0,
+            ];
+
+            let mut num_output_configs: c_int = 0;
+            let output_configs = glx::glXChooseFBConfig(display, screen, output_attribs.as_ptr(), &mut num_output_configs);
+            if output_configs.is_null() || num_output_configs == 0 {
+                bail!("No suitable GLX FBConfig found for output windows (screen depth {})", screen_depth);
+            }
+
+            // Pick the FBConfig whose visual depth matches the screen
+            let mut output_fb_config = *output_configs;
+            for i in 0..num_output_configs {
+                let cfg = *output_configs.offset(i as isize);
+                let vis = glx::glXGetVisualFromFBConfig(display, cfg);
+                if !vis.is_null() {
+                    let depth = (*vis).depth;
+                    xlib::XFree(vis as *mut c_void);
+                    if depth == screen_depth {
+                        output_fb_config = cfg;
+                        break;
+                    }
+                }
+            }
+            xlib::XFree(output_configs as *mut c_void);
+
+            log::info!("Screen depth: {}", screen_depth);
+
+            // Use the capture FBConfig visual for the helper window
             let visual = glx::glXGetVisualFromFBConfig(display, fb_config);
             if visual.is_null() {
-                bail!("Failed to get visual from FBConfig");
+                bail!("Failed to get visual from capture FBConfig");
             }
 
             // Create small invisible helper window for GLX context binding
@@ -139,6 +181,7 @@ impl GlState {
                 display,
                 glx_context,
                 fb_config,
+                output_fb_config,
                 glx_ext,
                 _helper_window: helper_window,
             })

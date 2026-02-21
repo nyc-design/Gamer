@@ -44,6 +44,8 @@ PRIMARY=""
 SECONDARY=""
 for wid in $(xdotool search --name "Azahar\|melonDS\|Dolphin" 2>/dev/null); do
     name=$(xdotool getwindowname "$wid" 2>/dev/null)
+    # Skip shader output windows
+    echo "$name" | grep -q "^Shader: " && continue
     if echo "$name" | grep -q "Secondary Window"; then
         SECONDARY=$wid
     elif echo "$name" | grep -qE "(Azahar|melonDS|Dolphin) [0-9]"; then
@@ -51,23 +53,48 @@ for wid in $(xdotool search --name "Azahar\|melonDS\|Dolphin" 2>/dev/null); do
     fi
 done
 
-if [ -z "$PRIMARY" ] && [ -z "$SECONDARY" ]; then
-    echo "[$(date)] reposition: no emulator windows found, skipping" >> "$LOG"
+# Find shader output windows (created by shader-overlay tool)
+SHADER_PRIMARY=""
+SHADER_SECONDARY=""
+for wid in $(xdotool search --name "^Shader: " 2>/dev/null); do
+    name=$(xdotool getwindowname "$wid" 2>/dev/null)
+    if echo "$name" | grep -q "Secondary Window"; then
+        SHADER_SECONDARY=$wid
+    else
+        SHADER_PRIMARY=$wid
+    fi
+done
+
+if [ -z "$PRIMARY" ] && [ -z "$SECONDARY" ] && [ -z "$SHADER_PRIMARY" ] && [ -z "$SHADER_SECONDARY" ]; then
+    echo "[$(date)] reposition: no emulator or shader windows found, skipping" >> "$LOG"
     exit 0
 fi
 
-# Position primary window on top display
+# Position primary emulator window on top display
 if [ -n "$PRIMARY" ]; then
     echo "[$(date)] reposition: primary $PRIMARY -> ${TOP_X},${TOP_Y} ${TOP_WIDTH}x${TOP_HEIGHT}" >> "$LOG"
     xdotool windowmove "$PRIMARY" "$TOP_X" "$TOP_Y"
     xdotool windowsize "$PRIMARY" "$TOP_WIDTH" "$TOP_HEIGHT"
 fi
 
-# Position secondary window on bottom display
+# Position secondary emulator window on bottom display
 if [ -n "$SECONDARY" ]; then
     echo "[$(date)] reposition: secondary $SECONDARY -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
     xdotool windowmove "$SECONDARY" "$BOT_X" "$BOT_Y"
     xdotool windowsize "$SECONDARY" "$BOT_WIDTH" "$BOT_HEIGHT"
+fi
+
+# Position shader output windows on their respective displays (same positions)
+if [ -n "$SHADER_PRIMARY" ]; then
+    echo "[$(date)] reposition: shader-primary $SHADER_PRIMARY -> ${TOP_X},${TOP_Y} ${TOP_WIDTH}x${TOP_HEIGHT}" >> "$LOG"
+    xdotool windowmove "$SHADER_PRIMARY" "$TOP_X" "$TOP_Y"
+    xdotool windowsize "$SHADER_PRIMARY" "$TOP_WIDTH" "$TOP_HEIGHT"
+fi
+
+if [ -n "$SHADER_SECONDARY" ]; then
+    echo "[$(date)] reposition: shader-secondary $SHADER_SECONDARY -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
+    xdotool windowmove "$SHADER_SECONDARY" "$BOT_X" "$BOT_Y"
+    xdotool windowsize "$SHADER_SECONDARY" "$BOT_WIDTH" "$BOT_HEIGHT"
 fi
 
 echo "[$(date)] reposition: done" >> "$LOG"

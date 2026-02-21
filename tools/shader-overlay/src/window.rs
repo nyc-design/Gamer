@@ -31,9 +31,13 @@ pub fn find_window(display: *mut xlib::Display, target: &str) -> Result<WindowIn
     // Method 1: Check _NET_CLIENT_LIST (WM's known top-level windows)
     // This is how xdotool finds windows — more reliable than tree traversal
     // Skip tiny windows (< 32x32) — these are Qt utility windows like "Qt Selection Owner for ..."
+    // Skip our own shader output windows (prefixed with "Shader: ")
     if let Some(client_windows) = get_client_list(display, root) {
         for wid in &client_windows {
             if let Some(name) = get_window_name(display, *wid) {
+                if name.starts_with("Shader: ") {
+                    continue; // skip our own output windows
+                }
                 if name.to_lowercase().contains(&pattern_lower) {
                     if let Ok(info) = get_window_info(display, *wid) {
                         if info.width >= 32 && info.height >= 32 {

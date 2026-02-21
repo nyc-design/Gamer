@@ -115,15 +115,15 @@ fn try_attach_pipeline(
         }
     };
 
-    let ovl = match overlay::OverlayWindow::new(gl, win_info.x, win_info.y, win_info.width, win_info.height) {
+    // Output window title: "Shader: <source_name>" so scripts can find it
+    let output_title = format!("Shader: {}", spec.target);
+    let ovl = match overlay::OverlayWindow::new(gl, &output_title, win_info.x, win_info.y, win_info.width, win_info.height) {
         Ok(o) => o,
         Err(e) => {
-            log::error!("Failed to create overlay: {}", e);
+            log::error!("Failed to create output window: {}", e);
             return None;
         }
     };
-
-    ovl.raise_above(win_info.id);
 
     Some(ActivePipeline {
         spec_index,
@@ -289,7 +289,6 @@ fn main() -> Result<()> {
                                     log::error!("Shader resize error: {}", err);
                                 }
                                 entry.overlay.reposition(e.x as i32, e.y as i32, new_w, new_h);
-                                entry.overlay.raise_above(e.window);
                             }
                         }
                     }

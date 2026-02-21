@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use glow::HasContext;
+use std::ffi::CString;
 use std::os::raw::{c_int, c_ulong, c_void};
 use std::ptr;
 use x11::glx;
@@ -7,8 +8,8 @@ use x11::xlib;
 
 use crate::gl_context::GlState;
 
-/// An overlay window positioned on top of a source window, used to display shader output.
-/// Uses XFixes input shape to be fully click-through — all input passes to the window below.
+/// A normal openbox-managed window that displays shader output.
+/// Has a title for window-management scripts to find it.
 pub struct OverlayWindow {
     display: *mut xlib::Display,
     window: c_ulong,
@@ -17,84 +18,78 @@ pub struct OverlayWindow {
     pub height: u32,
 }
 
-// Atoms and XFixes FFI
 extern "C" {
     fn XInternAtom(display: *mut xlib::Display, name: *const i8, only_if_exists: c_int) -> c_ulong;
-    fn XFixesCreateRegion(display: *mut xlib::Display, rectangles: *const xlib::XRectangle, count: c_int) -> c_ulong;
-    fn XFixesSetWindowShapeRegion(display: *mut xlib::Display, window: c_ulong, shape_kind: c_int, x_off: c_int, y_off: c_int, region: c_ulong);
-    fn XFixesDestroyRegion(display: *mut xlib::Display, region: c_ulong);
 }
 
-const SHAPE_INPUT: c_int = 2; // ShapeInput — input region only, visual remains
-
 impl OverlayWindow {
-    pub fn new(gl: &GlState, x: i32, y: i32, width: u32, height: u32) -> Result<Self> {
+    /// Create a normal managed window with the given title.
+    /// Uses output_fb_config (screen-depth matching) so it renders visibly.
+    pub fn new(gl: &GlState, title: &str, x: i32, y: i32, width: u32, height: u32) -> Result<Self> {
         unsafe {
             let display = gl.display;
             let screen = xlib::XDefaultScreen(display);
             let root = xlib::XRootWindow(display, screen);
 
-            let visual = glx::glXGetVisualFromFBConfig(display, gl.fb_config);
+            // Use the output FBConfig that matches screen depth
+            let visual = glx::glXGetVisualFromFBConfig(display, gl.output_fb_config);
             if visual.is_null() {
-                bail!("Failed to get visual for overlay window");
+                bail!("Failed to get visual for output window");
             }
 
             let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
             swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
-            swa.override_redirect = 1; // bypass window manager
             swa.event_mask = xlib::StructureNotifyMask | xlib::ExposureMask;
 
+            // Normal managed window — no override_redirect
             let window = xlib::XCreateWindow(
                 display, root,
                 x, y, width, height, 0,
                 (*visual).depth,
                 xlib::InputOutput as u32,
                 (*visual).visual,
-                xlib::CWColormap | xlib::CWOverrideRedirect | xlib::CWEventMask,
+                xlib::CWColormap | xlib::CWEventMask,
                 &mut swa,
             );
             xlib::XFree(visual as *mut c_void);
 
             if window == 0 {
-                bail!("Failed to create overlay window");
+                bail!("Failed to create output window");
             }
 
-            // Set window type to DOCK (always on top)
+            // Set window title (for xdotool/reposition-windows.sh to find)
+            let title_c = CString::new(title).unwrap_or_else(|_| CString::new("Shader Output").unwrap());
+            xlib::XStoreName(display, window, title_c.as_ptr());
+
+            // Also set _NET_WM_NAME for UTF-8 support
+            let atom_net_wm_name = XInternAtom(display, b"_NET_WM_NAME\0".as_ptr() as *const i8, 0);
+            let atom_utf8 = XInternAtom(display, b"UTF8_STRING\0".as_ptr() as *const i8, 0);
+            xlib::XChangeProperty(
+                display, window, atom_net_wm_name,
+                atom_utf8, 8, xlib::PropModeReplace,
+                title.as_ptr(), title.len() as i32,
+            );
+
+            // Set normal window type
             let atom_wm_type = XInternAtom(display, b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const i8, 0);
-            let atom_dock = XInternAtom(display, b"_NET_WM_WINDOW_TYPE_DOCK\0".as_ptr() as *const i8, 0);
+            let atom_normal = XInternAtom(display, b"_NET_WM_WINDOW_TYPE_NORMAL\0".as_ptr() as *const i8, 0);
             xlib::XChangeProperty(
                 display, window, atom_wm_type,
                 xlib::XA_ATOM, 32, xlib::PropModeReplace,
-                &atom_dock as *const c_ulong as *const u8, 1,
+                &atom_normal as *const c_ulong as *const u8, 1,
             );
 
-            // Make window click-through (input passes to window below)
-            let atom_state = XInternAtom(display, b"_NET_WM_STATE\0".as_ptr() as *const i8, 0);
-            let atom_above = XInternAtom(display, b"_NET_WM_STATE_ABOVE\0".as_ptr() as *const i8, 0);
-            xlib::XChangeProperty(
-                display, window, atom_state,
-                xlib::XA_ATOM, 32, xlib::PropModeReplace,
-                &atom_above as *const c_ulong as *const u8, 1,
-            );
-
-            // Create GLX drawable for this window
-            let glx_window = glx::glXCreateWindow(display, gl.fb_config, window, ptr::null());
+            // Create GLX drawable for this window using output FBConfig
+            let glx_window = glx::glXCreateWindow(display, gl.output_fb_config, window, ptr::null());
             if glx_window == 0 {
-                bail!("Failed to create GLX window for overlay");
+                bail!("Failed to create GLX window for output");
             }
 
             // Map the window
             xlib::XMapWindow(display, window);
-
-            // Make the overlay fully click-through using XFixes input shape.
-            // Set the input region to empty — all clicks pass to the window below.
-            let empty_region = XFixesCreateRegion(display, ptr::null(), 0);
-            XFixesSetWindowShapeRegion(display, window, SHAPE_INPUT, 0, 0, empty_region);
-            XFixesDestroyRegion(display, empty_region);
-
             xlib::XFlush(display);
 
-            log::info!("Created overlay window 0x{:x} at ({},{}) {}x{} (click-through)", window, x, y, width, height);
+            log::info!("Created output window 0x{:x} '{}' at ({},{}) {}x{}", window, title, x, y, width, height);
 
             Ok(Self {
                 display,
@@ -106,15 +101,11 @@ impl OverlayWindow {
         }
     }
 
-    /// Blit the shader output FBO to this overlay window
+    /// Blit the shader output FBO to this window
     pub fn present(&self, gl: &GlState, shader_fbo: glow::Framebuffer, src_width: u32, src_height: u32) {
         unsafe {
-            // Switch GLX drawable to this overlay window
+            // Switch GLX drawable to this output window
             gl.make_current(self.glx_window);
-
-            // Clear to magenta first — if we see magenta, blit is failing
-            gl.glow_ctx.clear_color(1.0, 0.0, 1.0, 1.0);
-            gl.glow_ctx.clear(glow::COLOR_BUFFER_BIT);
 
             gl.glow_ctx.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(shader_fbo));
             gl.glow_ctx.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
@@ -132,7 +123,7 @@ impl OverlayWindow {
         }
     }
 
-    /// Reposition and resize the overlay to match the source window
+    /// Reposition and resize the window
     pub fn reposition(&mut self, x: i32, y: i32, width: u32, height: u32) {
         unsafe {
             let mut changes: xlib::XWindowChanges = std::mem::zeroed();
@@ -147,13 +138,6 @@ impl OverlayWindow {
             );
             self.width = width;
             self.height = height;
-        }
-    }
-
-    /// Raise this overlay window to the top of the stacking order
-    pub fn raise_above(&self, _sibling: c_ulong) {
-        unsafe {
-            xlib::XRaiseWindow(self.display, self.window);
         }
     }
 
