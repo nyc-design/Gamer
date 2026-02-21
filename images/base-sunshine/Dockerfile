@@ -142,7 +142,7 @@ ENV NVIDIA_DRIVER_TYPE=display
 RUN useradd -m -d /home/gamer -s /bin/bash -u 1001 gamer
 
 # Copy overlay (scripts, configs)
-COPY overlay/ /
+COPY images/base-sunshine/overlay/ /
 
 # shader-overlay binary (from Rust build stage)
 COPY --from=build-shader-overlay /build/target/release/shader-overlay /gamer/bin/shader-overlay
