@@ -36,7 +36,7 @@ RUN cd /Applications && \
     rm azahar.AppImage
 
 # Copy overlay (scripts, configs)
-COPY overlay/ /
+COPY images/azahar-sunshine/overlay/ /
 
 RUN chmod +x /gamer/bin/start-azahar.sh
 
