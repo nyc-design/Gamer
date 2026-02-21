@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 
 API_BASE = "https://dashboard.tensordock.com/api/v2"
-STATE_PATH = Path(__file__).resolve().parent / "state" / "windows-vm.json"
+STATE_PATH = Path(__file__).resolve().parent / "state" / "windows-vm.local.json"
 
 
 def api_request(token: str, method: str, path: str, payload: dict | None = None) -> dict:
@@ -65,8 +65,8 @@ def cmd_create(args: argparse.Namespace) -> None:
         "created_at": time.time(),
     }
 
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    args.state_file.parent.mkdir(parents=True, exist_ok=True)
+    args.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
     print(json.dumps(state, indent=2))
 
 
@@ -79,9 +79,9 @@ def cmd_status(args: argparse.Namespace) -> None:
         instance_id = args.instance_id
         state = {}
     else:
-        if not STATE_PATH.exists():
+        if not args.state_file.exists():
             raise SystemExit("No saved state and --instance-id not provided")
-        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state = json.loads(args.state_file.read_text(encoding="utf-8"))
         instance_id = state["instance_id"]
 
     data = fetch_instance(args.token, instance_id)
@@ -92,7 +92,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         "rate_hourly": data.get("rateHourly"),
     })
     if not args.instance_id:
-        STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        args.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
     print(json.dumps(state, indent=2))
 
 
@@ -100,20 +100,21 @@ def cmd_delete(args: argparse.Namespace) -> None:
     if args.instance_id:
         instance_id = args.instance_id
     else:
-        if not STATE_PATH.exists():
+        if not args.state_file.exists():
             raise SystemExit("No saved state and --instance-id not provided")
-        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state = json.loads(args.state_file.read_text(encoding="utf-8"))
         instance_id = state["instance_id"]
 
     api_request(args.token, "DELETE", f"/instances/{instance_id}")
-    if STATE_PATH.exists() and not args.instance_id:
-        STATE_PATH.unlink()
+    if args.state_file.exists() and not args.instance_id:
+        args.state_file.unlink()
     print(json.dumps({"deleted": True, "instance_id": instance_id}))
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Provision TensorDock Windows GPU VM")
     p.add_argument("--token", default=os.getenv("TENSORDOCK_API_TOKEN"), help="TensorDock API token")
+    p.add_argument("--state-file", type=Path, default=STATE_PATH, help="Local path to persist VM state JSON")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("create")

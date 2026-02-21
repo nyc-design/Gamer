@@ -30,3 +30,7 @@ Current validated bootstrap path:
 4. SSH login from workspace succeeds (`user@<vm-ip>`).
 
 Follow-up deployment runs through `infrastructure/windows/deploy_via_ssh.py`.
+
+TensorDock API behavior observed:
+- `port_forwards` cannot be set when `useDedicatedIp=true` on v2 API.
+- This workflow therefore uses dedicated IP + RDP bootstrap first, then opens SSH/WinRM from inside the guest.

@@ -45,3 +45,6 @@ python infrastructure/windows/deploy_via_ssh.py \
 Notes:
 - For current TensorDock v2 API behavior, `port_forwards` cannot be set when `useDedicatedIp=true`.
 - The current Windows path uses dedicated IP + RDP bootstrap to enable OpenSSH/WinRM from inside the guest.
+- `provision-tensordock-windows.py` now stores state by default in:
+  - `infrastructure/windows/state/windows-vm.local.json`
+  - override with `--state-file` when running multiple VMs in parallel.
