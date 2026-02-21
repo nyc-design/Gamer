@@ -33,7 +33,7 @@ python infrastructure/windows/provision-tensordock-windows.py status
 
 VM state saved at:
 
-- `infrastructure/windows/state/windows-vm.json`
+- `infrastructure/windows/state/windows-vm.local.json`
 
 ## On-VM bootstrap flow (pure Python orchestration)
 
@@ -42,6 +42,10 @@ VM state saved at:
 2. Deploy scripts and agent over SSH:
    - `python infrastructure/windows/deploy_via_ssh.py`
 3. Call agent `POST /start`
+
+Or run the one-shot orchestrator:
+
+- `python infrastructure/windows/orchestrate_windows_host.py --create`
 
 ## Dual-screen convenience
 

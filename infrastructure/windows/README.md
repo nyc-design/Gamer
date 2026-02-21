@@ -34,6 +34,19 @@ source .venv/bin/activate
 python infrastructure/windows/deploy_via_ssh.py
 ```
 
+One-shot orchestrator (pure Python, production-style flow):
+
+```bash
+source .venv/bin/activate
+python infrastructure/windows/orchestrate_windows_host.py --create
+```
+
+Reuse existing VM state (no create):
+
+```bash
+python infrastructure/windows/orchestrate_windows_host.py
+```
+
 Optional override URLs:
 
 ```bash
