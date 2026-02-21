@@ -40,8 +40,8 @@ if [ -z "${WID:-}" ]; then
     sleep infinity
 fi
 
-# Build args
-ARGS="--window ${SHADER_WINDOW}:${SHADER_PRESET}"
+# Build args as array to preserve quoting
+ARGS=(--window "${SHADER_WINDOW}:${SHADER_PRESET}")
 
 # Dual-screen: add bottom screen shader
 if [ "${DUAL_SCREEN:-0}" = "1" ] && [ -n "${SHADER_PRESET_BOTTOM:-}" ] && [ -n "${SHADER_WINDOW_BOTTOM:-}" ]; then
@@ -57,11 +57,11 @@ if [ "${DUAL_SCREEN:-0}" = "1" ] && [ -n "${SHADER_PRESET_BOTTOM:-}" ] && [ -n "
         ATTEMPTS=$((ATTEMPTS + 1))
     done
     if [ -n "${WID2:-}" ]; then
-        ARGS="$ARGS --window ${SHADER_WINDOW_BOTTOM}:${SHADER_PRESET_BOTTOM}"
+        ARGS+=(--window "${SHADER_WINDOW_BOTTOM}:${SHADER_PRESET_BOTTOM}")
     else
         echo "[shader-overlay] WARNING: Secondary window not found, running single shader only"
     fi
 fi
 
-echo "[shader-overlay] Starting: shader-overlay $ARGS"
-exec /gamer/bin/shader-overlay $ARGS
+echo "[shader-overlay] Starting: shader-overlay ${ARGS[*]}"
+exec /gamer/bin/shader-overlay "${ARGS[@]}"
