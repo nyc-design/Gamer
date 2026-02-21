@@ -24,9 +24,28 @@ pub fn find_window(display: *mut xlib::Display, target: &str) -> Result<WindowIn
         return get_window_info(display, id);
     }
 
-    // Search by name/title substring
     let root = unsafe { xlib::XDefaultRootWindow(display) };
-    let results = find_windows_by_name(display, root, target)?;
+    let pattern_lower = target.to_lowercase();
+    let mut results = Vec::new();
+
+    // Method 1: Check _NET_CLIENT_LIST (WM's known top-level windows)
+    // This is how xdotool finds windows — more reliable than tree traversal
+    if let Some(client_windows) = get_client_list(display, root) {
+        for wid in &client_windows {
+            if let Some(name) = get_window_name(display, *wid) {
+                if name.to_lowercase().contains(&pattern_lower) {
+                    if let Ok(info) = get_window_info(display, *wid) {
+                        results.push(info);
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 2: Recursive tree walk as fallback
+    if results.is_empty() {
+        find_windows_recursive(display, root, &pattern_lower, &mut results)?;
+    }
 
     if results.is_empty() {
         bail!("No window found matching '{}'", target);
@@ -140,15 +159,14 @@ fn find_windows_recursive(display: *mut xlib::Display, window: c_ulong, pattern:
         // Check this window's name
         if let Some(name) = get_window_name(display, window) {
             if name.to_lowercase().contains(pattern) {
-                // Include windows with nonzero size (mapped or unmapped)
                 let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
                 if xlib::XGetWindowAttributes(display, window, &mut attrs) != 0
                     && attrs.width > 1
                     && attrs.height > 1
                 {
-                    // Map the window if it's not already mapped (needed for XComposite capture)
+                    // Map the window if needed — XComposite requires mapped windows
                     if attrs.map_state != xlib::IsViewable {
-                        log::info!("Mapping unmapped window 0x{:x} ({})", window, name);
+                        log::info!("Mapping unmapped window 0x{:x} '{}' ({}x{})", window, name, attrs.width, attrs.height);
                         xlib::XMapWindow(display, window);
                         xlib::XSync(display, 0);
                     }
