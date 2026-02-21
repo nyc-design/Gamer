@@ -53,6 +53,18 @@ Reuse existing VM state (no create):
 python infrastructure/windows/orchestrate_windows_host.py
 ```
 
+Automated validation against a running VM:
+
+```bash
+python infrastructure/windows/validate_windows_host.py
+```
+
+Skip reboot in quick checks:
+
+```bash
+python infrastructure/windows/validate_windows_host.py --skip-reboot
+```
+
 Optional override URLs:
 
 ```bash

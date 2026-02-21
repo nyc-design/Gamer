@@ -549,6 +549,9 @@ Design alignment with Linux side:
   - one-shot pure-Python workflow: create/reuse VM → status/IP wait → RDP bootstrap → SSH deploy → `/health` validation.
   - supports no-token mode when reusing an existing state file with known IP.
 
+- Added `infrastructure/windows/validate_windows_host.py`:
+  - automated smoke/reliability checks for agent APIs, connect/disconnect semantics, and optional reboot persistence.
+
 - `deploy_via_ssh.py` improvements:
   - added `--skip-bootstrap` for fast script/agent iteration without reinstalling Apollo/ShaderGlass.
   - added `--skip-agent-install` for selective deploy flows.

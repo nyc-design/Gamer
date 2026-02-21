@@ -51,6 +51,10 @@ Or run the one-shot orchestrator:
 
 - `python infrastructure/windows/orchestrate_windows_host.py --create`
 
+Validate an existing host end-to-end:
+
+- `python infrastructure/windows/validate_windows_host.py`
+
 ## Dual-screen convenience
 
 - AutoHotkey helper: `Ctrl+Alt+Right` moves active window to next monitor.
