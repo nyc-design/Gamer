@@ -101,11 +101,20 @@ class RDPSession:
         await asyncio.sleep(wait_after)
 
     async def open_start_and_launch_powershell(self) -> None:
-        # Win key -> start search -> powershell -> enter
-        await self.tap_vk("VK_LWIN")
-        await asyncio.sleep(0.8)
+        # Prefer direct click into search box area (more reliable across RDP sessions).
+        await self.click_left(130, 700)
+        await asyncio.sleep(0.5)
         await self.type_text("powershell")
         await asyncio.sleep(0.2)
+        await self.press_enter()
+        await asyncio.sleep(1.8)
+
+        # Fallback: Win+R -> powershell
+        await self.key_vk("VK_LWIN", True)
+        await self.tap_vk("VK_R")
+        await self.key_vk("VK_LWIN", False)
+        await asyncio.sleep(0.6)
+        await self.type_text("powershell")
         await self.press_enter()
         await asyncio.sleep(1.8)
 
@@ -171,7 +180,8 @@ async def run_bootstrap(
             raise SystemExit(f"RDP login failed: {err}")
 
         session = RDPSession(conn)
-        await asyncio.sleep(1.8)
+        # Login/desktop initialization can be delayed on fresh Windows boots.
+        await asyncio.sleep(10.0)
 
         shot1 = out_dir / f"step-1-desktop-{int(time.time())}.png"
         conn.get_desktop_buffer(VIDEO_FORMAT.PIL).save(shot1)

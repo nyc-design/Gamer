@@ -72,6 +72,11 @@ def list_locations() -> list[dict]:
     return data.get("data", {}).get("locations", [])
 
 
+def list_hostnodes(token: str) -> list[dict]:
+    data = api_request(token, "GET", "/hostnodes")
+    return data.get("data", {}).get("hostnodes", [])
+
+
 def select_location_and_gpu(city: str, state: str | None, gpu: str | None) -> tuple[str, str]:
     locs = list_locations()
     city_l = city.strip().lower()
@@ -101,12 +106,70 @@ def select_location_and_gpu(city: str, state: str | None, gpu: str | None) -> tu
     return loc["id"], g["v0Name"]
 
 
+def select_hostnode_and_gpu(
+    token: str,
+    city: str,
+    state: str | None,
+    gpu: str | None,
+    vcpu: int,
+    ram: int,
+    storage: int,
+    require_public_ip: bool = True,
+) -> tuple[str, str, str]:
+    city_l = city.strip().lower()
+    state_l = (state or "").strip().lower()
+    matched: list[tuple[float, float, dict, dict]] = []
+    for hn in list_hostnodes(token):
+        loc = hn.get("location") or {}
+        if (loc.get("city") or "").strip().lower() != city_l:
+            continue
+        if state_l and (loc.get("stateprovince") or "").strip().lower() != state_l:
+            continue
+        ar = hn.get("available_resources") or {}
+        if int(ar.get("vcpu_count") or 0) < vcpu:
+            continue
+        if int(ar.get("ram_gb") or 0) < ram:
+            continue
+        if int(ar.get("storage_gb") or 0) < storage:
+            continue
+        if require_public_ip and not bool(ar.get("has_public_ip_available")):
+            continue
+        for g in ar.get("gpus", []):
+            if int(g.get("availableCount") or 0) < 1:
+                continue
+            key = (g.get("v0Name") or "").lower()
+            if gpu and gpu.lower() not in key:
+                continue
+            price = float(g.get("price_per_hr") or 9999)
+            uptime = float(hn.get("uptime_percentage") or 0)
+            matched.append((price, -uptime, hn, g))
+    if not matched:
+        state_msg = f", {state}" if state else ""
+        gpu_msg = f", gpu={gpu}" if gpu else ""
+        raise RuntimeError(f"No matching hostnode in city={city}{state_msg}{gpu_msg} for requested resources")
+    matched.sort(key=lambda x: (x[0], x[1]))
+    _, _, hn, g = matched[0]
+    return hn["id"], g["v0Name"], hn.get("location_id", "")
+
+
 def cmd_create(args: argparse.Namespace) -> None:
     password = args.password or gen_password()
     location = args.location
     gpu = args.gpu
-    if not location:
-        location, gpu = select_location_and_gpu(args.city, args.state, args.gpu)
+    hostnode_id = args.hostnode_id
+    if not hostnode_id:
+        hostnode_id, gpu, location_from_hn = select_hostnode_and_gpu(
+            token=args.token,
+            city=args.city,
+            state=args.state,
+            gpu=args.gpu,
+            vcpu=args.vcpu,
+            ram=args.ram,
+            storage=args.storage,
+            require_public_ip=True,
+        )
+        if not location:
+            location = location_from_hn
 
     is_windows = args.image.lower().startswith("windows")
     ssh_key = ""
@@ -129,7 +192,7 @@ def cmd_create(args: argparse.Namespace) -> None:
                     "storage_gb": args.storage,
                     "gpus": {gpu: {"count": 1}},
                 },
-                "location_id": location,
+                "hostnode_id": hostnode_id,
                 "useDedicatedIp": True,
             },
         }
@@ -148,6 +211,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         "image": args.image,
         "gpu": gpu,
         "location_id": location,
+        "hostnode_id": hostnode_id,
         "created_at": time.time(),
     }
     if ssh_key:
@@ -214,6 +278,7 @@ def parse_args() -> argparse.Namespace:
     c.add_argument("--state", default="Idaho")
     c.add_argument("--password", default="", help="Optional explicit Windows password")
     c.add_argument("--ssh-key", default="", help="Optional SSH public key for VM creation")
+    c.add_argument("--hostnode-id", default="", help="Optional explicit hostnode UUID")
     c.add_argument("--vcpu", type=int, default=8)
     c.add_argument("--ram", type=int, default=32)
     c.add_argument("--storage", type=int, default=200)
