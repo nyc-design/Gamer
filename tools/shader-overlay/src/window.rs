@@ -111,11 +111,30 @@ fn get_window_info(display: *mut xlib::Display, window: c_ulong) -> Result<Windo
     }
 }
 
-fn find_windows_by_name(display: *mut xlib::Display, root: c_ulong, name_pattern: &str) -> Result<Vec<WindowInfo>> {
-    let mut results = Vec::new();
-    let pattern_lower = name_pattern.to_lowercase();
-    find_windows_recursive(display, root, &pattern_lower, &mut results)?;
-    Ok(results)
+/// Get _NET_CLIENT_LIST from root window (list of top-level windows known to the WM)
+fn get_client_list(display: *mut xlib::Display, root: c_ulong) -> Option<Vec<c_ulong>> {
+    unsafe {
+        let atom = xlib::XInternAtom(display, b"_NET_CLIENT_LIST\0".as_ptr() as *const _, 0);
+
+        let mut actual_type: c_ulong = 0;
+        let mut actual_format: i32 = 0;
+        let mut nitems: c_ulong = 0;
+        let mut bytes_after: c_ulong = 0;
+        let mut prop: *mut u8 = ptr::null_mut();
+
+        if xlib::XGetWindowProperty(
+            display, root, atom, 0, 1024, 0,
+            xlib::XA_WINDOW, &mut actual_type, &mut actual_format,
+            &mut nitems, &mut bytes_after, &mut prop,
+        ) == 0 && !prop.is_null() && nitems > 0 && actual_format == 32 {
+            let windows = std::slice::from_raw_parts(prop as *const c_ulong, nitems as usize).to_vec();
+            xlib::XFree(prop as *mut std::os::raw::c_void);
+            Some(windows)
+        } else {
+            if !prop.is_null() { xlib::XFree(prop as *mut std::os::raw::c_void); }
+            None
+        }
+    }
 }
 
 /// Get window name, trying _NET_WM_NAME (UTF-8) first, then WM_NAME (legacy)
