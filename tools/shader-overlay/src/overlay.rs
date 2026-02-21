@@ -133,17 +133,10 @@ impl OverlayWindow {
         }
     }
 
-    /// Raise this window above a sibling
-    pub fn raise_above(&self, sibling: c_ulong) {
+    /// Raise this overlay window to the top of the stacking order
+    pub fn raise_above(&self, _sibling: c_ulong) {
         unsafe {
-            let mut changes: xlib::XWindowChanges = std::mem::zeroed();
-            changes.sibling = sibling;
-            changes.stack_mode = xlib::Above;
-            xlib::XConfigureWindow(
-                self.display, self.window,
-                (xlib::CWSibling | xlib::CWStackMode) as u32,
-                &mut changes,
-            );
+            xlib::XRaiseWindow(self.display, self.window);
         }
     }
 

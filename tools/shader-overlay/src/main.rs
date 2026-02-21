@@ -7,13 +7,21 @@ mod window;
 use anyhow::{bail, Result};
 use clap::Parser;
 use signal_hook::flag;
-use std::os::raw::c_ulong;
+use std::os::raw::{c_int, c_ulong};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use x11::xlib;
+
+/// Custom X11 error handler — logs but doesn't abort
+unsafe extern "C" fn x11_error_handler(display: *mut xlib::Display, event: *mut xlib::XErrorEvent) -> c_int {
+    let _ = display;
+    let err = unsafe { &*event };
+    log::warn!("X11 error: request={}, error_code={}, minor={}", err.request_code, err.error_code, err.minor_code);
+    0
+}
 
 #[derive(Parser)]
 #[command(name = "shader-overlay", about = "Apply RetroArch .slangp shaders to any X11 window")]
@@ -68,6 +76,9 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     log::info!("shader-overlay starting with {} window(s)", specs.len());
+
+    // Install X11 error handler to prevent fatal crashes on non-critical errors
+    unsafe { xlib::XSetErrorHandler(Some(x11_error_handler)); }
 
     // Set up signal handlers
     let shutdown = Arc::new(AtomicBool::new(false));
