@@ -4,7 +4,7 @@ This folder contains scripts to provision and bootstrap Windows GPU hosts for Ga
 
 ## Files
 
-- `provision-tensordock-windows.py` — create/status/delete TensorDock Windows VM.
+- `provision-tensordock-windows.py` — create/status/delete/list TensorDock Windows VM capacity.
 - `bootstrap-windows.ps1` — installs core runtime tools (Apollo/rclone/ShaderGlass/AutoHotkey) and folder layout.
 - `install-agent-service.ps1` — installs and starts the Gamer client-agent as startup service/task.
 - `scripts/position-azahar-dual.ps1` — place two Azahar windows across two displays.
@@ -15,8 +15,18 @@ This folder contains scripts to provision and bootstrap Windows GPU hosts for Ga
 
 ```bash
 export TENSORDOCK_API_TOKEN='<token>'
+python infrastructure/windows/provision-tensordock-windows.py list-locations --city Chubbuck
 python infrastructure/windows/provision-tensordock-windows.py create
 python infrastructure/windows/provision-tensordock-windows.py status
+```
+
+Create with explicit Chubbuck GPU + shape:
+
+```bash
+python infrastructure/windows/provision-tensordock-windows.py create \
+  --city Chubbuck --state Idaho \
+  --gpu geforcertx4090-pcie-24gb \
+  --vcpu 8 --ram 32 --storage 200
 ```
 
 Then bootstrap remote-management from this workspace (pure Python + RDP, no manual RDP client):
@@ -45,6 +55,14 @@ One-shot orchestrator (pure Python, production-style flow):
 ```bash
 source .venv/bin/activate
 python infrastructure/windows/orchestrate_windows_host.py --create
+```
+
+One-shot with explicit Chubbuck placement:
+
+```bash
+python infrastructure/windows/orchestrate_windows_host.py --create \
+  --vm-city Chubbuck --vm-state Idaho \
+  --vm-gpu geforcertx4090-pcie-24gb
 ```
 
 Reuse existing VM state (no create):

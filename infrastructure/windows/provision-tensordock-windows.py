@@ -6,6 +6,7 @@ import secrets
 import string
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -13,17 +14,42 @@ API_BASE = "https://dashboard.tensordock.com/api/v2"
 STATE_PATH = Path(__file__).resolve().parent / "state" / "windows-vm.local.json"
 
 
-def api_request(token: str, method: str, path: str, payload: dict | None = None) -> dict:
+def api_request(token: str, method: str, path: str, payload: dict | None = None, retries: int = 4) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(
+                f"{API_BASE}{path}",
+                data=data,
+                method=method,
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == retries:
+                body = e.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(f"TensorDock API {method} {path} failed [{e.code}]: {body}") from e
+            last_err = e
+            time.sleep(min(2**attempt, 8))
+        except Exception as e:
+            last_err = e
+            if attempt == retries:
+                raise
+            time.sleep(min(2**attempt, 8))
+    raise RuntimeError(f"TensorDock API request failed after retries: {last_err}")
+
+
+def public_request(path: str) -> dict:
     req = urllib.request.Request(
         f"{API_BASE}{path}",
-        data=data,
-        method=method,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"},
+        headers={"Accept": "application/json", "User-Agent": "gamer-windows-provisioner"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        raw = resp.read().decode()
-        return json.loads(raw)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def gen_password(length: int = 22) -> str:
@@ -31,8 +57,64 @@ def gen_password(length: int = 22) -> str:
     return "".join(secrets.choice(chars) for _ in range(length))
 
 
+def find_local_ssh_public_key() -> str:
+    env_key = os.getenv("TENSORDOCK_SSH_PUBLIC_KEY") or os.getenv("SSH_PUBLIC_KEY")
+    if env_key:
+        return env_key.strip()
+    for p in (Path.home() / ".ssh" / "id_ed25519.pub", Path.home() / ".ssh" / "id_rsa.pub"):
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def list_locations() -> list[dict]:
+    data = public_request("/locations")
+    return data.get("data", {}).get("locations", [])
+
+
+def select_location_and_gpu(city: str, state: str | None, gpu: str | None) -> tuple[str, str]:
+    locs = list_locations()
+    city_l = city.strip().lower()
+    state_l = (state or "").strip().lower()
+    matched: list[tuple[dict, dict]] = []
+    for loc in locs:
+        if (loc.get("city") or "").strip().lower() != city_l:
+            continue
+        if state_l and (loc.get("stateprovince") or "").strip().lower() != state_l:
+            continue
+        for g in loc.get("gpus", []):
+            if g.get("max_count", 0) < 1:
+                continue
+            if not g.get("network_features", {}).get("dedicated_ip_available", False):
+                continue
+            key = (g.get("v0Name") or "").lower()
+            display = (g.get("displayName") or "").lower()
+            if gpu and gpu.lower() not in key and gpu.lower() not in display:
+                continue
+            matched.append((loc, g))
+    if not matched:
+        state_msg = f", {state}" if state else ""
+        gpu_msg = f", gpu={gpu}" if gpu else ""
+        raise RuntimeError(f"No matching TensorDock location/gpu for city={city}{state_msg}{gpu_msg}")
+    matched.sort(key=lambda x: (float(x[1].get("price_per_hr", 9999)), -(int(x[1].get("max_count", 0)))))
+    loc, g = matched[0]
+    return loc["id"], g["v0Name"]
+
+
 def cmd_create(args: argparse.Namespace) -> None:
-    password = gen_password()
+    password = args.password or gen_password()
+    location = args.location
+    gpu = args.gpu
+    if not location:
+        location, gpu = select_location_and_gpu(args.city, args.state, args.gpu)
+
+    is_windows = args.image.lower().startswith("windows")
+    ssh_key = ""
+    if not is_windows:
+        ssh_key = args.ssh_key or find_local_ssh_public_key()
+        if not ssh_key:
+            raise RuntimeError("Missing SSH public key. Set --ssh-key or TENSORDOCK_SSH_PUBLIC_KEY, or create ~/.ssh/id_ed25519.pub")
+
     payload = {
         "data": {
             "type": "virtualmachine",
@@ -45,14 +127,18 @@ def cmd_create(args: argparse.Namespace) -> None:
                     "vcpu_count": args.vcpu,
                     "ram_gb": args.ram,
                     "storage_gb": args.storage,
-                    "gpus": {args.gpu: {"count": 1}},
+                    "gpus": {gpu: {"count": 1}},
                 },
-                "location_id": args.location,
+                "location_id": location,
                 "useDedicatedIp": True,
             },
         }
     }
+    if ssh_key:
+        payload["data"]["attributes"]["ssh_key"] = ssh_key
     res = api_request(args.token, "POST", "/instances", payload)
+    if "data" not in res or "id" not in res.get("data", {}):
+        raise RuntimeError(f"Unexpected TensorDock create response: {json.dumps(res)}")
     instance_id = res["data"]["id"]
 
     state = {
@@ -60,10 +146,12 @@ def cmd_create(args: argparse.Namespace) -> None:
         "name": args.name,
         "password": password,
         "image": args.image,
-        "gpu": args.gpu,
-        "location_id": args.location,
+        "gpu": gpu,
+        "location_id": location,
         "created_at": time.time(),
     }
+    if ssh_key:
+        state["ssh_key_fingerprint"] = ssh_key.split()[1][:16] if len(ssh_key.split()) > 1 else ""
 
     args.state_file.parent.mkdir(parents=True, exist_ok=True)
     args.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -118,10 +206,14 @@ def parse_args() -> argparse.Namespace:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("create")
-    c.add_argument("--name", default="gamer-windows-v100")
+    c.add_argument("--name", default="gamer-windows-gpu")
     c.add_argument("--image", default="windows10")
-    c.add_argument("--gpu", default="v100-sxm2-16gb")
-    c.add_argument("--location", default="9e1f2c34-7b58-4a3d-b6c9-0f1e2d3c4b5a")
+    c.add_argument("--gpu", default="geforcertx4090-pcie-24gb")
+    c.add_argument("--location", default="", help="TensorDock location ID (if omitted, resolved from --city/--state)")
+    c.add_argument("--city", default="Chubbuck")
+    c.add_argument("--state", default="Idaho")
+    c.add_argument("--password", default="", help="Optional explicit Windows password")
+    c.add_argument("--ssh-key", default="", help="Optional SSH public key for VM creation")
     c.add_argument("--vcpu", type=int, default=8)
     c.add_argument("--ram", type=int, default=32)
     c.add_argument("--storage", type=int, default=200)
@@ -131,6 +223,11 @@ def parse_args() -> argparse.Namespace:
 
     d = sub.add_parser("delete")
     d.add_argument("--instance-id")
+
+    l = sub.add_parser("list-locations")
+    l.add_argument("--city", default="")
+    l.add_argument("--state", default="")
+    l.add_argument("--gpu", default="")
 
     return p.parse_args()
 
@@ -146,6 +243,35 @@ def main() -> None:
         cmd_status(args)
     elif args.cmd == "delete":
         cmd_delete(args)
+    elif args.cmd == "list-locations":
+        rows = []
+        for loc in list_locations():
+            city = loc.get("city", "")
+            state = loc.get("stateprovince", "")
+            if args.city and city.lower() != args.city.lower():
+                continue
+            if args.state and state.lower() != args.state.lower():
+                continue
+            for g in loc.get("gpus", []):
+                if g.get("max_count", 0) < 1:
+                    continue
+                if args.gpu:
+                    needle = args.gpu.lower()
+                    if needle not in (g.get("v0Name", "").lower() + " " + g.get("displayName", "").lower()):
+                        continue
+                rows.append(
+                    {
+                        "location_id": loc.get("id"),
+                        "city": city,
+                        "state": state,
+                        "gpu_name": g.get("v0Name"),
+                        "gpu_display": g.get("displayName"),
+                        "max_count": g.get("max_count"),
+                        "price_per_hr": g.get("price_per_hr"),
+                        "dedicated_ip": g.get("network_features", {}).get("dedicated_ip_available", False),
+                    }
+                )
+        print(json.dumps(rows, indent=2))
     else:
         raise SystemExit(f"Unknown command: {args.cmd}")
 

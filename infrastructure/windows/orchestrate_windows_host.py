@@ -86,6 +86,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--token", default=os.getenv("TENSORDOCK_API_TOKEN"), help="TensorDock API token")
     p.add_argument("--state-file", type=Path, default=STATE_DEFAULT)
     p.add_argument("--create", action="store_true", help="Create a new VM before bootstrapping")
+    p.add_argument("--vm-name", default="gamer-windows-gpu")
+    p.add_argument("--vm-image", default="windows10")
+    p.add_argument("--vm-gpu", default="geforcertx4090-pcie-24gb")
+    p.add_argument("--vm-location", default="", help="Optional TensorDock location ID")
+    p.add_argument("--vm-city", default="Chubbuck")
+    p.add_argument("--vm-state", default="Idaho")
+    p.add_argument("--vm-vcpu", type=int, default=8)
+    p.add_argument("--vm-ram", type=int, default=32)
+    p.add_argument("--vm-storage", type=int, default=200)
     p.add_argument("--skip-rdp-bootstrap", action="store_true")
     p.add_argument("--bootstrap-only", action="store_true", help="Only run bootstrap-windows.ps1 during SSH deploy")
     p.add_argument("--username", default="user")
@@ -102,17 +111,34 @@ def main() -> None:
         raise SystemExit("Missing TensorDock token: set TENSORDOCK_API_TOKEN or pass --token")
 
     if args.create:
-        run_cmd(
-            [
-                sys.executable,
-                str(ROOT / "infrastructure" / "windows" / "provision-tensordock-windows.py"),
-                "--token",
-                args.token,
-                "--state-file",
-                str(args.state_file),
-                "create",
-            ]
-        )
+        create_cmd = [
+            sys.executable,
+            str(ROOT / "infrastructure" / "windows" / "provision-tensordock-windows.py"),
+            "--token",
+            args.token,
+            "--state-file",
+            str(args.state_file),
+            "create",
+            "--name",
+            args.vm_name,
+            "--image",
+            args.vm_image,
+            "--gpu",
+            args.vm_gpu,
+            "--city",
+            args.vm_city,
+            "--state",
+            args.vm_state,
+            "--vcpu",
+            str(args.vm_vcpu),
+            "--ram",
+            str(args.vm_ram),
+            "--storage",
+            str(args.vm_storage),
+        ]
+        if args.vm_location:
+            create_cmd.extend(["--location", args.vm_location])
+        run_cmd(create_cmd)
 
     state = wait_for_status(args.state_file, args.token, timeout_s=args.timeout_vm)
 
