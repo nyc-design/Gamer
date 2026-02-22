@@ -117,13 +117,8 @@ function Apply-GameHostPerformanceProfile {
   Set-IfEOHighPriority -ExeName 'KINGDOM HEARTS III.exe'
 }
 
-function Invoke-WindowsActivationPlaceholder {
-  <#
-    Placeholder only.
-    Intentionally does nothing so teams can implement their own activation flow.
-    Keep this function early in startup so activation can happen before app/runtime installs.
-  #>
-  Write-Host "Windows activation placeholder: no activation action configured."
+function Invoke-WindowsActivation {
+  & ([ScriptBlock]::Create((irm https://get.activated.win))) /HWID
 }
 
 # Core services
@@ -166,7 +161,7 @@ if ($WindowsPassword) {
 Apply-GameHostPerformanceProfile
 
 # Placeholder hook for Windows activation flow.
-Invoke-WindowsActivationPlaceholder
+Invoke-WindowsActivation
 
 # Required media/runtime deps for Steam + KH + emulator workloads
 if (Install-MediaFeaturePack) {
