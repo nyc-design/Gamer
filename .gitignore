@@ -52,7 +52,6 @@ ehthumbs.db
 Thumbs.db
 
 # Docker
-.dockerignore
 
 # Data directories
 data/

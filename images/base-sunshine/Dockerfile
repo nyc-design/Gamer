@@ -5,19 +5,52 @@
 # Based on CloudyPad's proven Sunshine container patterns:
 # https://github.com/PierreBeucher/cloudypad/tree/master/containers/sunshine
 
-# Build shader-overlay, shader-inject, and screen-tool from source
+# Build Rust tools (shader-overlay, shader-inject, screen-tool) with dependency caching.
+# Uses a Cargo workspace so shared deps (glow, x11, librashader) compile once.
+# BuildKit cache mounts persist cargo registry + target dir across builds.
 FROM rust:latest AS build-tools
 WORKDIR /build
 RUN apt-get update && apt-get install -y \
     libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
     libgl-dev libglu1-mesa-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
-COPY tools/shader-overlay/ shader-overlay/
-COPY tools/shader-inject/ shader-inject/
-COPY tools/screen-tool/ screen-tool/
-RUN cd shader-overlay && cargo build --release && strip target/release/shader-overlay
-RUN cd shader-inject && cargo build --release && strip target/release/libshader_inject.so
-RUN cd screen-tool && cargo build --release && strip target/release/screen-tool
+
+# Step 1: Copy workspace manifest + per-tool Cargo.toml (NO source yet).
+# This layer is cached unless dependencies change.
+COPY tools/Cargo.toml Cargo.toml
+COPY tools/Cargo.lock Cargo.lock
+COPY tools/shader-overlay/Cargo.toml shader-overlay/Cargo.toml
+COPY tools/shader-inject/Cargo.toml shader-inject/Cargo.toml
+COPY tools/screen-tool/Cargo.toml screen-tool/Cargo.toml
+COPY tools/screen-tool/build.rs screen-tool/build.rs
+COPY tools/shader-overlay/build.rs shader-overlay/build.rs
+
+# Step 2: Create dummy src files so cargo can resolve the workspace
+RUN mkdir -p shader-overlay/src shader-inject/src screen-tool/src \
+    && echo "fn main() {}" > shader-overlay/src/main.rs \
+    && echo "#[no_mangle] pub extern \"C\" fn dummy() {}" > shader-inject/src/lib.rs \
+    && echo "fn main() {}" > screen-tool/src/main.rs
+
+# Step 3: Build dependencies only (cached across source changes)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --workspace 2>/dev/null || true
+
+# Step 4: Copy actual source (only this layer invalidates on code changes)
+COPY tools/shader-overlay/src/ shader-overlay/src/
+COPY tools/shader-inject/src/ shader-inject/src/
+COPY tools/screen-tool/src/ screen-tool/src/
+
+# Step 5: Build real binaries (deps already cached, only recompiles changed source)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --workspace \
+    && cp target/release/shader-overlay /tmp/shader-overlay \
+    && cp target/release/libshader_inject.so /tmp/libshader_inject.so \
+    && cp target/release/screen-tool /tmp/screen-tool \
+    && strip /tmp/shader-overlay /tmp/libshader_inject.so /tmp/screen-tool
 
 # Download Sunshine .deb in a separate stage
 FROM alpine/curl:8.14.1 AS download-sunshine
@@ -166,11 +199,11 @@ RUN useradd -m -d /home/gamer -s /bin/bash -u 1001 gamer
 COPY images/base-sunshine/overlay/ /
 
 # shader-overlay binary (from Rust build stage) — XComposite-based, for non-NVFBC capture
-COPY --from=build-tools /build/shader-overlay/target/release/shader-overlay /gamer/bin/shader-overlay
+COPY --from=build-tools /tmp/shader-overlay /gamer/bin/shader-overlay
 # shader-inject LD_PRELOAD library — NVFBC-compatible, intercepts glXSwapBuffers
-COPY --from=build-tools /build/shader-inject/target/release/libshader_inject.so /gamer/lib/libshader_inject.so
+COPY --from=build-tools /tmp/libshader_inject.so /gamer/lib/libshader_inject.so
 # screen-tool binary — zoom/crop viewer and FPS monitor for the secondary display
-COPY --from=build-tools /build/screen-tool/target/release/screen-tool /gamer/bin/screen-tool
+COPY --from=build-tools /tmp/screen-tool /gamer/bin/screen-tool
 
 # Bundle RetroArch shader presets (subset of slang-shaders)
 RUN --mount=type=cache,target=/var/cache <<EOF

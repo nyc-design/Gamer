@@ -1,0 +1,27 @@
+# Rust build artifacts (huge)
+**/target/
+
+# Git history
+.git/
+
+# ROMs (multi-GB)
+*.3ds
+*.nds
+*.iso
+*.xci
+*.nsp
+
+# Dev artifacts
+.plan
+*.log
+
+# Node modules
+**/node_modules/
+
+# Python
+**/__pycache__/
+**/*.pyc
+
+# IDE
+.vscode/
+.idea/
