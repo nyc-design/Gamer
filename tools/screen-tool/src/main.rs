@@ -119,6 +119,11 @@ fn main() -> Result<()> {
 
     // Track which output the NVFBC session is currently capturing
     let mut current_output_idx = selected_idx;
+    let mut last_output_refresh = Instant::now();
+    let mut current_capture_size = (
+        gui.available_outputs[current_output_idx].width,
+        gui.available_outputs[current_output_idx].height,
+    );
     let target_frame_time =
         Duration::from_micros((1_000_000u64 / args.max_fps.max(1) as u64).max(1));
 
@@ -170,6 +175,60 @@ fn main() -> Result<()> {
                     gui.selected_output_idx = current_output_idx;
                 }
             }
+        }
+
+        // Periodically refresh output geometry so 1x tracks resolution changes
+        // (e.g., client connects mid-session and DP-0 mode changes).
+        if last_output_refresh.elapsed() >= Duration::from_secs(1) {
+            let latest_outputs = capture
+                .list_outputs()
+                .iter()
+                .map(|(id, name, w, h)| OutputInfo {
+                    id: *id,
+                    name: name.clone(),
+                    width: *w,
+                    height: *h,
+                })
+                .collect::<Vec<_>>();
+            if !latest_outputs.is_empty() {
+                // Preserve selected index if possible by output id.
+                let selected_id = gui.available_outputs[gui.selected_output_idx].id;
+                gui.available_outputs = latest_outputs;
+                if let Some(new_idx) = gui
+                    .available_outputs
+                    .iter()
+                    .position(|o| o.id == selected_id)
+                {
+                    gui.selected_output_idx = new_idx;
+                    current_output_idx = new_idx;
+                } else {
+                    gui.selected_output_idx = 0;
+                    current_output_idx = 0;
+                }
+
+                let now_size = (
+                    gui.available_outputs[current_output_idx].width,
+                    gui.available_outputs[current_output_idx].height,
+                );
+                if now_size != current_capture_size {
+                    let out = &gui.available_outputs[current_output_idx];
+                    log::info!(
+                        "Output '{}' mode changed: {}x{} -> {}x{}, recreating capture session",
+                        out.name,
+                        current_capture_size.0,
+                        current_capture_size.1,
+                        now_size.0,
+                        now_size.1
+                    );
+                    if let Err(e) = capture.switch_output_by_id(out.id) {
+                        log::warn!("Failed to refresh capture session after mode change: {}", e);
+                    } else {
+                        current_capture_size = now_size;
+                        gui.reset_view();
+                    }
+                }
+            }
+            last_output_refresh = Instant::now();
         }
 
         // Grab frame from NVFBC (needs offscreen context)

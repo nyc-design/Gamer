@@ -2,11 +2,9 @@
 ###############################################################################
 # screen-tool-visibility.sh — Controls screen-tool visibility.
 #
-# Polls every 1 second. When a "Secondary Window" is active on DP-2, lowers
-# screen-tool behind it. Otherwise raises screen-tool back to the front.
-#
-# NOTE: We intentionally avoid X unmap/map here because frequent map-state
-# transitions can trigger GLX/NVIDIA instability during layout hot-swaps.
+# Polls every 1 second. When a "Secondary Window" is active on DP-2, unmaps
+# screen-tool so it cannot steal touch/focus. When secondary is inactive for a
+# short debounce period, maps screen-tool back.
 #
 # Env vars:
 #   SCREEN_TOOL_ENABLED   - Set to "0" to disable (default: "1")
@@ -23,7 +21,9 @@ if [ -z "$PATTERN" ]; then
     PATTERN="Secondary Window"
 fi
 SCREEN_TOOL_NAME="ScreenTool"
-LOWERED=false
+HIDDEN=false
+ACTIVE_STREAK=0
+INACTIVE_STREAK=0
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -92,16 +92,27 @@ while true; do
         continue
     fi
 
-    if [ "$SECONDARY_VISIBLE" = "true" ] && [ "$LOWERED" = "false" ]; then
-        # Secondary window is active — keep screen-tool behind it.
-        echo "[screen-tool-visibility] Secondary active, lowering screen-tool"
-        xdotool windowlower "$SCREEN_TOOL_WID" 2>/dev/null
-        LOWERED=true
-    elif [ "$SECONDARY_VISIBLE" = "false" ] && [ "$LOWERED" = "true" ]; then
-        # Secondary inactive — bring screen-tool back to front and place it.
-        echo "[screen-tool-visibility] Secondary inactive, raising screen-tool"
+    if [ "$SECONDARY_VISIBLE" = "true" ]; then
+        ACTIVE_STREAK=$((ACTIVE_STREAK + 1))
+        INACTIVE_STREAK=0
+    else
+        INACTIVE_STREAK=$((INACTIVE_STREAK + 1))
+        ACTIVE_STREAK=0
+    fi
+
+    # Debounce: require 2 consecutive active polls before hiding.
+    if [ "$ACTIVE_STREAK" -ge 2 ] && [ "$HIDDEN" = "false" ]; then
+        echo "[screen-tool-visibility] Secondary active, hiding screen-tool"
+        xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
+        HIDDEN=true
+    fi
+
+    # Debounce: require 2 consecutive inactive polls before showing.
+    if [ "$INACTIVE_STREAK" -ge 2 ] && [ "$HIDDEN" = "true" ]; then
+        echo "[screen-tool-visibility] Secondary inactive, showing screen-tool"
+        xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         /gamer/bin/reposition-windows.sh 2>/dev/null || true
-        LOWERED=false
+        HIDDEN=false
     fi
 done
