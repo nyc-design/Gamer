@@ -357,18 +357,21 @@ def main():
     threads = []
     for pattern in device_patterns:
         def run(p=pattern):
-            try:
-                src, prx = run_device_proxy(p, geo, verbose)
-                sources.append(src)
-                proxies.append(prx)
-            except Exception as ex:
-                log(f"Proxy for '{p}' #{o} failed: {ex}")
+            while True:
+                try:
+                    src, prx = run_device_proxy(p, geo, verbose)
+                    sources.append(src)
+                    proxies.append(prx)
+                except Exception as ex:
+                    log(f"Proxy for '{p}' failed: {ex}")
+                    log(f"Reconnecting '{p}' in 3s...")
+                    time.sleep(3)
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
         threads.append(t)
 
-    # Wait for all threads (they run forever until device disconnects)
+    # Wait for all threads (they run forever, reconnecting on device loss)
     for t in threads:
         t.join()
 

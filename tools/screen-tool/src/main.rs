@@ -927,7 +927,7 @@ fn main() -> Result<()> {
     let mut capture = NvfbcCapture::new(&gl, &args.capture_output)?;
 
     // Create output window on DP-2
-    let output = OutputWindow::new(&gl, "ScreenTool: Zoom",
+    let mut output = OutputWindow::new(&gl, "ScreenTool: Zoom",
         args.output_x, output_y, args.output_width, args.output_height)?;
 
     let mut zoom = ZoomRegion::default();
@@ -989,6 +989,18 @@ fn main() -> Result<()> {
                                     zoom = ZoomRegion { sx: new_sx, sy: new_sy, sw: new_sw, sh: new_sh };
                                     log::info!("Zoomed to region: ({:.3}, {:.3}) {:.3}x{:.3}", new_sx, new_sy, new_sw, new_sh);
                                 }
+                            }
+                        }
+                    }
+                    xlib::ConfigureNotify => {
+                        let e = event.configure;
+                        if e.window == output.window {
+                            let new_w = e.width as u32;
+                            let new_h = e.height as u32;
+                            if new_w != output.width || new_h != output.height {
+                                log::info!("Window resized: {}x{} -> {}x{}", output.width, output.height, new_w, new_h);
+                                output.width = new_w;
+                                output.height = new_h;
                             }
                         }
                     }

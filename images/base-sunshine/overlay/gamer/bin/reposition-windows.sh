@@ -103,12 +103,12 @@ if [ -n "$SHADER_SECONDARY" ]; then
     xdotool windowraise "$SHADER_SECONDARY"
 fi
 
-# Position screen-tool on bottom display (only when no secondary emulator window)
-if [ -n "$SCREEN_TOOL" ] && [ -z "$SECONDARY" ]; then
+# Always position screen-tool on bottom display (it manages its own Z-order
+# relative to the secondary emulator window based on pixel content)
+if [ -n "$SCREEN_TOOL" ]; then
     echo "[$(date)] reposition: screen-tool $SCREEN_TOOL -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
     xdotool windowmove "$SCREEN_TOOL" "$BOT_X" "$BOT_Y"
     xdotool windowsize "$SCREEN_TOOL" "$BOT_WIDTH" "$BOT_HEIGHT"
-    xdotool windowraise "$SCREEN_TOOL"
 fi
 
 # Apply dot cursor to bottom screen window for touch-friendly UX
