@@ -156,6 +156,36 @@ Expected:
 - `ApolloService` is `Disabled`/stopped.
 - NVIDIA display adapter status is `OK`.
 
+## KH/Azahar instant-exit root cause + hardening
+
+Observed issue:
+- Apollo stream starts, but launching 3D workloads (Kingdom Hearts / Azahar ROM) exits immediately.
+- Steam logs repeatedly show `AppID 2552430 exited` within ~2-3s.
+- Steam/CEF logs showed missing `mf.dll`; shader probe (`gldriverquery*.exe`) had prior failures.
+
+Root cause:
+- Base Windows image was missing **Media Feature Pack** (`Media.MediaFeaturePack~~~~0.0.1.0`), which breaks media/GPU runtime paths used by game launchers and Steam components.
+
+What is now included in `startup-windows.ps1`:
+1. Install Media Feature Pack capability via DISM.
+2. Install VC++ runtime redistributables (x64 + x86).
+3. Install DirectX Jun2010 runtime from Steam `_CommonRedist` when available.
+4. Emit `C:\ProgramData\gamer\setup\reboot-required.txt` when media pack is installed (reboot required).
+
+Validation commands:
+
+```powershell
+Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' | ft Name,State -AutoSize
+Get-Item C:\Windows\System32\mf.dll | ft FullName,Length -AutoSize
+cmd /c "\"C:\Program Files (x86)\Steam\bin\gldriverquery64.exe\" & echo EXITCODE=%ERRORLEVEL%"
+cmd /c "\"C:\Program Files (x86)\Steam\bin\gldriverquery.exe\" & echo EXITCODE=%ERRORLEVEL%"
+```
+
+Expected:
+- Media Feature Pack = `Installed`
+- `mf.dll` exists
+- `gldriverquery*.exe` exit code `0`
+
 ## Display routing hardening (hide physical monitor while streaming)
 
 Per Sunshine/Apollo display-device options, we now set in `sunshine.conf`:

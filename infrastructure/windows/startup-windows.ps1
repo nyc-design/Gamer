@@ -8,6 +8,23 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 
 New-Item -ItemType Directory -Path 'C:\ProgramData\gamer\setup' -Force | Out-Null
+$setupDir = 'C:\ProgramData\gamer\setup'
+
+function Invoke-InstallerExe {
+  param(
+    [string]$Name,
+    [string]$Url,
+    [string[]]$Args = @('/quiet','/norestart')
+  )
+  try {
+    $out = Join-Path $setupDir ("{0}.exe" -f $Name)
+    Invoke-WebRequest -Uri $Url -OutFile $out
+    $p = Start-Process -FilePath $out -ArgumentList $Args -Wait -PassThru
+    Write-Host "$Name installer exit code: $($p.ExitCode)"
+  } catch {
+    Write-Warning "$Name install failed: $($_.Exception.Message)"
+  }
+}
 
 # Core services
 Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
@@ -22,6 +39,38 @@ Set-Service AudioEndpointBuilder -StartupType Automatic -ErrorAction SilentlyCon
 Start-Service AudioEndpointBuilder -ErrorAction SilentlyContinue
 Set-Service Audiosrv -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service Audiosrv -ErrorAction SilentlyContinue
+
+# Required media/runtime deps for Steam + KH + emulator workloads
+try {
+  $mediaCap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
+  if ($mediaCap -and $mediaCap.State -ne 'Installed') {
+    Write-Host 'Installing Media Feature Pack capability...'
+    $dismLog = Join-Path $setupDir 'media_pack_install.log'
+    cmd /c "dism /online /add-capability /capabilityname:Media.MediaFeaturePack~~~~0.0.1.0 > `"$dismLog`" 2>&1"
+    $mediaCap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
+    if ($mediaCap -and $mediaCap.State -eq 'Installed') {
+      Set-Content (Join-Path $setupDir 'reboot-required.txt') 'Media Feature Pack installed; reboot required.'
+    }
+  }
+} catch {
+  Write-Warning "Media Feature Pack install failed: $($_.Exception.Message)"
+}
+
+Invoke-InstallerExe -Name 'vc_redist_x64' -Url 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+Invoke-InstallerExe -Name 'vc_redist_x86' -Url 'https://aka.ms/vs/17/release/vc_redist.x86.exe'
+
+# DirectX runtime: prefer Steam _CommonRedist when present (works reliably on this image)
+try {
+  $dxSetup = 'C:\Program Files (x86)\Steam\steamapps\common\Steamworks Shared\_CommonRedist\DirectX\Jun2010\DXSETUP.exe'
+  if (Test-Path $dxSetup) {
+    Write-Host 'Installing DirectX Jun2010 from Steam _CommonRedist...'
+    Start-Process -FilePath $dxSetup -ArgumentList '/silent' -Wait
+  } else {
+    Write-Host 'DirectX _CommonRedist not found yet; will install after Steam content is present.'
+  }
+} catch {
+  Write-Warning "DirectX install failed: $($_.Exception.Message)"
+}
 
 # rclone install (portable fallback, no winget dependency)
 try {
@@ -91,3 +140,4 @@ try {
 Get-Service sshd,WinRM,AudioEndpointBuilder,Audiosrv | Format-Table Name,Status,StartType -AutoSize
 Get-PnpDevice -Class Display | Format-Table FriendlyName,Status -AutoSize
 Get-PnpDevice -Class AudioEndpoint | Format-Table FriendlyName,Status -AutoSize
+Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue | Format-Table Name,State -AutoSize
