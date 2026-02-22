@@ -1,11 +1,11 @@
-//! screen-tool — Secondary screen zoom/crop viewer and FPS monitor.
+//! screen-tool — Secondary screen magnification tool.
 //!
-//! Captures the primary emulator window via XComposite and displays it on the
-//! bottom display (DP-2). Supports click-drag region selection for zoom, and
-//! an FPS overlay toggle.
+//! Mirrors the top display (DP-0) onto the bottom display (DP-2) using NVFBC
+//! for zero-copy GPU capture. Supports click-drag region selection for zoom,
+//! and an FPS overlay toggle.
 //!
-//! Automatically yields to emulator secondary windows (e.g., 3DS bottom screen)
-//! when they appear, and re-appears when they disappear.
+//! Automatically hides when emulator secondary windows appear (e.g., 3DS bottom
+//! screen in dual-window mode), and re-appears when they disappear.
 //!
 //! Env vars:
 //!   SCREEN_TOOL_WINDOW    - Window title substring to capture (default: auto-detect emulator)
@@ -15,8 +15,8 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use glow::HasContext;
 use signal_hook::flag;
-use std::ffi::CStr;
-use std::os::raw::{c_int, c_ulong, c_void};
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_int, c_uint, c_ulong, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,53 +25,170 @@ use std::time::{Duration, Instant};
 use x11::glx;
 use x11::xlib;
 
-// ─── GLX texture_from_pixmap constants ───────────────────────────────────────
+// ─── NVFBC FFI ──────────────────────────────────────────────────────────────
 
-const GLX_BIND_TO_TEXTURE_RGB_EXT: c_int = 0x20D0;
-const GLX_BIND_TO_TEXTURE_RGBA_EXT: c_int = 0x20D1;
-const GLX_BIND_TO_TEXTURE_TARGETS_EXT: c_int = 0x20D3;
-const GLX_Y_INVERTED_EXT: c_int = 0x20D4;
-const GLX_TEXTURE_FORMAT_EXT: c_int = 0x20D5;
-const GLX_TEXTURE_TARGET_EXT: c_int = 0x20D6;
-const GLX_TEXTURE_FORMAT_RGB_EXT: c_int = 0x20D9;
-const GLX_TEXTURE_FORMAT_RGBA_EXT: c_int = 0x20DA;
-const GLX_TEXTURE_2D_EXT: c_int = 0x20DC;
-const GLX_TEXTURE_2D_BIT_EXT: c_int = 0x0002;
-const GLX_FRONT_LEFT_EXT: c_int = 0x20DE;
+type NvfbcSessionHandle = u64;
+type NvfbcBool = u32;
+type NvfbcStatus = u32;
 
-// ─── XComposite / XDamage FFI ────────────────────────────────────────────────
+const NVFBC_SUCCESS: NvfbcStatus = 0;
+const NVFBC_TRACKING_OUTPUT: u32 = 1;
+const NVFBC_CAPTURE_TO_GL: u32 = 3;
+const NVFBC_BUFFER_FORMAT_RGBA: u32 = 4;
+const NVFBC_TOGL_TEXTURES_MAX: usize = 2;
 
-extern "C" {
-    fn XCompositeRedirectWindow(display: *mut xlib::Display, window: c_ulong, update: c_int);
-    fn XCompositeUnredirectWindow(display: *mut xlib::Display, window: c_ulong, update: c_int);
-    fn XCompositeNameWindowPixmap(display: *mut xlib::Display, window: c_ulong) -> c_ulong;
-    fn XCompositeQueryExtension(display: *mut xlib::Display, event_base: *mut c_int, error_base: *mut c_int) -> c_int;
-    fn XDamageCreate(display: *mut xlib::Display, drawable: c_ulong, level: c_int) -> c_ulong;
-    fn XDamageDestroy(display: *mut xlib::Display, damage: c_ulong);
-    fn XDamageSubtract(display: *mut xlib::Display, damage: c_ulong, repair: c_ulong, parts: c_ulong);
-    fn XDamageQueryExtension(display: *mut xlib::Display, event_base: *mut c_int, error_base: *mut c_int) -> c_int;
+// Version packing: (size | (ver << 16) | (api_ver << 24))
+// API version: major=1, minor=8 => (8 | (1 << 8)) = 0x108
+const NVFBC_API_VERSION: u32 = 0x108;
+
+fn nvfbc_struct_version<T>(ver: u32) -> u32 {
+    (std::mem::size_of::<T>() as u32) | (ver << 16) | (NVFBC_API_VERSION << 24)
 }
 
-const COMPOSITE_REDIRECT_AUTOMATIC: c_int = 1;
-const XDAMAGE_REPORT_NON_EMPTY: c_int = 1;
+#[repr(C)]
+struct NvfbcSize {
+    w: u32,
+    h: u32,
+}
+
+#[repr(C)]
+struct NvfbcBox {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+#[repr(C)]
+struct NvfbcRandrOutputInfo {
+    dw_id: u32,
+    name: [u8; 128],
+    tracker_box: NvfbcBox,
+    connected: NvfbcBool,
+}
+
+const NVFBC_OUTPUT_MAX: usize = 5;
+
+#[repr(C)]
+struct NvfbcCreateHandleParams {
+    dw_version: u32,
+    private_data: *const c_void,
+    private_data_size: u32,
+    externally_managed_context: NvfbcBool,
+    glx_ctx: *mut c_void,
+    glx_fb_config: *mut c_void,
+}
+
+#[repr(C)]
+struct NvfbcGetStatusParams {
+    dw_version: u32,
+    is_capture_possible: NvfbcBool,
+    currently_capturing: NvfbcBool,
+    can_create_now: NvfbcBool,
+    screen_size: NvfbcSize,
+    xrandr_available: NvfbcBool,
+    outputs: [NvfbcRandrOutputInfo; NVFBC_OUTPUT_MAX],
+    output_num: u32,
+    nvfbc_version: u32,
+    in_modeset: NvfbcBool,
+}
+
+#[repr(C)]
+struct NvfbcCreateCaptureSessionParams {
+    dw_version: u32,
+    capture_type: u32,
+    tracking_type: u32,
+    output_id: u32,
+    capture_box: NvfbcBox,
+    frame_size: NvfbcSize,
+    with_cursor: NvfbcBool,
+    disable_auto_modeset_recovery: NvfbcBool,
+    round_frame_size: NvfbcBool,
+    sampling_rate_ms: u32,
+    push_model: NvfbcBool,
+    allow_direct_capture: NvfbcBool,
+}
+
+#[repr(C)]
+struct NvfbcFrameGrabInfo {
+    dw_width: u32,
+    dw_height: u32,
+    dw_byte_size: u32,
+    dw_current_frame: u32,
+    b_is_new_frame: NvfbcBool,
+}
+
+#[repr(C)]
+struct NvfbcToGlSetupParams {
+    dw_version: u32,
+    buffer_format: u32,
+    with_diff_map: NvfbcBool,
+    pp_diff_map: *mut *mut c_void,
+    diff_map_scaling_factor: u32,
+    textures: [u32; NVFBC_TOGL_TEXTURES_MAX],
+    tex_target: u32,
+    tex_format: u32,
+    tex_type: u32,
+    diff_map_size: NvfbcSize,
+}
+
+const NVFBC_TOGL_GRAB_FLAGS_NOWAIT: u32 = 1;
+
+#[repr(C)]
+struct NvfbcToGlGrabFrameParams {
+    dw_version: u32,
+    dw_flags: u32,
+    dw_texture_index: u32,
+    frame_grab_info: *mut NvfbcFrameGrabInfo,
+    dw_timeout_ms: u32,
+}
+
+// Function pointer types
+type FnCreateHandle = unsafe extern "C" fn(*mut NvfbcSessionHandle, *mut NvfbcCreateHandleParams) -> NvfbcStatus;
+type FnDestroyHandle = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
+type FnGetStatus = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcGetStatusParams) -> NvfbcStatus;
+type FnCreateCaptureSession = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcCreateCaptureSessionParams) -> NvfbcStatus;
+type FnDestroyCaptureSession = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
+type FnToGlSetup = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlSetupParams) -> NvfbcStatus;
+type FnToGlGrabFrame = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlGrabFrameParams) -> NvfbcStatus;
+type FnBindContext = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
+type FnReleaseContext = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
+type FnGetLastErrorStr = unsafe extern "C" fn(NvfbcSessionHandle) -> *const i8;
+
+#[repr(C)]
+struct NvfbcFunctionList {
+    dw_version: u32,
+    get_last_error_str: FnGetLastErrorStr,
+    create_handle: FnCreateHandle,
+    destroy_handle: FnDestroyHandle,
+    get_status: FnGetStatus,
+    create_capture_session: FnCreateCaptureSession,
+    destroy_capture_session: FnDestroyCaptureSession,
+    to_sys_setup: *const c_void,
+    to_sys_grab_frame: *const c_void,
+    to_cuda_setup: *const c_void,
+    to_cuda_grab_frame: *const c_void,
+    _pad1: *const c_void,
+    _pad2: *const c_void,
+    _pad3: *const c_void,
+    bind_context: FnBindContext,
+    release_context: FnReleaseContext,
+    _pad4: *const c_void,
+    _pad5: *const c_void,
+    _pad6: *const c_void,
+    _pad7: *const c_void,
+    to_gl_setup: FnToGlSetup,
+    to_gl_grab_frame: FnToGlGrabFrame,
+}
+
+type FnNvFBCCreateInstance = unsafe extern "C" fn(*mut NvfbcFunctionList) -> NvfbcStatus;
 
 // ─── X11 error handler ──────────────────────────────────────────────────────
 
 unsafe extern "C" fn x11_error_handler(_display: *mut xlib::Display, event: *mut xlib::XErrorEvent) -> c_int {
     let err = unsafe { &*event };
-    if (err.request_code == 152 || err.request_code == 156) && (err.error_code == 9 || err.error_code == 161) {
-        log::debug!("X11 error (benign): request={}, error={}, minor={}", err.request_code, err.error_code, err.minor_code);
-    } else {
-        log::warn!("X11 error: request={}, error={}, minor={}", err.request_code, err.error_code, err.minor_code);
-    }
+    log::debug!("X11 error: request={}, error={}, minor={}", err.request_code, err.error_code, err.minor_code);
     0
-}
-
-// ─── GLX extension function pointers ─────────────────────────────────────────
-
-struct GlxExtFns {
-    bind_tex_image: unsafe extern "C" fn(*mut xlib::Display, glx::GLXDrawable, c_int, *const c_int),
-    release_tex_image: unsafe extern "C" fn(*mut xlib::Display, glx::GLXDrawable, c_int),
 }
 
 // ─── GL state ────────────────────────────────────────────────────────────────
@@ -81,7 +198,6 @@ struct GlState {
     display: *mut xlib::Display,
     glx_context: glx::GLXContext,
     output_fb_config: glx::GLXFBConfig,
-    glx_ext: GlxExtFns,
     helper_window: xlib::Window,
 }
 
@@ -97,7 +213,6 @@ impl GlState {
             let root = xlib::XRootWindow(display, screen);
             let screen_depth = xlib::XDefaultDepth(display, screen);
 
-            // FBConfig for output windows — match screen depth
             let output_attribs: Vec<c_int> = vec![
                 glx::GLX_X_RENDERABLE, 1,
                 glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT,
@@ -160,53 +275,10 @@ impl GlState {
             let version = glow_ctx.get_parameter_string(glow::VERSION);
             log::info!("OpenGL version: {}", version);
 
-            let glx_ext = Self::load_glx_ext()?;
-
             Ok(Self {
                 glow_ctx: Arc::new(glow_ctx),
-                display, glx_context, output_fb_config, glx_ext, helper_window,
+                display, glx_context, output_fb_config, helper_window,
             })
-        }
-    }
-
-    unsafe fn load_glx_ext() -> Result<GlxExtFns> {
-        let bind = glx::glXGetProcAddress(b"glXBindTexImageEXT\0".as_ptr())
-            .ok_or_else(|| anyhow::anyhow!("glXBindTexImageEXT not available"))?;
-        let release = glx::glXGetProcAddress(b"glXReleaseTexImageEXT\0".as_ptr())
-            .ok_or_else(|| anyhow::anyhow!("glXReleaseTexImageEXT not available"))?;
-        Ok(GlxExtFns {
-            bind_tex_image: std::mem::transmute(bind),
-            release_tex_image: std::mem::transmute(release),
-        })
-    }
-
-    fn find_fbconfig_for_visual(&self, visual_id: c_ulong) -> Result<glx::GLXFBConfig> {
-        unsafe {
-            let screen = xlib::XDefaultScreen(self.display);
-            let mut num: c_int = 0;
-            let configs = glx::glXGetFBConfigs(self.display, screen, &mut num);
-            if configs.is_null() || num == 0 {
-                bail!("No FBConfigs available");
-            }
-            let mut matched = None;
-            for i in 0..num {
-                let cfg = *configs.offset(i as isize);
-                let mut vid: c_int = 0;
-                glx::glXGetFBConfigAttrib(self.display, cfg, glx::GLX_VISUAL_ID, &mut vid);
-                if vid as c_ulong != visual_id { continue; }
-                let mut rgb: c_int = 0;
-                let mut rgba: c_int = 0;
-                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_RGB_EXT, &mut rgb);
-                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_RGBA_EXT, &mut rgba);
-                if rgb == 0 && rgba == 0 { continue; }
-                let mut targets: c_int = 0;
-                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_TARGETS_EXT, &mut targets);
-                if targets & GLX_TEXTURE_2D_BIT_EXT == 0 { continue; }
-                matched = Some(cfg);
-                break;
-            }
-            xlib::XFree(configs as *mut c_void);
-            matched.ok_or_else(|| anyhow::anyhow!("No FBConfig for visual 0x{:x}", visual_id))
         }
     }
 
@@ -226,6 +298,183 @@ impl Drop for GlState {
             glx::glXDestroyContext(self.display, self.glx_context);
             xlib::XDestroyWindow(self.display, self.helper_window);
             xlib::XCloseDisplay(self.display);
+        }
+    }
+}
+
+// ─── NVFBC capture ──────────────────────────────────────────────────────────
+
+struct NvfbcCapture {
+    fns: NvfbcFunctionList,
+    handle: NvfbcSessionHandle,
+    textures: [u32; NVFBC_TOGL_TEXTURES_MAX],
+    width: u32,
+    height: u32,
+    _lib: *mut c_void, // dlopen handle
+}
+
+impl NvfbcCapture {
+    fn new(gl: &GlState, output_name: &str) -> Result<Self> {
+        unsafe {
+            // Load libnvidia-fbc.so.1
+            let lib_name = CString::new("libnvidia-fbc.so.1").unwrap();
+            let lib = libc::dlopen(lib_name.as_ptr(), libc::RTLD_NOW);
+            if lib.is_null() {
+                let err = CStr::from_ptr(libc::dlerror());
+                bail!("Failed to load libnvidia-fbc.so.1: {}", err.to_string_lossy());
+            }
+
+            let sym_name = CString::new("NvFBCCreateInstance").unwrap();
+            let create_instance: FnNvFBCCreateInstance = {
+                let sym = libc::dlsym(lib, sym_name.as_ptr());
+                if sym.is_null() {
+                    bail!("NvFBCCreateInstance not found in libnvidia-fbc.so.1");
+                }
+                std::mem::transmute(sym)
+            };
+
+            // Get function table
+            let mut fns: NvfbcFunctionList = std::mem::zeroed();
+            fns.dw_version = NVFBC_API_VERSION;
+            let status = create_instance(&mut fns);
+            if status != NVFBC_SUCCESS {
+                bail!("NvFBCCreateInstance failed: {}", status);
+            }
+
+            // Create handle with our GLX context
+            gl.make_current_offscreen();
+            let mut handle: NvfbcSessionHandle = 0;
+            let mut create_params: NvfbcCreateHandleParams = std::mem::zeroed();
+            create_params.dw_version = nvfbc_struct_version::<NvfbcCreateHandleParams>(2);
+            create_params.externally_managed_context = 1;
+            create_params.glx_ctx = gl.glx_context as *mut c_void;
+            create_params.glx_fb_config = gl.output_fb_config as *mut c_void;
+
+            let status = (fns.create_handle)(&mut handle, &mut create_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("nvFBCCreateHandle failed: {}", err.to_string_lossy());
+            }
+
+            // Get status to find output ID
+            let mut status_params: NvfbcGetStatusParams = std::mem::zeroed();
+            status_params.dw_version = nvfbc_struct_version::<NvfbcGetStatusParams>(2);
+            let status = (fns.get_status)(handle, &mut status_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("nvFBCGetStatus failed: {}", err.to_string_lossy());
+            }
+
+            log::info!("NVFBC: {} outputs, screen {}x{}", status_params.output_num,
+                status_params.screen_size.w, status_params.screen_size.h);
+
+            let mut output_id = 0u32;
+            let mut found = false;
+            for i in 0..status_params.output_num as usize {
+                let out = &status_params.outputs[i];
+                let name_end = out.name.iter().position(|&b| b == 0).unwrap_or(out.name.len());
+                let name = String::from_utf8_lossy(&out.name[..name_end]);
+                log::info!("  Output {}: '{}' id={} connected={} {}x{}",
+                    i, name, out.dw_id, out.connected, out.tracker_box.w, out.tracker_box.h);
+                if name.trim() == output_name && out.connected != 0 {
+                    output_id = out.dw_id;
+                    found = true;
+                }
+            }
+
+            if !found {
+                bail!("NVFBC output '{}' not found", output_name);
+            }
+            log::info!("NVFBC: tracking output '{}' (id={})", output_name, output_id);
+
+            // Create capture session
+            let mut session_params: NvfbcCreateCaptureSessionParams = std::mem::zeroed();
+            session_params.dw_version = nvfbc_struct_version::<NvfbcCreateCaptureSessionParams>(6);
+            session_params.capture_type = NVFBC_CAPTURE_TO_GL;
+            session_params.tracking_type = NVFBC_TRACKING_OUTPUT;
+            session_params.output_id = output_id;
+            session_params.with_cursor = 0;
+            session_params.allow_direct_capture = 1;
+
+            let status = (fns.create_capture_session)(handle, &mut session_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("nvFBCCreateCaptureSession failed: {}", err.to_string_lossy());
+            }
+
+            // Setup ToGL
+            let mut gl_params: NvfbcToGlSetupParams = std::mem::zeroed();
+            gl_params.dw_version = nvfbc_struct_version::<NvfbcToGlSetupParams>(2);
+            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_RGBA;
+
+            let status = (fns.to_gl_setup)(handle, &mut gl_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("nvFBCToGLSetUp failed: {}", err.to_string_lossy());
+            }
+
+            log::info!("NVFBC ToGL: textures=[{}, {}] target=0x{:x} format=0x{:x}",
+                gl_params.textures[0], gl_params.textures[1],
+                gl_params.tex_target, gl_params.tex_format);
+
+            // Grab one frame to get dimensions
+            let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
+            let mut grab_params: NvfbcToGlGrabFrameParams = std::mem::zeroed();
+            grab_params.dw_version = nvfbc_struct_version::<NvfbcToGlGrabFrameParams>(2);
+            grab_params.dw_flags = 0; // blocking first frame
+            grab_params.frame_grab_info = &mut grab_info;
+            grab_params.dw_timeout_ms = 5000;
+
+            let status = (fns.to_gl_grab_frame)(handle, &mut grab_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("Initial nvFBCToGLGrabFrame failed: {}", err.to_string_lossy());
+            }
+
+            let width = grab_info.dw_width;
+            let height = grab_info.dw_height;
+            log::info!("NVFBC: capturing {}x{} from '{}'", width, height, output_name);
+
+            Ok(Self {
+                fns,
+                handle,
+                textures: gl_params.textures,
+                width,
+                height,
+                _lib: lib,
+            })
+        }
+    }
+
+    /// Grab a frame, returns (GL texture ID, width, height, is_new).
+    fn grab_frame(&mut self) -> Result<(u32, u32, u32, bool)> {
+        unsafe {
+            let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
+            let mut grab_params: NvfbcToGlGrabFrameParams = std::mem::zeroed();
+            grab_params.dw_version = nvfbc_struct_version::<NvfbcToGlGrabFrameParams>(2);
+            grab_params.dw_flags = NVFBC_TOGL_GRAB_FLAGS_NOWAIT;
+            grab_params.frame_grab_info = &mut grab_info;
+
+            let status = (self.fns.to_gl_grab_frame)(self.handle, &mut grab_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("nvFBCToGLGrabFrame: {}", err.to_string_lossy());
+            }
+
+            self.width = grab_info.dw_width;
+            self.height = grab_info.dw_height;
+            let tex_id = self.textures[grab_params.dw_texture_index as usize];
+            Ok((tex_id, grab_info.dw_width, grab_info.dw_height, grab_info.b_is_new_frame != 0))
+        }
+    }
+}
+
+impl Drop for NvfbcCapture {
+    fn drop(&mut self) {
+        unsafe {
+            (self.fns.destroy_capture_session)(self.handle, ptr::null_mut());
+            (self.fns.destroy_handle)(self.handle, ptr::null_mut());
+            // Note: we don't dlclose — NVFBC may have background threads
         }
     }
 }
@@ -281,51 +530,10 @@ fn get_window_name(display: *mut xlib::Display, window: c_ulong) -> Option<Strin
     }
 }
 
-/// Find the primary emulator window by title pattern
-fn find_emulator_window(display: *mut xlib::Display, pattern: &str) -> Option<(c_ulong, u32, u32, i32, i32)> {
-    let root = unsafe { xlib::XDefaultRootWindow(display) };
-    let pat_lower = pattern.to_lowercase();
-    let mut best: Option<(c_ulong, u32, u32, i32, i32)> = None;
-    let mut best_area: u64 = 0;
-
-    if let Some(clients) = get_client_list(display, root) {
-        for wid in clients {
-            if let Some(name) = get_window_name(display, wid) {
-                if name.starts_with("Shader: ") || name.starts_with("ScreenTool") { continue; }
-                if name.contains("Secondary Window") { continue; }
-                if name.to_lowercase().contains(&pat_lower) {
-                    unsafe {
-                        let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-                        if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
-                            && attrs.width >= 32 && attrs.height >= 32
-                        {
-                            let mut x = 0i32;
-                            let mut y = 0i32;
-                            let mut child: c_ulong = 0;
-                            let r = xlib::XDefaultRootWindow(display);
-                            xlib::XTranslateCoordinates(display, wid, r, 0, 0, &mut x, &mut y, &mut child);
-                            let area = attrs.width as u64 * attrs.height as u64;
-                            if area > best_area {
-                                best = Some((wid, attrs.width as u32, attrs.height as u32, x, y));
-                                best_area = area;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    best
-}
-
 /// Check if a secondary emulator window exists.
-/// Checks _NET_CLIENT_LIST first, then falls back to recursive XQueryTree
-/// (some emulators create secondary windows as transient/child windows
-/// that openbox doesn't include in _NET_CLIENT_LIST).
 fn secondary_window_exists(display: *mut xlib::Display, patterns: &[String]) -> bool {
     let root = unsafe { xlib::XDefaultRootWindow(display) };
 
-    // First try _NET_CLIENT_LIST (fast, reliable for managed windows)
     if let Some(clients) = get_client_list(display, root) {
         for wid in clients {
             if check_window_matches(display, wid, patterns) {
@@ -363,9 +571,6 @@ fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[S
             if name.contains(pat.as_str()) {
                 unsafe {
                     let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-                    // Don't require IsViewable — some WMs (openbox) may not manage
-                    // secondary windows, leaving them technically unmapped while still
-                    // positioned and rendered via reposition-windows.sh
                     if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
                         && attrs.width >= 32 && attrs.height >= 32
                     {
@@ -376,131 +581,6 @@ fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[S
         }
     }
     false
-}
-
-// ─── XComposite capture ─────────────────────────────────────────────────────
-
-struct WindowCapture {
-    display: *mut xlib::Display,
-    source_window: c_ulong,
-    x_pixmap: c_ulong,
-    glx_pixmap: glx::GLXPixmap,
-    texture: glow::Texture,
-    width: u32,
-    height: u32,
-    dirty: bool,
-    capture_fb_config: glx::GLXFBConfig,
-    texture_format: c_int,
-    y_inverted: bool,
-    damage: c_ulong,
-    damage_event_base: c_int,
-}
-
-impl WindowCapture {
-    fn new(gl: &GlState, source_window: c_ulong) -> Result<Self> {
-        unsafe {
-            let display = gl.display;
-            let mut comp_event = 0;
-            let mut comp_error = 0;
-            if XCompositeQueryExtension(display, &mut comp_event, &mut comp_error) == 0 {
-                bail!("XComposite not available");
-            }
-            let mut damage_event_base = 0;
-            let mut damage_error = 0;
-            if XDamageQueryExtension(display, &mut damage_event_base, &mut damage_error) == 0 {
-                bail!("XDamage not available");
-            }
-
-            let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-            if xlib::XGetWindowAttributes(display, source_window, &mut attrs) == 0 {
-                bail!("Failed to get window attributes for 0x{:x}", source_window);
-            }
-            let width = attrs.width as u32;
-            let height = attrs.height as u32;
-            let visual_id = (*attrs.visual).visualid;
-            let depth = attrs.depth;
-
-            let capture_fb_config = gl.find_fbconfig_for_visual(visual_id)?;
-            let texture_format = if depth >= 32 { GLX_TEXTURE_FORMAT_RGBA_EXT } else { GLX_TEXTURE_FORMAT_RGB_EXT };
-
-            let mut y_inv: c_int = 0;
-            glx::glXGetFBConfigAttrib(display, capture_fb_config, GLX_Y_INVERTED_EXT, &mut y_inv);
-            let y_inverted = y_inv != 0;
-
-            xlib::XSelectInput(display, source_window, xlib::StructureNotifyMask);
-
-            // Use AUTOMATIC redirect — doesn't steal from compositor, NVFBC-safe
-            XCompositeRedirectWindow(display, source_window, COMPOSITE_REDIRECT_AUTOMATIC);
-            xlib::XSync(display, 0);
-
-            let x_pixmap = XCompositeNameWindowPixmap(display, source_window);
-            xlib::XSync(display, 0);
-            if x_pixmap == 0 {
-                bail!("Failed to get composite pixmap");
-            }
-
-            let pixmap_attribs: [c_int; 5] = [
-                GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
-                GLX_TEXTURE_FORMAT_EXT, texture_format,
-                0,
-            ];
-            let glx_pixmap = glx::glXCreatePixmap(display, capture_fb_config, x_pixmap, pixmap_attribs.as_ptr());
-            xlib::XSync(display, 0);
-            if glx_pixmap == 0 {
-                bail!("glXCreatePixmap failed");
-            }
-
-            let texture = gl.glow_ctx.create_texture().map_err(|e| anyhow::anyhow!("{}", e))?;
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-            (gl.glx_ext.bind_tex_image)(display, glx_pixmap, GLX_FRONT_LEFT_EXT, ptr::null());
-            xlib::XSync(display, 0);
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
-
-            let damage = XDamageCreate(display, source_window, XDAMAGE_REPORT_NON_EMPTY);
-            if damage == 0 {
-                bail!("Failed to create damage tracker");
-            }
-
-            log::info!("Capturing window 0x{:x} ({}x{}) via XComposite (automatic redirect)", source_window, width, height);
-
-            Ok(Self {
-                display, source_window, x_pixmap, glx_pixmap, texture,
-                width, height, dirty: true, capture_fb_config, texture_format,
-                y_inverted, damage, damage_event_base,
-            })
-        }
-    }
-
-    fn update_if_dirty(&mut self, gl: &GlState) {
-        if !self.dirty { return; }
-        unsafe {
-            glx::glXWaitX();
-            (gl.glx_ext.release_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_LEFT_EXT);
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-            (gl.glx_ext.bind_tex_image)(self.display, self.glx_pixmap, GLX_FRONT_LEFT_EXT, ptr::null());
-            gl.glow_ctx.bind_texture(glow::TEXTURE_2D, None);
-            self.dirty = false;
-        }
-    }
-
-    fn mark_dirty(&mut self) { self.dirty = true; }
-
-    fn acknowledge_damage(&self) {
-        unsafe { XDamageSubtract(self.display, self.damage, 0, 0); }
-    }
-}
-
-impl Drop for WindowCapture {
-    fn drop(&mut self) {
-        unsafe {
-            XDamageDestroy(self.display, self.damage);
-            glx::glXDestroyPixmap(self.display, self.glx_pixmap);
-            xlib::XFreePixmap(self.display, self.x_pixmap);
-            XCompositeUnredirectWindow(self.display, self.source_window, COMPOSITE_REDIRECT_AUTOMATIC);
-        }
-    }
 }
 
 // ─── Output window on DP-2 ──────────────────────────────────────────────────
@@ -525,7 +605,6 @@ impl OutputWindow {
 
             let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
             swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
-            // Accept mouse, keyboard, and structure events
             swa.event_mask = xlib::StructureNotifyMask | xlib::ExposureMask
                 | xlib::ButtonPressMask | xlib::ButtonReleaseMask
                 | xlib::PointerMotionMask | xlib::KeyPressMask;
@@ -538,7 +617,6 @@ impl OutputWindow {
             xlib::XFree(visual as *mut c_void);
             if window == 0 { bail!("Failed to create output window"); }
 
-            // Set window title
             let title_c = std::ffi::CString::new(title).unwrap();
             xlib::XStoreName(display, window, title_c.as_ptr());
             let atom_name = xlib::XInternAtom(display, b"_NET_WM_NAME\0".as_ptr() as *const _, 0);
@@ -554,7 +632,6 @@ impl OutputWindow {
             let glx_window = glx::glXCreateWindow(display, gl.output_fb_config, window, ptr::null());
             if glx_window == 0 { bail!("Failed to create GLX window"); }
 
-            // Create a persistent FBO for reading capture textures (avoids per-frame allocation)
             glx::glXMakeCurrent(display, glx_window, gl.glx_context);
             let read_fbo = gl.glow_ctx.create_framebuffer().map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -602,53 +679,31 @@ impl Drop for OutputWindow {
 
 // ─── Bitmap font for FPS overlay ─────────────────────────────────────────────
 
-/// Simple 8x8 bitmap font — digits 0-9, space, period, F, P, S, m, s, %, colon
-/// Each char is 8 bytes (one per row, MSB first)
 const FONT_CHARS: &str = "0123456789 .FPSms%:";
 
 #[rustfmt::skip]
 const FONT_DATA: &[[u8; 8]] = &[
-    // 0
-    [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
-    // 1
-    [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00],
-    // 2
-    [0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00],
-    // 3
-    [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00],
-    // 4
-    [0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x0C, 0x00],
-    // 5
-    [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00],
-    // 6
-    [0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00],
-    // 7
-    [0x7E, 0x06, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00],
-    // 8
-    [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
-    // 9
-    [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00],
-    // space
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-    // .
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
-    // F
-    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // P
-    [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // S
-    [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00],
-    // m
-    [0x00, 0x00, 0x76, 0x7F, 0x6B, 0x63, 0x63, 0x00],
-    // s
-    [0x00, 0x00, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x00],
-    // %
-    [0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00, 0x00],
-    // :
-    [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
+    [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00], // 0
+    [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00], // 1
+    [0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00], // 2
+    [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00], // 3
+    [0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x0C, 0x00], // 4
+    [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00], // 5
+    [0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00], // 6
+    [0x7E, 0x06, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00], // 7
+    [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00], // 8
+    [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00], // 9
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // space
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00], // .
+    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00], // F
+    [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00], // P
+    [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00], // S
+    [0x00, 0x00, 0x76, 0x7F, 0x6B, 0x63, 0x63, 0x00], // m
+    [0x00, 0x00, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x00], // s
+    [0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00, 0x00], // %
+    [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00], // :
 ];
 
-/// Render text into an RGBA pixel buffer. Returns (pixels, width, height).
 fn render_text(text: &str, scale: u32) -> (Vec<u8>, u32, u32) {
     let char_w = 8 * scale;
     let char_h = 8 * scale;
@@ -657,7 +712,7 @@ fn render_text(text: &str, scale: u32) -> (Vec<u8>, u32, u32) {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
 
     for (ci, ch) in text.chars().enumerate() {
-        let font_idx = FONT_CHARS.find(ch).unwrap_or(10); // default to space
+        let font_idx = FONT_CHARS.find(ch).unwrap_or(10);
         if font_idx >= FONT_DATA.len() { continue; }
         let glyph = &FONT_DATA[font_idx];
 
@@ -665,17 +720,16 @@ fn render_text(text: &str, scale: u32) -> (Vec<u8>, u32, u32) {
             for col in 0..8u32 {
                 let lit = (glyph[row as usize] >> (7 - col)) & 1 == 1;
                 if !lit { continue; }
-                // Scale up
                 for sy in 0..scale {
                     for sx in 0..scale {
                         let px = ci as u32 * char_w + col * scale + sx;
                         let py = row * scale + sy;
                         let offset = ((py * width + px) * 4) as usize;
                         if offset + 3 < pixels.len() {
-                            pixels[offset] = 255;     // R
-                            pixels[offset + 1] = 255; // G
-                            pixels[offset + 2] = 255; // B
-                            pixels[offset + 3] = 200; // A (semi-transparent)
+                            pixels[offset] = 255;
+                            pixels[offset + 1] = 255;
+                            pixels[offset + 2] = 255;
+                            pixels[offset + 3] = 200;
                         }
                     }
                 }
@@ -685,61 +739,40 @@ fn render_text(text: &str, scale: u32) -> (Vec<u8>, u32, u32) {
     (pixels, width, height)
 }
 
-// ─── Zoom state machine ─────────────────────────────────────────────────────
+// ─── Zoom state ──────────────────────────────────────────────────────────────
 
-/// Zoom region in normalized source coordinates (0.0 to 1.0)
 #[derive(Debug, Clone, Copy)]
-struct ZoomRegion {
-    sx: f32,
-    sy: f32,
-    sw: f32,
-    sh: f32,
-}
+struct ZoomRegion { sx: f32, sy: f32, sw: f32, sh: f32 }
 
 impl Default for ZoomRegion {
-    fn default() -> Self {
-        Self { sx: 0.0, sy: 0.0, sw: 1.0, sh: 1.0 }
-    }
+    fn default() -> Self { Self { sx: 0.0, sy: 0.0, sw: 1.0, sh: 1.0 } }
 }
 
-impl ZoomRegion {
-    #[allow(dead_code)]
-    fn is_full(&self) -> bool {
-        self.sx == 0.0 && self.sy == 0.0 && self.sw == 1.0 && self.sh == 1.0
-    }
-}
+// ─── Blit helper ─────────────────────────────────────────────────────────────
 
-// ─── Blit helpers ────────────────────────────────────────────────────────────
-
-/// Blit a sub-region of capture texture to the output window via persistent FBO.
-/// Does NOT call glXSwapBuffers — caller must swap after all rendering is done.
-fn blit_texture_region(
-    gl: &GlState,
-    texture: glow::Texture,
-    _src_w: u32, src_h: u32,
-    // Source region in texture coords (0..src_w, 0..src_h)
+/// Blit a sub-region of an NVFBC texture to the output window.
+/// NVFBC textures are NOT y-inverted (origin is top-left).
+fn blit_nvfbc_region(
+    gl: &GlState, tex_id: u32, src_w: u32, src_h: u32,
     sx: i32, sy: i32, sw: i32, sh: i32,
-    // Output
     output: &OutputWindow,
-    y_inverted: bool,
 ) {
     unsafe {
         gl.make_current(output.glx_window);
         let g = &gl.glow_ctx;
 
-        // Use persistent FBO to read from the capture texture
+        // NVFBC gives us a raw GL texture ID (u32), wrap it for glow
+        let texture = glow::NativeTexture(std::num::NonZeroU32::new(tex_id).unwrap());
+
         g.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(output.read_fbo));
         g.framebuffer_texture_2d(glow::READ_FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0);
 
         g.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
         g.viewport(0, 0, output.width as i32, output.height as i32);
 
-        // Handle y-inversion (common on NVIDIA)
-        let (src_y0, src_y1) = if y_inverted {
-            (src_h as i32 - sy, src_h as i32 - (sy + sh))
-        } else {
-            (sy, sy + sh)
-        };
+        // NVFBC: origin is top-left, GL blit origin is bottom-left, so flip Y
+        let src_y0 = src_h as i32 - sy;
+        let src_y1 = src_h as i32 - (sy + sh);
 
         g.blit_framebuffer(
             sx, src_y0, sx + sw, src_y1,
@@ -749,7 +782,7 @@ fn blit_texture_region(
     }
 }
 
-/// Cached FPS overlay — only recreates texture when text changes.
+/// Cached FPS overlay
 struct FpsOverlay {
     texture: Option<glow::Texture>,
     fbo: Option<glow::Framebuffer>,
@@ -763,22 +796,15 @@ impl FpsOverlay {
         Self { texture: None, fbo: None, cached_text: String::new(), tex_width: 0, tex_height: 0 }
     }
 
-    /// Render FPS text overlay onto the default framebuffer (back buffer) at top-left.
-    /// Must be called AFTER blit_texture_region and BEFORE glXSwapBuffers.
     fn render(&mut self, gl: &GlState, output: &OutputWindow, fps_text: &str) {
         unsafe {
             gl.make_current(output.glx_window);
             let g = &gl.glow_ctx;
             let scale = 3u32;
 
-            // Only recreate texture when text changes
             if fps_text != self.cached_text || self.texture.is_none() {
                 let (pixels, tw, th) = render_text(fps_text, scale);
-
-                if let Some(old_tex) = self.texture.take() {
-                    g.delete_texture(old_tex);
-                }
-
+                if let Some(old_tex) = self.texture.take() { g.delete_texture(old_tex); }
                 let tex = g.create_texture().unwrap();
                 g.bind_texture(glow::TEXTURE_2D, Some(tex));
                 g.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA as i32, tw as i32, th as i32, 0,
@@ -786,24 +812,19 @@ impl FpsOverlay {
                 g.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
                 g.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
                 g.bind_texture(glow::TEXTURE_2D, None);
-
                 self.texture = Some(tex);
                 self.tex_width = tw;
                 self.tex_height = th;
                 self.cached_text = fps_text.to_string();
             }
 
-            // Create FBO once
-            if self.fbo.is_none() {
-                self.fbo = Some(g.create_framebuffer().unwrap());
-            }
+            if self.fbo.is_none() { self.fbo = Some(g.create_framebuffer().unwrap()); }
 
             let tw = self.tex_width;
             let th = self.tex_height;
             let margin = 8i32;
             let bg_pad = 4i32;
 
-            // Draw dark background
             g.enable(glow::SCISSOR_TEST);
             g.scissor(margin - bg_pad, (output.height as i32) - (margin + th as i32 + bg_pad),
                 tw as i32 + bg_pad * 2, th as i32 + bg_pad * 2);
@@ -811,7 +832,6 @@ impl FpsOverlay {
             g.clear(glow::COLOR_BUFFER_BIT);
             g.disable(glow::SCISSOR_TEST);
 
-            // Blit cached text texture
             g.bind_framebuffer(glow::READ_FRAMEBUFFER, self.fbo);
             g.framebuffer_texture_2d(glow::READ_FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, self.texture, 0);
             g.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
@@ -830,11 +850,11 @@ impl FpsOverlay {
 // ─── CLI args ────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "screen-tool", about = "Secondary screen zoom/crop viewer and FPS monitor")]
+#[command(name = "screen-tool", about = "Secondary screen magnification tool (NVFBC)")]
 struct Args {
-    /// Window title pattern to capture (auto-detects emulator if not set)
-    #[arg(long, default_value = "")]
-    window: String,
+    /// NVFBC output name to capture (e.g. "DP-0")
+    #[arg(long, default_value = "DP-0")]
+    capture_output: String,
 
     /// Secondary window patterns to yield to (comma-separated)
     #[arg(long, default_value = "Secondary Window")]
@@ -855,22 +875,7 @@ struct Args {
     /// Output height
     #[arg(long, default_value = "1080")]
     output_height: u32,
-
-    /// Timeout waiting for emulator window (seconds)
-    #[arg(long, default_value = "120")]
-    timeout: u32,
 }
-
-// ─── Auto-detect emulator window patterns ────────────────────────────────────
-
-const EMULATOR_PATTERNS: &[&str] = &[
-    "Azahar",
-    "melonDS",
-    "Dolphin",
-    "PPSSPP",
-    "Ryujinx",
-    "Steam",
-];
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -886,79 +891,25 @@ fn main() -> Result<()> {
 
     let gl = GlState::new()?;
 
-    // Parse secondary patterns
     let secondary_patterns: Vec<String> = args.secondary_patterns
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Determine emulator window pattern
-    let window_pattern = if !args.window.is_empty() {
-        args.window.clone()
-    } else {
-        // Auto-detect: wait for any known emulator window
-        log::info!("No --window specified, auto-detecting emulator...");
-        String::new()
-    };
+    // Default output_y: read DP-0 height from xrandr
+    let output_y = args.output_y.unwrap_or(1080);
 
-    // Wait for emulator window
-    log::info!("Waiting for emulator window (pattern: '{}')...", if window_pattern.is_empty() { "<any>" } else { &window_pattern });
-    let deadline = Instant::now() + Duration::from_secs(args.timeout as u64);
-    let mut source_info: Option<(c_ulong, u32, u32, i32, i32)> = None;
-    let mut matched_pattern = window_pattern.clone();
-
-    while source_info.is_none() {
-        if shutdown.load(Ordering::Relaxed) {
-            log::info!("Shutdown before window found");
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            bail!("Timed out waiting for emulator window");
-        }
-
-        if window_pattern.is_empty() {
-            // Try each known emulator pattern
-            for pat in EMULATOR_PATTERNS {
-                if let Some(info) = find_emulator_window(gl.display, pat) {
-                    log::info!("Auto-detected emulator: '{}'", pat);
-                    matched_pattern = pat.to_string();
-                    source_info = Some(info);
-                    break;
-                }
-            }
-        } else {
-            source_info = find_emulator_window(gl.display, &window_pattern);
-        }
-
-        if source_info.is_none() {
-            thread::sleep(Duration::from_millis(500));
-        }
-    }
-
-    let (source_wid, src_w, src_h, _src_x, _src_y) = source_info.unwrap();
-    log::info!("Capturing window 0x{:x} ({}x{}) pattern='{}'", source_wid, src_w, src_h, matched_pattern);
-
-    // Determine output position (default: below top display)
-    let output_y = args.output_y.unwrap_or_else(|| {
-        // Try to read DP-0 height from xrandr output via the source window position
-        // Default to 1080 if we can't determine
-        log::info!("No --output-y specified, defaulting to source window height or 1080");
-        src_h as i32
-    });
-
-    // Create capture
+    // Initialize NVFBC capture of DP-0
     unsafe { gl.make_current_offscreen(); }
-    let mut capture = WindowCapture::new(&gl, source_wid)?;
+    let mut capture = NvfbcCapture::new(&gl, &args.capture_output)?;
 
     // Create output window on DP-2
     let output = OutputWindow::new(&gl, "ScreenTool: Zoom",
         args.output_x, output_y, args.output_width, args.output_height)?;
 
-    // State — zoom uses separate struct + selecting flag (not an enum variant)
-    // so we can correctly read the current zoom region during selection
     let mut zoom = ZoomRegion::default();
-    let mut selecting: Option<(i32, i32)> = None; // (x1, y1) during drag
+    let mut selecting: Option<(i32, i32)> = None;
     let mut show_fps = false;
     let mut hidden = false;
     let mut fps_counter: usize = 0;
@@ -983,29 +934,13 @@ fn main() -> Result<()> {
                 xlib::XNextEvent(gl.display, &mut event);
                 let etype = event.type_;
 
-                // Damage events
-                if etype == capture.damage_event_base {
-                    capture.mark_dirty();
-                    capture.acknowledge_damage();
-                    continue;
-                }
-
                 match etype {
                     xlib::ButtonPress if !hidden => {
                         let e = event.button;
                         if e.window == output.window {
                             match e.button {
-                                1 => {
-                                    // Left click: start selection
-                                    selecting = Some((e.x, e.y));
-                                    log::debug!("Selection start: ({}, {})", e.x, e.y);
-                                }
-                                3 => {
-                                    // Right click: reset to full view
-                                    zoom = ZoomRegion::default();
-                                    selecting = None;
-                                    log::info!("Reset to full view");
-                                }
+                                1 => { selecting = Some((e.x, e.y)); }
+                                3 => { zoom = ZoomRegion::default(); selecting = None; log::info!("Reset to full view"); }
                                 _ => {}
                             }
                         }
@@ -1016,21 +951,15 @@ fn main() -> Result<()> {
                             if let Some((x1, y1)) = selecting.take() {
                                 let x2 = e.x;
                                 let y2 = e.y;
-                                // Convert screen coords to normalized output coords (0..1)
                                 let ow = output.width as f32;
                                 let oh = output.height as f32;
-
                                 let sel_x1 = (x1.min(x2) as f32 / ow).clamp(0.0, 1.0);
                                 let sel_y1 = (y1.min(y2) as f32 / oh).clamp(0.0, 1.0);
                                 let sel_x2 = (x1.max(x2) as f32 / ow).clamp(0.0, 1.0);
                                 let sel_y2 = (y1.max(y2) as f32 / oh).clamp(0.0, 1.0);
-
                                 let sel_w = sel_x2 - sel_x1;
                                 let sel_h = sel_y2 - sel_y1;
-
                                 if sel_w > 0.01 && sel_h > 0.01 {
-                                    // Map selection from current view to source coords
-                                    // (supports nested zoom — selection within an already-zoomed view)
                                     let new_sx = zoom.sx + sel_x1 * zoom.sw;
                                     let new_sy = zoom.sy + sel_y1 * zoom.sh;
                                     let new_sw = sel_w * zoom.sw;
@@ -1038,7 +967,6 @@ fn main() -> Result<()> {
                                     zoom = ZoomRegion { sx: new_sx, sy: new_sy, sw: new_sw, sh: new_sh };
                                     log::info!("Zoomed to region: ({:.3}, {:.3}) {:.3}x{:.3}", new_sx, new_sy, new_sw, new_sh);
                                 }
-                                // If selection too small, just ignore (keep current zoom)
                             }
                         }
                     }
@@ -1047,13 +975,6 @@ fn main() -> Result<()> {
                         if keysym == x11::keysym::XK_F1 as c_ulong {
                             show_fps = !show_fps;
                             log::info!("FPS overlay: {}", if show_fps { "ON" } else { "OFF" });
-                        }
-                    }
-                    xlib::DestroyNotify => {
-                        let e = event.destroy_window;
-                        if e.window == capture.source_window {
-                            log::info!("Source window destroyed, exiting");
-                            return Ok(());
                         }
                     }
                     _ => {}
@@ -1081,44 +1002,45 @@ fn main() -> Result<()> {
 
         // Render
         if !hidden {
-            unsafe { gl.make_current_offscreen(); }
-            capture.update_if_dirty(&gl);
+            // Grab frame from NVFBC (zero-copy, gives us a GL texture)
+            match capture.grab_frame() {
+                Ok((tex_id, src_w, src_h, _is_new)) => {
+                    let cw = src_w as f32;
+                    let ch = src_h as f32;
+                    let sx = (zoom.sx * cw) as i32;
+                    let sy = (zoom.sy * ch) as i32;
+                    let sw = (zoom.sw * cw) as i32;
+                    let sh = (zoom.sh * ch) as i32;
 
-            // Compute source pixel region from normalized zoom coords
-            let cw = capture.width as f32;
-            let ch = capture.height as f32;
-            let sx = (zoom.sx * cw) as i32;
-            let sy = (zoom.sy * ch) as i32;
-            let sw = (zoom.sw * cw) as i32;
-            let sh = (zoom.sh * ch) as i32;
+                    blit_nvfbc_region(&gl, tex_id, src_w, src_h, sx, sy, sw, sh, &output);
 
-            // Blit captured region to back buffer (no swap yet)
-            blit_texture_region(&gl, capture.texture, capture.width, capture.height,
-                sx, sy, sw, sh, &output, capture.y_inverted);
+                    fps_counter += 1;
+                    if fps_timer.elapsed() >= Duration::from_secs(1) {
+                        fps_value = fps_counter as f32 / fps_timer.elapsed().as_secs_f32();
+                        fps_counter = 0;
+                        fps_timer = Instant::now();
+                    }
 
-            // FPS counter
-            fps_counter += 1;
-            if fps_timer.elapsed() >= Duration::from_secs(1) {
-                fps_value = fps_counter as f32 / fps_timer.elapsed().as_secs_f32();
-                fps_counter = 0;
-                fps_timer = Instant::now();
+                    if show_fps {
+                        let fps_text = format!("{:.0} FPS", fps_value);
+                        fps_overlay.render(&gl, &output, &fps_text);
+                    }
+
+                    unsafe { glx::glXSwapBuffers(gl.display, output.glx_window); }
+                }
+                Err(e) => {
+                    log::warn!("NVFBC grab failed: {}", e);
+                    thread::sleep(Duration::from_millis(100));
+                }
             }
-
-            // Render FPS overlay on top of the blitted content (if enabled)
-            if show_fps {
-                let fps_text = format!("{:.0} FPS", fps_value);
-                fps_overlay.render(&gl, &output, &fps_text);
-            }
-
-            // Single swap after all rendering is done
-            unsafe { glx::glXSwapBuffers(gl.display, output.glx_window); }
         } else {
-            // When hidden, sleep longer to avoid wasting CPU
             thread::sleep(Duration::from_millis(100));
             continue;
         }
 
-        thread::sleep(Duration::from_millis(16)); // ~60fps
+        // No fixed sleep — run as fast as possible, NVFBC NOWAIT returns immediately
+        // if no new frame. The GPU blit is negligible.
+        thread::sleep(Duration::from_millis(1));
     }
 
     Ok(())

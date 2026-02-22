@@ -2,13 +2,12 @@
 ###############################################################################
 # start-screen-tool.sh — Launch the secondary screen zoom/crop tool.
 #
-# Shows the primary emulator window on DP-2, allowing the user to click-drag
-# to zoom into a region. Automatically yields when the emulator creates its
-# own secondary window (e.g., 3DS bottom screen).
+# Uses NVFBC to capture the primary display (DP-0) and renders a magnified
+# view on the secondary display (DP-2). Automatically yields when the emulator
+# creates its own secondary window (e.g., 3DS bottom screen).
 #
 # Env vars:
 #   SCREEN_TOOL_ENABLED   - Set to "0" to disable (default: "1")
-#   SCREEN_TOOL_WINDOW    - Window title pattern to capture (auto-detects if empty)
 #   DUAL_SCREEN           - Dual-screen mode flag (tool still runs, but yields)
 ###############################################################################
 
@@ -36,17 +35,14 @@ BOT_HEIGHT=${BOT_HEIGHT:-1080}
 BOT_X=${BOT_X:-0}
 BOT_Y=${BOT_Y:-1080}
 
-# Build args
+# Build args — NVFBC captures DP-0, output renders on DP-2
 ARGS=(
+    --capture-output "DP-0"
     --output-x "$BOT_X"
     --output-y "$BOT_Y"
     --output-width "$BOT_WIDTH"
     --output-height "$BOT_HEIGHT"
 )
-
-if [ -n "${SCREEN_TOOL_WINDOW:-}" ]; then
-    ARGS+=(--window "$SCREEN_TOOL_WINDOW")
-fi
 
 echo "[screen-tool] Starting: screen-tool ${ARGS[*]}"
 exec /gamer/bin/screen-tool "${ARGS[@]}"

@@ -4,6 +4,8 @@ Proven working deployment of Azahar 3DS emulator with dual-screen streaming and 
 
 **Checkpoint branch**: `checkpoint-dual-screen-shader` at this commit.
 
+> **SACRED BRANCH**: `checkpoint-dual-screen-shader` must NEVER be modified unless explicitly instructed by the user. It is a read-only reference of the last known working state. All new work must branch FROM it, never commit TO it.
+
 ## Architecture Overview
 
 ```
@@ -103,6 +105,7 @@ sudo docker run -d \
   -e SUNSHINE_PASSWORD_BASE64=YWRtaW4= \
   -e NVIDIA_ENABLE=true \
   -e NVIDIA_DRIVER_TYPE=display \
+  -e NVIDIA_DRIVER_VERSION=570.211.01 \
   -e SHADER_PRESET=/gamer/shaders/handheld/lcd3x.slangp \
   -e SHADER_PRESET_BOTTOM=/gamer/shaders/handheld/lcd3x.slangp \
   -e SHADER_WINDOW=Azahar \
@@ -129,7 +132,7 @@ sudo docker run -d \
   -e DUAL_SCREEN=1 -e LAYOUT_OPTION=4 -e AZAHAR_FULLSCREEN=0 \
   -e SUNSHINE_CAPTURE=nvfbc \
   -e SUNSHINE_USERNAME=admin -e SUNSHINE_PASSWORD_BASE64=YWRtaW4= \
-  -e NVIDIA_ENABLE=true -e NVIDIA_DRIVER_TYPE=display \
+  -e NVIDIA_ENABLE=true -e NVIDIA_DRIVER_TYPE=display -e NVIDIA_DRIVER_VERSION=570.211.01 \
   -v /home/gamer/roms:/home/gamer/roms:ro \
   -v /home/gamer/firmware:/home/gamer/firmware:ro \
   -v /home/gamer/saves:/home/gamer/saves \
@@ -148,7 +151,7 @@ sudo docker run -d \
   -e DUAL_SCREEN=0 -e LAYOUT_OPTION=0 -e AZAHAR_FULLSCREEN=1 \
   -e SUNSHINE_CAPTURE=nvfbc \
   -e SUNSHINE_USERNAME=admin -e SUNSHINE_PASSWORD_BASE64=YWRtaW4= \
-  -e NVIDIA_ENABLE=true -e NVIDIA_DRIVER_TYPE=display \
+  -e NVIDIA_ENABLE=true -e NVIDIA_DRIVER_TYPE=display -e NVIDIA_DRIVER_VERSION=570.211.01 \
   -v /home/gamer/roms:/home/gamer/roms:ro \
   -v /home/gamer/firmware:/home/gamer/firmware:ro \
   -v /home/gamer/saves:/home/gamer/saves \
