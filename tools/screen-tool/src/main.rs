@@ -933,7 +933,7 @@ fn main() -> Result<()> {
     let mut zoom = ZoomRegion::default();
     let mut selecting: Option<(i32, i32)> = None;
     let mut show_fps = false;
-    let mut on_top = true; // screen-tool is on top (visible to NVFBC)
+    let mut hidden = false; // true = unmapped, secondary window is active
     let mut fps_counter: usize = 0;
     let mut fps_timer = Instant::now();
     let mut fps_value: f32 = 0.0;
@@ -958,36 +958,40 @@ fn main() -> Result<()> {
 
                 match etype {
                     xlib::ButtonPress => {
-                        let e = event.button;
-                        if e.window == output.window {
-                            match e.button {
-                                1 => { selecting = Some((e.x, e.y)); }
-                                3 => { zoom = ZoomRegion::default(); selecting = None; log::info!("Reset to full view"); }
-                                _ => {}
+                        if !hidden {
+                            let e = event.button;
+                            if e.window == output.window {
+                                match e.button {
+                                    1 => { selecting = Some((e.x, e.y)); }
+                                    3 => { zoom = ZoomRegion::default(); selecting = None; log::info!("Reset to full view"); }
+                                    _ => {}
+                                }
                             }
                         }
                     }
                     xlib::ButtonRelease => {
-                        let e = event.button;
-                        if e.window == output.window && e.button == 1 {
-                            if let Some((x1, y1)) = selecting.take() {
-                                let x2 = e.x;
-                                let y2 = e.y;
-                                let ow = output.width as f32;
-                                let oh = output.height as f32;
-                                let sel_x1 = (x1.min(x2) as f32 / ow).clamp(0.0, 1.0);
-                                let sel_y1 = (y1.min(y2) as f32 / oh).clamp(0.0, 1.0);
-                                let sel_x2 = (x1.max(x2) as f32 / ow).clamp(0.0, 1.0);
-                                let sel_y2 = (y1.max(y2) as f32 / oh).clamp(0.0, 1.0);
-                                let sel_w = sel_x2 - sel_x1;
-                                let sel_h = sel_y2 - sel_y1;
-                                if sel_w > 0.01 && sel_h > 0.01 {
-                                    let new_sx = zoom.sx + sel_x1 * zoom.sw;
-                                    let new_sy = zoom.sy + sel_y1 * zoom.sh;
-                                    let new_sw = sel_w * zoom.sw;
-                                    let new_sh = sel_h * zoom.sh;
-                                    zoom = ZoomRegion { sx: new_sx, sy: new_sy, sw: new_sw, sh: new_sh };
-                                    log::info!("Zoomed to region: ({:.3}, {:.3}) {:.3}x{:.3}", new_sx, new_sy, new_sw, new_sh);
+                        if !hidden {
+                            let e = event.button;
+                            if e.window == output.window && e.button == 1 {
+                                if let Some((x1, y1)) = selecting.take() {
+                                    let x2 = e.x;
+                                    let y2 = e.y;
+                                    let ow = output.width as f32;
+                                    let oh = output.height as f32;
+                                    let sel_x1 = (x1.min(x2) as f32 / ow).clamp(0.0, 1.0);
+                                    let sel_y1 = (y1.min(y2) as f32 / oh).clamp(0.0, 1.0);
+                                    let sel_x2 = (x1.max(x2) as f32 / ow).clamp(0.0, 1.0);
+                                    let sel_y2 = (y1.max(y2) as f32 / oh).clamp(0.0, 1.0);
+                                    let sel_w = sel_x2 - sel_x1;
+                                    let sel_h = sel_y2 - sel_y1;
+                                    if sel_w > 0.01 && sel_h > 0.01 {
+                                        let new_sx = zoom.sx + sel_x1 * zoom.sw;
+                                        let new_sy = zoom.sy + sel_y1 * zoom.sh;
+                                        let new_sw = sel_w * zoom.sw;
+                                        let new_sh = sel_h * zoom.sh;
+                                        zoom = ZoomRegion { sx: new_sx, sy: new_sy, sw: new_sw, sh: new_sh };
+                                        log::info!("Zoomed to region: ({:.3}, {:.3}) {:.3}x{:.3}", new_sx, new_sy, new_sw, new_sh);
+                                    }
                                 }
                             }
                         }
@@ -1005,10 +1009,12 @@ fn main() -> Result<()> {
                         }
                     }
                     xlib::KeyPress => {
-                        let keysym = xlib::XLookupKeysym(&mut event.key as *mut _, 0);
-                        if keysym == x11::keysym::XK_F1 as c_ulong {
-                            show_fps = !show_fps;
-                            log::info!("FPS overlay: {}", if show_fps { "ON" } else { "OFF" });
+                        if !hidden {
+                            let keysym = xlib::XLookupKeysym(&mut event.key as *mut _, 0);
+                            if keysym == x11::keysym::XK_F1 as c_ulong {
+                                show_fps = !show_fps;
+                                log::info!("FPS overlay: {}", if show_fps { "ON" } else { "OFF" });
+                            }
                         }
                     }
                     _ => {}
@@ -1017,47 +1023,38 @@ fn main() -> Result<()> {
         }
 
         // Check for secondary window every ~1 second.
-        // Instead of hide/show, manage Z-order: if the secondary window is
-        // actively rendering (non-black), lower ourselves behind it.
-        // If it's black or gone, raise ourselves to the front.
+        // Hide completely when secondary has content (dual-window mode).
+        // Show when secondary is black/gone (single-window mode).
         if last_secondary_check.elapsed() >= Duration::from_secs(1) {
             last_secondary_check = Instant::now();
 
-            let should_be_on_top = match find_secondary_window(gl.display, &secondary_patterns) {
-                Some(sec_wid) => {
-                    // Secondary window exists — check if it has actual content
-                    let has_content = window_has_content(gl.display, sec_wid);
-                    if has_content {
-                        // Secondary is rendering — lower screen-tool behind it
-                        false
-                    } else {
-                        // Secondary is black (single-window mode) — we should be on top
-                        true
-                    }
-                }
-                None => true, // No secondary window — we should be on top
+            let secondary_active = match find_secondary_window(gl.display, &secondary_patterns) {
+                Some(sec_wid) => window_has_content(gl.display, sec_wid),
+                None => false,
             };
 
-            if should_be_on_top && !on_top {
-                log::info!("Secondary window gone/black, raising screen-tool");
-                unsafe {
-                    xlib::XRaiseWindow(gl.display, output.window);
-                    xlib::XFlush(gl.display);
-                }
-                on_top = true;
+            if secondary_active && !hidden {
+                log::info!("Secondary window active, hiding screen-tool");
+                output.hide();
+                hidden = true;
+            } else if !secondary_active && hidden {
+                log::info!("Secondary window gone/black, showing screen-tool");
+                // Read current DP-2 geometry for correct position/size
+                let (bot_x, bot_y, bot_w, bot_h) = read_dp2_geometry(gl.display);
+                output.show(bot_x, bot_y, bot_w, bot_h);
+                hidden = false;
                 zoom = ZoomRegion::default();
                 selecting = None;
-            } else if !should_be_on_top && on_top {
-                log::info!("Secondary window active, lowering screen-tool");
-                unsafe {
-                    xlib::XLowerWindow(gl.display, output.window);
-                    xlib::XFlush(gl.display);
-                }
-                on_top = false;
             }
         }
 
-        // Always render — NVFBC captures whatever is on top of DP-2
+        if hidden {
+            // Sleep longer when hidden — just polling for secondary window state
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
+        // Render NVFBC capture to output window
         match capture.grab_frame() {
             Ok((tex_id, src_w, src_h, _is_new)) => {
                 let cw = src_w as f32;
@@ -1095,4 +1092,35 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Read DP-2 position and size from xrandr output.
+fn read_dp2_geometry(display: *mut xlib::Display) -> (i32, i32, u32, u32) {
+    // Use xrandr via command since we need the current modeline
+    if let Ok(output) = std::process::Command::new("xrandr").arg("--current").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if line.starts_with("DP-2") && line.contains("connected") {
+                // Parse "DP-2 connected 2624x1206+0+1964"
+                if let Some(geom) = line.split_whitespace()
+                    .find(|s| s.contains('x') && s.contains('+'))
+                {
+                    let parts: Vec<&str> = geom.split(|c| c == 'x' || c == '+').collect();
+                    if parts.len() >= 4 {
+                        let w = parts[0].parse().unwrap_or(1920);
+                        let h = parts[1].parse().unwrap_or(1080);
+                        let x = parts[2].parse().unwrap_or(0);
+                        let y = parts[3].parse().unwrap_or(1080);
+                        return (x, y, w, h);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: read DP-0 height from root window geometry
+    unsafe {
+        let screen = xlib::XDefaultScreen(display);
+        let h = xlib::XDisplayHeight(display, screen);
+        (0, h / 2, 1920, h as u32 / 2)
+    }
 }
