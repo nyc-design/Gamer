@@ -24,6 +24,7 @@ SCREEN_TOOL_NAME="ScreenTool"
 HIDDEN=false
 ACTIVE_STREAK=0
 INACTIVE_STREAK=0
+LAST_PINNED_GEOM=""
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -72,6 +73,32 @@ is_secondary_active_on_bottom() {
     [ "$win_w" -ge "$min_w" ] && [ "$win_h" -ge "$min_h" ] && [ "$dx" -le 140 ] && [ "$dy" -le 140 ]
 }
 
+pin_screen_tool_to_bottom() {
+    local wid="$1"
+    local bot_info bot_w bot_h bot_x bot_y
+    local cur_x cur_y cur_w cur_h
+
+    bot_info=$(xrandr --current 2>/dev/null | awk '/^DP-2 / {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
+    bot_w=$(echo "$bot_info" | cut -dx -f1)
+    bot_h=$(echo "$bot_info" | cut -dx -f2 | cut -d+ -f1)
+    bot_x=$(echo "$bot_info" | cut -d+ -f2)
+    bot_y=$(echo "$bot_info" | cut -d+ -f3)
+
+    [ -n "$bot_w" ] && [ -n "$bot_h" ] && [ -n "$bot_x" ] && [ -n "$bot_y" ] || return 0
+
+    eval "$(xdotool getwindowgeometry --shell "$wid" 2>/dev/null | sed 's/^X=/cur_x=/;s/^Y=/cur_y=/;s/^WIDTH=/cur_w=/;s/^HEIGHT=/cur_h=/')"
+
+    local target_geom="${bot_x},${bot_y},${bot_w},${bot_h}"
+    if [ "$LAST_PINNED_GEOM" != "$target_geom" ] || \
+       [ "${cur_x:-}" != "$bot_x" ] || [ "${cur_y:-}" != "$bot_y" ] || \
+       [ "${cur_w:-}" != "$bot_w" ] || [ "${cur_h:-}" != "$bot_h" ]; then
+        xdotool windowmove "$wid" "$bot_x" "$bot_y" 2>/dev/null
+        xdotool windowsize "$wid" "$bot_w" "$bot_h" 2>/dev/null
+        LAST_PINNED_GEOM="$target_geom"
+        echo "[screen-tool-visibility] Pinned screen-tool to DP-2 ${bot_w}x${bot_h}+${bot_x}+${bot_y}"
+    fi
+}
+
 while true; do
     sleep 1
 
@@ -114,5 +141,11 @@ while true; do
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         /gamer/bin/reposition-windows.sh 2>/dev/null || true
         HIDDEN=false
+    fi
+
+    # Keep screen-tool anchored to DP-2 when visible so top-screen mode changes
+    # cannot strand it on the primary display.
+    if [ "$HIDDEN" = "false" ]; then
+        pin_screen_tool_to_bottom "$SCREEN_TOOL_WID"
     fi
 done

@@ -8,12 +8,16 @@ writes uinput events scaled to the stream resolution only — ignoring the
 display's offset within the virtual desktop. Result: touches on the bottom
 screen land on the top display.
 
-Solution: proxy Sunshine's bottom-instance input devices, with per-device mode:
-- Mouse passthrough (absolute): remap coordinates into the DP-2 region.
-- Touch passthrough: preserve direct-touch props and map via XInput CTM.
+Solution: Grab Sunshine's bottom-instance input devices at the evdev level,
+remap coordinates to the correct display region, and emit them via a proxy
+uinput device.
+
+This script handles BOTH absolute mouse and multitouch devices. It finds
+the bottom Sunshine instance's devices by looking for the 2nd occurrence
+of each device type (top Sunshine starts first, bottom second).
 
 Integrated into the container via supervisord. Auto-detects display geometry
-from xrandr and reconnects on device churn.
+from xrandr.
 """
 
 import os
@@ -22,12 +26,11 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 try:
     import evdev
-    from evdev import InputDevice, UInput, AbsInfo, ecodes as e
+    from evdev import InputDevice, UInput, AbsInfo, ecodes as e, list_devices
 except ImportError:
     print("ERROR: python3-evdev not installed. Install with: pip3 install evdev")
     sys.exit(1)
@@ -37,21 +40,6 @@ LOG_PREFIX = "[input-remap]"
 # ABS codes that represent X/Y coordinates (single-touch and multitouch)
 X_CODES = {e.ABS_X, e.ABS_MT_POSITION_X}
 Y_CODES = {e.ABS_Y, e.ABS_MT_POSITION_Y}
-
-
-@dataclass
-class SourceDevice:
-    device: InputDevice
-    xinput_id: int
-
-
-@dataclass
-class ProxyOptions:
-    name_pattern: str
-    remap_coords: bool
-    preserve_input_props: bool
-    grab_source: bool
-    disable_source_xinput: bool
 
 
 def log(msg: str):
@@ -79,11 +67,13 @@ def get_display_geometry() -> dict:
 
     geo = {}
 
+    # Parse screen size
     m = re.search(r"current (\d+) x (\d+)", output)
     if m:
         geo["virt_w"] = int(m.group(1))
         geo["virt_h"] = int(m.group(2))
 
+    # Parse each display
     for line in output.splitlines():
         for prefix, key in [("DP-0", "top"), ("DP-2", "bot")]:
             if line.startswith(prefix):
@@ -97,12 +87,17 @@ def get_display_geometry() -> dict:
     return geo
 
 
-def find_bottom_device(name_pattern: str) -> Optional[SourceDevice]:
+def find_bottom_device(name_pattern: str) -> Optional[InputDevice]:
     """
     Find the bottom Sunshine instance's device by xinput ID order.
 
-    Sunshine assigns xinput IDs in creation order. The bottom instance starts
-    after the top, so its devices have higher IDs.
+    Sunshine assigns xinput IDs in creation order. The bottom instance
+    starts after the top, so its devices have HIGHER xinput IDs.
+    We query xinput to find the highest-ID device matching the pattern,
+    get its /dev/input/eventN node, then open it via evdev.
+
+    Event node paths (/dev/input/eventN) are NOT in creation order —
+    the kernel reuses freed minor numbers. xinput IDs are reliable.
     """
     display = os.environ.get("DISPLAY", ":0")
     try:
@@ -114,6 +109,7 @@ def find_bottom_device(name_pattern: str) -> Optional[SourceDevice]:
         log(f"xinput list failed: {ex}")
         return None
 
+    # Find all xinput IDs matching the pattern (exclude "remapped" proxy devices)
     matching_ids = []
     for line in output.splitlines():
         if name_pattern.lower() in line.lower() and "remapped" not in line.lower():
@@ -121,11 +117,13 @@ def find_bottom_device(name_pattern: str) -> Optional[SourceDevice]:
             if m:
                 matching_ids.append(int(m.group(1)))
 
-    if len(matching_ids) < 1:
+    if len(matching_ids) < 2:
         return None
 
+    # Highest ID = bottom instance
     bottom_id = max(matching_ids)
 
+    # Get device node from xinput
     try:
         props = subprocess.check_output(
             ["xinput", "list-props", str(bottom_id)],
@@ -145,79 +143,14 @@ def find_bottom_device(name_pattern: str) -> Optional[SourceDevice]:
     try:
         dev = InputDevice(node_path)
         log(f"Found bottom device: xinput id={bottom_id} -> {dev.name} at {node_path}")
-        return SourceDevice(device=dev, xinput_id=bottom_id)
+        return dev
     except Exception as ex:
         log(f"Could not open {node_path}: {ex}")
         return None
 
 
-def find_xinput_id_by_name(name: str) -> Optional[int]:
-    display = os.environ.get("DISPLAY", ":0")
-    try:
-        output = subprocess.check_output(
-            ["xinput", "list"], env={**os.environ, "DISPLAY": display},
-            text=True, timeout=5
-        )
-    except Exception:
-        return None
-
-    matches = []
-    for line in output.splitlines():
-        if name in line:
-            m = re.search(r"id=(\d+)", line)
-            if m:
-                matches.append(int(m.group(1)))
-    return max(matches) if matches else None
-
-
-def set_xinput_device_enabled(device_id: int, enabled: bool):
-    display = os.environ.get("DISPLAY", ":0")
-    state = "1" if enabled else "0"
-    try:
-        subprocess.check_call(
-            ["xinput", "set-prop", str(device_id), "Device Enabled", state],
-            env={**os.environ, "DISPLAY": display},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-        )
-    except Exception as ex:
-        log(f"Could not set Device Enabled={state} on id={device_id}: {ex}")
-
-
-def apply_bottom_ctm(device_id: int, geo: dict):
-    display = os.environ.get("DISPLAY", ":0")
-    virt_w = geo.get("virt_w", 1920)
-    virt_h = geo.get("virt_h", 2160)
-    bot_x = geo.get("bot_x", 0)
-    bot_y = geo.get("bot_y", 1080)
-    bot_w = geo.get("bot_w", 1920)
-    bot_h = geo.get("bot_h", 1080)
-
-    if virt_w <= 0 or virt_h <= 0:
-        return
-
-    ctm = [
-        bot_w / float(virt_w), 0.0, bot_x / float(virt_w),
-        0.0, bot_h / float(virt_h), bot_y / float(virt_h),
-        0.0, 0.0, 1.0,
-    ]
-    vals = [f"{x:.10f}" for x in ctm]
-
-    try:
-        subprocess.check_call(
-            ["xinput", "set-prop", str(device_id), "Coordinate Transformation Matrix", *vals],
-            env={**os.environ, "DISPLAY": display},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-        )
-        log(f"Applied bottom CTM to id={device_id}: {' '.join(vals)}")
-    except Exception as ex:
-        log(f"Failed to apply CTM to id={device_id}: {ex}")
-
-
 def get_abs_info(dev: InputDevice, axis_code: int) -> Optional[AbsInfo]:
+    """Get AbsInfo for a specific axis code."""
     caps = dev.capabilities(absinfo=True)
     for code_info in caps.get(e.EV_ABS, []):
         if isinstance(code_info, tuple) and len(code_info) == 2:
@@ -227,12 +160,15 @@ def get_abs_info(dev: InputDevice, axis_code: int) -> Optional[AbsInfo]:
     return None
 
 
-def create_proxy(source: InputDevice, preserve_input_props: bool) -> UInput:
+def create_proxy(source: InputDevice) -> UInput:
     """
-    Create a proxy uinput device with source capabilities.
+    Create a proxy UInput device with IDENTICAL axis ranges to the source.
 
-    For touch we preserve input_props (including INPUT_PROP_DIRECT) and use CTM.
-    For absolute mouse we omit input_props and remap coords in evdev units.
+    CRITICAL: Do NOT copy INPUT_PROP_DIRECT. With that property, libinput
+    maps the touchscreen to a single display output (typically the first one),
+    so coordinates only land on that display regardless of value. Without it,
+    libinput maps [0, axis_max] across the full virtual desktop, which is
+    what we need for multi-monitor coordinate remapping.
     """
     caps = source.capabilities(absinfo=True)
     new_caps = {}
@@ -242,10 +178,7 @@ def create_proxy(source: InputDevice, preserve_input_props: bool) -> UInput:
             continue
         new_caps[ev_type] = codes
 
-    kwargs = {}
-    if preserve_input_props:
-        kwargs["input_props"] = source.input_props()
-
+    # Deliberately omit input_props — do NOT propagate INPUT_PROP_DIRECT
     proxy = UInput(
         events=new_caps,
         name=f"{source.name} (remapped)",
@@ -253,49 +186,39 @@ def create_proxy(source: InputDevice, preserve_input_props: bool) -> UInput:
         product=source.info.product,
         version=source.info.version,
         bustype=source.info.bustype,
-        **kwargs,
     )
-
-    if preserve_input_props:
-        log(f"Created proxy: {proxy.name} (preserving input_props)")
-    else:
-        log(f"Created proxy: {proxy.name} (no INPUT_PROP_DIRECT)")
-
+    log(f"Created proxy: {proxy.name} (no INPUT_PROP_DIRECT)")
     return proxy
 
 
-def remap(value: int, src_max: int, dst_min: int, dst_span: int) -> int:
+def remap(value: int, src_max: int, offset: int) -> int:
     """
-    Scale from [0, src_max] into [dst_min, dst_min + dst_span], then clamp.
-    """
-    if src_max <= 0:
-        return dst_min
+    Add a fixed pixel offset and clamp.
 
-    scaled = dst_min + int(round((value / float(src_max)) * dst_span))
-    hi = dst_min + dst_span
-    if scaled < dst_min:
-        return dst_min
-    if scaled > hi:
-        return hi
-    return scaled
+    Sunshine writes touch coords normalized to [0, src_max] representing
+    position within the captured display. Without INPUT_PROP_DIRECT,
+    X11 maps [0, src_max] to the full virtual desktop. Adding the offset
+    shifts the coordinates to the bottom display's region.
+    """
+    return min(value + offset, src_max)
 
 
 def proxy_loop(source: InputDevice, proxy: UInput,
                axis_info: dict,
-               x_map: tuple[int, int], y_map: tuple[int, int],
-               remap_coords: bool,
+               x_offset: int, y_offset: int,
                verbose: bool = False):
+    """Read events from source, add offset to coordinates, write to proxy."""
     for event in source.read_loop():
         if event.type == e.EV_ABS:
-            if remap_coords and event.code in X_CODES and event.code in axis_info:
+            if event.code in X_CODES and event.code in axis_info:
                 info = axis_info[event.code]
-                val = remap(event.value, info.max, x_map[0], x_map[1])
+                val = remap(event.value, info.max, x_offset)
                 if verbose:
                     log(f"X({event.code}): {event.value} -> {val}")
                 proxy.write(e.EV_ABS, event.code, val)
-            elif remap_coords and event.code in Y_CODES and event.code in axis_info:
+            elif event.code in Y_CODES and event.code in axis_info:
                 info = axis_info[event.code]
-                val = remap(event.value, info.max, y_map[0], y_map[1])
+                val = remap(event.value, info.max, y_offset)
                 if verbose:
                     log(f"Y({event.code}): {event.value} -> {val}")
                 proxy.write(e.EV_ABS, event.code, val)
@@ -307,44 +230,32 @@ def proxy_loop(source: InputDevice, proxy: UInput,
             proxy.write(event.type, event.code, event.value)
 
 
-def run_device_proxy(options: ProxyOptions, verbose: bool = False):
+def run_device_proxy(device_pattern: str,
+                     geo: dict, verbose: bool = False):
+    """
+    Find the bottom Sunshine instance's device, create proxy, grab source, run event loop.
+    Returns the source and proxy for cleanup.
+    """
     source = None
     proxy = None
-    source_xinput_id = None
 
-    log(f"Waiting for bottom device matching '{options.name_pattern}'...")
+    # Wait for device to appear (Sunshine creates them when clients connect)
+    log(f"Waiting for bottom device matching '{device_pattern}'...")
     while source is None:
-        found = find_bottom_device(options.name_pattern)
-        if found is not None:
-            source = found.device
-            source_xinput_id = found.xinput_id
-        else:
+        source = find_bottom_device(device_pattern)
+        if source is None:
             time.sleep(2)
 
+    # Collect axis info
     axis_info = {}
     for code in (e.ABS_X, e.ABS_Y, e.ABS_MT_POSITION_X, e.ABS_MT_POSITION_Y):
         info = get_abs_info(source, code)
         if info:
             axis_info[code] = info
 
-    log("Source axes: " + ", ".join(
+    log(f"Source axes: " + ", ".join(
         f"{e.ABS.get(c, c)}=[{i.min},{i.max}]" for c, i in axis_info.items()
     ))
-
-    geo = get_display_geometry()
-    if not geo:
-        geo = {
-            "virt_w": 1920,
-            "virt_h": 2160,
-            "top_w": 1920,
-            "top_h": 1080,
-            "top_x": 0,
-            "top_y": 0,
-            "bot_w": 1920,
-            "bot_h": 1080,
-            "bot_x": 0,
-            "bot_y": 1080,
-        }
 
     virt_w = geo.get("virt_w", 1920)
     virt_h = geo.get("virt_h", 2160)
@@ -353,57 +264,32 @@ def run_device_proxy(options: ProxyOptions, verbose: bool = False):
     bot_w = geo.get("bot_w", 1920)
     bot_h = geo.get("bot_h", 1080)
 
+    # Compute per-axis offsets. For each axis, the offset in device units
+    # equals (display_pixel_offset / virtual_desktop_pixels) * axis_max.
+    # Touch source uses ABS_Y max=10800, mouse uses ABS_Y max=12000.
+    # We compute offsets per-axis from axis_info.
     y_axis_max = axis_info.get(e.ABS_Y, axis_info.get(e.ABS_MT_POSITION_Y))
     x_axis_max = axis_info.get(e.ABS_X, axis_info.get(e.ABS_MT_POSITION_X))
     y_max = y_axis_max.max if y_axis_max else 10800
     x_max = x_axis_max.max if x_axis_max else 19200
 
-    x_min = int(round(bot_x / virt_w * x_max)) if virt_w > 0 else 0
-    y_min = int(round(bot_y / virt_h * y_max)) if virt_h > 0 else 0
-    x_span = int(round(bot_w / virt_w * x_max)) if virt_w > 0 else x_max
-    y_span = int(round(bot_h / virt_h * y_max)) if virt_h > 0 else y_max
+    x_offset = int(round(bot_x / virt_w * x_max)) if virt_w > 0 else 0
+    y_offset = int(round(bot_y / virt_h * y_max)) if virt_h > 0 else 0
 
-    log(f"Bottom display: {bot_w}x{bot_h}+{bot_x}+{bot_y} in {virt_w}x{virt_h} desktop")
-    if options.remap_coords:
-        log(f"Mapping: X=[{x_min},{x_min + x_span}] of max={x_max}, "
-            f"Y=[{y_min},{y_min + y_span}] of max={y_max}")
+    log(f"Bottom display: {bot_w}x{bot_h}+{bot_x}+{bot_y} "
+        f"in {virt_w}x{virt_h} desktop")
+    log(f"Offsets: x={x_offset} (max={x_max}), y={y_offset} (max={y_max})")
 
-    proxy = create_proxy(source, preserve_input_props=options.preserve_input_props)
+    proxy = create_proxy(source)
     time.sleep(0.3)
 
-    if options.disable_source_xinput and source_xinput_id is not None:
-        set_xinput_device_enabled(source_xinput_id, False)
-        log(f"Disabled source xinput id={source_xinput_id}")
+    source.grab()
+    log(f"Grabbed {source.name} — proxy active")
 
-    if options.grab_source:
-        source.grab()
-        log(f"Grabbed {source.name} — proxy active")
-    else:
-        log(f"Proxying {source.name} without evdev grab — proxy active")
+    proxy_loop(source, proxy, axis_info,
+               x_offset, y_offset, verbose)
 
-    if options.preserve_input_props:
-        proxy_id = None
-        for _ in range(12):
-            proxy_id = find_xinput_id_by_name(proxy.name)
-            if proxy_id is not None:
-                break
-            time.sleep(0.25)
-        if proxy_id is not None:
-            apply_bottom_ctm(proxy_id, geo)
-        else:
-            log(f"Could not resolve xinput id for proxy '{proxy.name}'")
-
-    proxy_loop(
-        source,
-        proxy,
-        axis_info,
-        (x_min, x_span),
-        (y_min, y_span),
-        options.remap_coords,
-        verbose,
-    )
-
-    return source, proxy, source_xinput_id
+    return source, proxy
 
 
 def main():
@@ -411,6 +297,7 @@ def main():
 
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
+    # Wait for X server
     log("Waiting for X server...")
     display = os.environ.get("DISPLAY", ":0")
     for _ in range(60):
@@ -426,29 +313,22 @@ def main():
         log("ERROR: X server not available after 60s")
         sys.exit(1)
 
+    # Wait a bit for Sunshine to create input devices
     log("Waiting for Sunshine input devices...")
     time.sleep(5)
 
+    # Get display geometry
     geo = get_display_geometry()
     if not geo:
         log("WARNING: Could not get display geometry, using defaults")
-        geo = {
-            "virt_w": 1920,
-            "virt_h": 2160,
-            "top_w": 1920,
-            "top_h": 1080,
-            "top_x": 0,
-            "top_y": 0,
-            "bot_w": 1920,
-            "bot_h": 1080,
-            "bot_x": 0,
-            "bot_y": 1080,
-        }
+        geo = {"virt_w": 1920, "virt_h": 2160,
+               "top_w": 1920, "top_h": 1080, "top_x": 0, "top_y": 0,
+               "bot_w": 1920, "bot_h": 1080, "bot_x": 0, "bot_y": 1080}
+
     log(f"Display geometry: {geo}")
 
     sources = []
     proxies = []
-    disabled_source_ids = set()
 
     def cleanup(sig=None, frame=None):
         log("Shutting down...")
@@ -462,67 +342,33 @@ def main():
                 p.close()
             except Exception:
                 pass
-        for source_id in sorted(disabled_source_ids):
-            set_xinput_device_enabled(source_id, True)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
-    proxy_options = [
-        ProxyOptions(
-            name_pattern="Mouse passthrough (absolute)",
-            remap_coords=True,
-            preserve_input_props=False,
-            grab_source=True,
-            disable_source_xinput=False,
-        ),
-        ProxyOptions(
-            name_pattern="Touch passthrough",
-            remap_coords=False,
-            preserve_input_props=True,
-            grab_source=False,
-            disable_source_xinput=True,
-        ),
+    # Proxy both touch and absolute mouse for the bottom Sunshine instance.
+    # find_bottom_device uses xinput ID order (highest ID = bottom instance).
+    device_patterns = [
+        "Mouse passthrough (absolute)",
+        "Touch passthrough",
     ]
 
     threads = []
-    for options in proxy_options:
-        def run(opts=options):
-            while True:
-                src = None
-                prx = None
-                src_id = None
-                try:
-                    src, prx, src_id = run_device_proxy(opts, verbose)
-                    sources.append(src)
-                    proxies.append(prx)
-                    if opts.disable_source_xinput and src_id is not None:
-                        disabled_source_ids.add(src_id)
-                except Exception as ex:
-                    log(f"Proxy for '{opts.name_pattern}' failed: {ex}")
-                finally:
-                    if src_id is not None and opts.disable_source_xinput:
-                        set_xinput_device_enabled(src_id, True)
-                        if src_id in disabled_source_ids:
-                            disabled_source_ids.remove(src_id)
-                    if prx is not None:
-                        try:
-                            prx.close()
-                        except Exception:
-                            pass
-                    if src is not None:
-                        try:
-                            src.ungrab()
-                        except Exception:
-                            pass
-                    log(f"Reconnecting '{opts.name_pattern}' in 3s...")
-                    time.sleep(3)
+    for pattern in device_patterns:
+        def run(p=pattern):
+            try:
+                src, prx = run_device_proxy(p, geo, verbose)
+                sources.append(src)
+                proxies.append(prx)
+            except Exception as ex:
+                log(f"Proxy for '{p}' #{o} failed: {ex}")
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
         threads.append(t)
 
+    # Wait for all threads (they run forever until device disconnects)
     for t in threads:
         t.join()
 

@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 
-# Input remap proxy is intentionally disabled by default.
-# Sunshine prerelease now handles second-screen absolute/touch offsets natively.
-#
-# Set INPUT_REMAP_ENABLED=1 only for emergency diagnostics.
+# Sunshine prerelease handles bottom-screen coordinate mapping natively.
+# Keep proxying OFF unless explicitly requested for debugging.
 if [ "${INPUT_REMAP_ENABLED:-0}" != "1" ]; then
-    echo "[input-remap] Disabled (INPUT_REMAP_ENABLED=${INPUT_REMAP_ENABLED:-0}); using native Sunshine input path."
+    echo "[input-remap] Disabled. Using native Sunshine input handling."
     sleep infinity
 fi
 
