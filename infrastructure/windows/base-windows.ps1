@@ -71,6 +71,80 @@ function Ensure-ApolloInstalled {
   return (Test-Path $sunshinePath)
 }
 
+function Resolve-PreferredNvidiaAdapterName {
+  try {
+    $candidates = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Status -eq 'OK' -and
+        $_.FriendlyName -like 'NVIDIA*' -and
+        $_.FriendlyName -notlike '*Remote*' -and
+        $_.FriendlyName -notlike '*Basic*'
+      }
+    if ($candidates) {
+      # Prefer Tesla datacenter adapters first on V100 hosts, otherwise first OK NVIDIA adapter.
+      $tesla = $candidates | Where-Object { $_.FriendlyName -like '*Tesla*' } | Select-Object -First 1
+      if ($tesla) { return $tesla.FriendlyName }
+      return ($candidates | Select-Object -First 1).FriendlyName
+    }
+  } catch {}
+  return 'NVIDIA GeForce RTX 4090'
+}
+
+function Set-IfEOHighPriority {
+  param([string]$ExeName)
+  try {
+    $base = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$ExeName"
+    $perf = Join-Path $base 'PerfOptions'
+    New-Item -Path $perf -Force | Out-Null
+    New-ItemProperty -Path $perf -Name 'CpuPriorityClass' -Value 3 -PropertyType DWord -Force | Out-Null
+  } catch {
+    Write-Warning "Failed setting IFEO priority for ${ExeName}: $($_.Exception.Message)"
+  }
+}
+
+function Apply-GameHostPerformanceProfile {
+  try {
+    powercfg /setactive SCHEME_MIN | Out-Null
+    powercfg -attributes SUB_PROCESSOR CPMINCORES -ATTRIB_HIDE 2>$null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setactive SCHEME_CURRENT | Out-Null
+  } catch {
+    Write-Warning "Power profile tuning failed: $($_.Exception.Message)"
+  }
+
+  try {
+    reg add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' /v AllowGameDVR /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\System\GameConfigStore' /v GameDVR_Enabled /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\GameBar' /v ShowStartupPanel /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR' /v AppCaptureEnabled /t REG_DWORD /d 0 /f | Out-Null
+  } catch {
+    Write-Warning "Game DVR disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    Stop-Service WSearch -Force -ErrorAction SilentlyContinue
+    Set-Service WSearch -StartupType Disabled -ErrorAction SilentlyContinue
+  } catch {
+    Write-Warning "WSearch disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $exclusions = @('C:\gamer','C:\Program Files\Apollo','C:\Program Files (x86)\Steam','C:\SteamLibrary','C:\Emulators')
+    foreach ($p in $exclusions) {
+      if (Test-Path $p) { Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue }
+    }
+  } catch {
+    Write-Warning "Defender exclusions failed: $($_.Exception.Message)"
+  }
+
+  Set-IfEOHighPriority -ExeName 'azahar.exe'
+  Set-IfEOHighPriority -ExeName 'kh3.exe'
+  Set-IfEOHighPriority -ExeName 'KINGDOM HEARTS III.exe'
+}
+
 function Ensure-ApolloAutostart {
   param(
     [string]$ApolloExePath,
@@ -111,6 +185,8 @@ try {
 if (-not $interactiveReady) {
   throw "Base step requires active console session for user '$WindowsUsername'. Ensure auto-login has occurred, then rerun deploy_base."
 }
+
+Apply-GameHostPerformanceProfile
 
 # rclone
 function Get-RcloneExe {
@@ -178,6 +254,8 @@ if (-not (Ensure-ApolloInstalled -InstallerUrl $ApolloInstallerUrl)) {
 }
 Stop-Service ApolloService -Force -ErrorAction SilentlyContinue
 Ensure-SymlinkDir -LinkPath $cfg -TargetPath "$base\mounts\gcs\configs\apollo"
+$adapterName = Resolve-PreferredNvidiaAdapterName
+Write-Host "Using Apollo adapter_name: $adapterName"
 
 if (-not (Test-Path "$cfg\sunshine.conf")) {
   @"
@@ -186,7 +264,7 @@ port = 47989
 file_state = sunshine_state.json
 log_path = sunshine.log
 file_apps = apps.json
-adapter_name = NVIDIA GeForce RTX 4090
+adapter_name = $adapterName
 dd_configuration_option = ensure_only_display
 dd_resolution_option = auto
 dd_refresh_rate_option = auto
@@ -203,7 +281,7 @@ port = 48989
 file_state = sunshine_state2.json
 log_path = sunshine2.log
 file_apps = apps2.json
-adapter_name = NVIDIA GeForce RTX 4090
+adapter_name = $adapterName
 dd_configuration_option = ensure_only_display
 dd_resolution_option = auto
 dd_refresh_rate_option = auto
@@ -213,6 +291,14 @@ stream_audio = true
 install_steam_audio_drivers = false
 "@ | Set-Content "$cfg\sunshine_2.conf" -Encoding UTF8
 }
+# Always enforce detected adapter on existing configs as well.
+(Get-Content "$cfg\sunshine.conf") `
+  -replace '^adapter_name\s*=.*$', "adapter_name = $adapterName" `
+  | Set-Content "$cfg\sunshine.conf" -Encoding UTF8
+(Get-Content "$cfg\sunshine_2.conf") `
+  -replace '^adapter_name\s*=.*$', "adapter_name = $adapterName" `
+  | Set-Content "$cfg\sunshine_2.conf" -Encoding UTF8
+
 Ensure-ApolloAutostart -ApolloExePath $apollo -ConfigDir $cfg
 & $apollo --creds $ApolloUsername $ApolloPassword | Out-Null
 

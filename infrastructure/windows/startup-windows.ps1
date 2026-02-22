@@ -15,16 +15,106 @@ function Invoke-InstallerExe {
   param(
     [string]$Name,
     [string]$Url,
-    [string[]]$Args = @('/quiet','/norestart')
+    [string[]]$InstallerArgs = @('/quiet','/norestart')
   )
   try {
     $out = Join-Path $setupDir ("{0}.exe" -f $Name)
     Invoke-WebRequest -Uri $Url -OutFile $out
-    $p = Start-Process -FilePath $out -ArgumentList $Args -Wait -PassThru
+    $p = Start-Process -FilePath $out -ArgumentList $InstallerArgs -Wait -PassThru
     Write-Host "$Name installer exit code: $($p.ExitCode)"
   } catch {
     Write-Warning "$Name install failed: $($_.Exception.Message)"
   }
+}
+
+function Install-MediaFeaturePack {
+  try {
+    $cap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
+    if ($cap -and $cap.State -eq 'Installed') { return $true }
+
+    Write-Host 'Installing Media Feature Pack capability...'
+    $dismLog = Join-Path $setupDir 'media_pack_install.log'
+
+    # Attempt direct install first.
+    cmd /c "dism /online /add-capability /capabilityname:Media.MediaFeaturePack~~~~0.0.1.0 > `"$dismLog`" 2>&1"
+    $cap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
+    if ($cap -and $cap.State -eq 'Installed') { return $true }
+
+    # Fallback via SYSTEM scheduled task for cases where SSH session lacks required token.
+    Write-Warning 'Direct DISM capability install did not succeed. Retrying via SYSTEM scheduled task.'
+    $taskScript = Join-Path $setupDir 'install_media_pack.ps1'
+    @"
+$ErrorActionPreference='Continue'
+cmd /c dism /online /add-capability /capabilityname:Media.MediaFeaturePack~~~~0.0.1.0 > "$dismLog" 2>&1
+"@ | Set-Content $taskScript -Encoding Ascii
+
+    schtasks /Delete /TN GamerInstallMediaPack /F 2>$null | Out-Null
+    schtasks /Create /TN GamerInstallMediaPack /TR "powershell -NoProfile -ExecutionPolicy Bypass -File $taskScript" /SC ONCE /ST 00:00 /RU SYSTEM /RL HIGHEST /F | Out-Null
+    schtasks /Run /TN GamerInstallMediaPack | Out-Null
+
+    Start-Sleep -Seconds 120
+    $cap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
+    return [bool]($cap -and $cap.State -eq 'Installed')
+  } catch {
+    Write-Warning "Media Feature Pack install failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Set-IfEOHighPriority {
+  param([string]$ExeName)
+  try {
+    $base = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$ExeName"
+    $perf = Join-Path $base 'PerfOptions'
+    New-Item -Path $perf -Force | Out-Null
+    New-ItemProperty -Path $perf -Name 'CpuPriorityClass' -Value 3 -PropertyType DWord -Force | Out-Null
+  } catch {
+    Write-Warning "Failed setting IFEO priority for ${ExeName}: $($_.Exception.Message)"
+  }
+}
+
+function Apply-GameHostPerformanceProfile {
+  Write-Host "Applying performance profile (power/capture/services/priority)..."
+  try {
+    powercfg /setactive SCHEME_MIN | Out-Null
+    powercfg -attributes SUB_PROCESSOR CPMINCORES -ATTRIB_HIDE 2>$null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setactive SCHEME_CURRENT | Out-Null
+  } catch {
+    Write-Warning "Power profile tuning failed: $($_.Exception.Message)"
+  }
+
+  try {
+    reg add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' /v AllowGameDVR /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\System\GameConfigStore' /v GameDVR_Enabled /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\GameBar' /v ShowStartupPanel /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR' /v AppCaptureEnabled /t REG_DWORD /d 0 /f | Out-Null
+  } catch {
+    Write-Warning "Game DVR disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    Stop-Service WSearch -Force -ErrorAction SilentlyContinue
+    Set-Service WSearch -StartupType Disabled -ErrorAction SilentlyContinue
+  } catch {
+    Write-Warning "WSearch disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $exclusions = @('C:\gamer','C:\Program Files\Apollo','C:\Program Files (x86)\Steam','C:\SteamLibrary','C:\Emulators')
+    foreach ($p in $exclusions) {
+      if (Test-Path $p) { Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue }
+    }
+  } catch {
+    Write-Warning "Defender exclusions failed: $($_.Exception.Message)"
+  }
+
+  Set-IfEOHighPriority -ExeName 'azahar.exe'
+  Set-IfEOHighPriority -ExeName 'kh3.exe'
+  Set-IfEOHighPriority -ExeName 'KINGDOM HEARTS III.exe'
 }
 
 # Core services
@@ -63,20 +153,14 @@ if ($WindowsPassword) {
   Write-Warning "WindowsPassword not provided: auto-login not configured."
 }
 
+# Performance baseline for cloud gaming (CPU scheduling/capture overhead).
+Apply-GameHostPerformanceProfile
+
 # Required media/runtime deps for Steam + KH + emulator workloads
-try {
-  $mediaCap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
-  if ($mediaCap -and $mediaCap.State -ne 'Installed') {
-    Write-Host 'Installing Media Feature Pack capability...'
-    $dismLog = Join-Path $setupDir 'media_pack_install.log'
-    cmd /c "dism /online /add-capability /capabilityname:Media.MediaFeaturePack~~~~0.0.1.0 > `"$dismLog`" 2>&1"
-    $mediaCap = Get-WindowsCapability -Online -Name 'Media.MediaFeaturePack~~~~0.0.1.0' -ErrorAction SilentlyContinue
-    if ($mediaCap -and $mediaCap.State -eq 'Installed') {
-      Set-Content (Join-Path $setupDir 'reboot-required.txt') 'Media Feature Pack installed; reboot required.'
-    }
-  }
-} catch {
-  Write-Warning "Media Feature Pack install failed: $($_.Exception.Message)"
+if (Install-MediaFeaturePack) {
+  Set-Content (Join-Path $setupDir 'reboot-required.txt') 'Media Feature Pack installed; reboot required.'
+} else {
+  Write-Warning 'Media Feature Pack not installed after retries.'
 }
 
 Invoke-InstallerExe -Name 'vc_redist_x64' -Url 'https://aka.ms/vs/17/release/vc_redist.x64.exe'

@@ -81,6 +81,24 @@ function Get-GitHubLatestAssetUrl($repo, $assetPattern) {
   return ""
 }
 
+function Resolve-PreferredNvidiaAdapterName {
+  try {
+    $candidates = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Status -eq 'OK' -and
+        $_.FriendlyName -like 'NVIDIA*' -and
+        $_.FriendlyName -notlike '*Remote*' -and
+        $_.FriendlyName -notlike '*Basic*'
+      }
+    if ($candidates) {
+      $tesla = $candidates | Where-Object { $_.FriendlyName -like '*Tesla*' } | Select-Object -First 1
+      if ($tesla) { return $tesla.FriendlyName }
+      return ($candidates | Select-Object -First 1).FriendlyName
+    }
+  } catch {}
+  return 'NVIDIA GeForce RTX 4090'
+}
+
 function Download-File($url, $outFile) {
   $wc = New-Object System.Net.WebClient
   $wc.Headers.Add("User-Agent", "gamer-bootstrap")
@@ -217,8 +235,64 @@ function Ensure-ApolloInstances {
   schtasks /Run /TN $task2 | Out-Null
 }
 
+function Set-IfEOHighPriority {
+  param([string]$ExeName)
+  try {
+    $base = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$ExeName"
+    $perf = Join-Path $base 'PerfOptions'
+    New-Item -Path $perf -Force | Out-Null
+    New-ItemProperty -Path $perf -Name 'CpuPriorityClass' -Value 3 -PropertyType DWord -Force | Out-Null
+  } catch {
+    Write-Warning "Failed setting IFEO priority for ${ExeName}: $($_.Exception.Message)"
+  }
+}
+
+function Apply-GameHostPerformanceProfile {
+  try {
+    powercfg /setactive SCHEME_MIN | Out-Null
+    powercfg -attributes SUB_PROCESSOR CPMINCORES -ATTRIB_HIDE 2>$null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 2>$null
+    powercfg /setactive SCHEME_CURRENT | Out-Null
+  } catch {
+    Write-Warning "Power profile tuning failed: $($_.Exception.Message)"
+  }
+
+  try {
+    reg add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' /v AllowGameDVR /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\System\GameConfigStore' /v GameDVR_Enabled /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\GameBar' /v ShowStartupPanel /t REG_DWORD /d 0 /f | Out-Null
+    reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR' /v AppCaptureEnabled /t REG_DWORD /d 0 /f | Out-Null
+  } catch {
+    Write-Warning "Game DVR disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    Stop-Service WSearch -Force -ErrorAction SilentlyContinue
+    Set-Service WSearch -StartupType Disabled -ErrorAction SilentlyContinue
+  } catch {
+    Write-Warning "WSearch disable failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $exclusions = @('C:\gamer','C:\Program Files\Apollo','C:\Program Files (x86)\Steam','C:\SteamLibrary','C:\Emulators')
+    foreach ($p in $exclusions) {
+      if (Test-Path $p) { Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue }
+    }
+  } catch {
+    Write-Warning "Defender exclusions failed: $($_.Exception.Message)"
+  }
+
+  Set-IfEOHighPriority -ExeName 'azahar.exe'
+  Set-IfEOHighPriority -ExeName 'kh3.exe'
+  Set-IfEOHighPriority -ExeName 'KINGDOM HEARTS III.exe'
+}
+
 Write-Host "[1/6] Installing core tools"
 Set-AutoLoginAndNoLock -WindowsUsername $WindowsUsername -WindowsPassword $WindowsPassword
+Apply-GameHostPerformanceProfile
 
 $null = Install-WingetPackage "Python.Python.3.12"
 $null = Install-WingetPackage "Rclone.Rclone"
@@ -354,7 +428,9 @@ try {
   if (Test-Path $apolloExe) {
     $configDir = "C:\\Program Files\\Apollo\\config"
     Ensure-Dir $configDir | Out-Null
-    Write-ApolloConfig -ConfigDir $configDir -GpuName "NVIDIA GeForce RTX 4090"
+    $gpuName = Resolve-PreferredNvidiaAdapterName
+    Write-Host "Using Apollo adapter_name: $gpuName"
+    Write-ApolloConfig -ConfigDir $configDir -GpuName $gpuName
     Write-ApolloAppsConfig -ConfigDir $configDir -WindowsUsername $WindowsUsername
     Ensure-ApolloInstances -ApolloExe $apolloExe -ConfigDir $configDir -WindowsUsername $WindowsUsername
   } else {
