@@ -5,8 +5,8 @@ This folder contains scripts to provision and bootstrap Windows GPU hosts for Ga
 ## Files
 
 - `provision-tensordock-windows.py` — create/status/delete/list TensorDock Windows VM capacity.
-- `startup-windows.ps1` — first-phase host hardening: services, SSH/WinRM, audio services, optional NVIDIA driver, VB-CABLE install.
-- `base-windows.ps1` — base gamer stack: rclone pull, Apollo config, display/audio options.
+- `startup-windows.ps1` — first-phase host hardening: services, SSH/WinRM, audio services, media/runtime deps, optional NVIDIA driver, VB-CABLE, auto-login/no-lock setup.
+- `base-windows.ps1` — base gamer stack: **installs Apollo after interactive user login is present**, then rclone pull + Apollo config/display/audio options.
 - `azahar-windows.ps1` — installs Azahar and wires Apollo app entry.
 - `agent-windows.ps1` — installs/starts client-agent service.
 - `bootstrap-windows.ps1` — legacy all-in-one bootstrap (still available).
@@ -76,6 +76,15 @@ python infrastructure/windows/deploy_startup.py --state-file infrastructure/wind
 python infrastructure/windows/deploy_base.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
 python infrastructure/windows/deploy_azahar.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
 python infrastructure/windows/deploy_agent.py --state-file infrastructure/windows/state/windows-vm-manassas.local.json
+```
+
+Startup step now accepts and applies auto-login credentials:
+
+```bash
+python infrastructure/windows/deploy_startup.py \
+  --state-file infrastructure/windows/state/windows-vm-manassas.local.json \
+  --windows-username user \
+  --windows-password '...'
 ```
 
 Symlink/mount behavior:
@@ -171,6 +180,11 @@ What is now included in `startup-windows.ps1`:
 2. Install VC++ runtime redistributables (x64 + x86).
 3. Install DirectX Jun2010 runtime from Steam `_CommonRedist` when available.
 4. Emit `C:\ProgramData\gamer\setup\reboot-required.txt` when media pack is installed (reboot required).
+5. Configure auto-login + disable lock/sleep for headless game hosts.
+
+Apollo install ordering hardening:
+- Apollo install is now performed in `base-windows.ps1` only after an active `console` session for the Windows user is detected.
+- This guarantees Apollo setup runs after user auto-login state is available (instead of pre-login/session0 timing).
 
 Validation commands:
 

@@ -34,6 +34,39 @@ function Ensure-Dir($path) {
   }
 }
 
+function Set-AutoLoginAndNoLock {
+  param(
+    [string]$WindowsUsername,
+    [string]$WindowsPassword
+  )
+  if (-not $WindowsPassword) {
+    Write-Warning "WindowsPassword not provided; skipping auto-login setup."
+    return
+  }
+  try {
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d $WindowsUsername /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d $WindowsPassword /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableCAD /t REG_DWORD /d 1 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f | Out-Null
+    powercfg /change monitor-timeout-ac 0 | Out-Null
+    powercfg /change standby-timeout-ac 0 | Out-Null
+    powercfg /change hibernate-timeout-ac 0 | Out-Null
+  } catch {
+    Write-Warning "Failed to configure auto-login: $($_.Exception.Message)"
+  }
+}
+
+function Test-InteractiveConsoleReady {
+  param([string]$WindowsUsername)
+  try {
+    $q = quser 2>$null
+    return [bool]($q -match "(?m)^\s*$([regex]::Escape($WindowsUsername))\s+console\s+\d+\s+Active")
+  } catch {
+    return $false
+  }
+}
+
 function Get-GitHubLatestAssetUrl($repo, $assetPattern) {
   try {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "gamer-bootstrap" }
@@ -185,6 +218,8 @@ function Ensure-ApolloInstances {
 }
 
 Write-Host "[1/6] Installing core tools"
+Set-AutoLoginAndNoLock -WindowsUsername $WindowsUsername -WindowsPassword $WindowsPassword
+
 $null = Install-WingetPackage "Python.Python.3.12"
 $null = Install-WingetPackage "Rclone.Rclone"
 $null = Install-WingetPackage "AutoHotkey.AutoHotkey"
@@ -221,6 +256,9 @@ if ($ShaderGlassInstallerUrl -ne "") {
 }
 
 Write-Host "[3/6] Installing Apollo"
+if (-not (Test-InteractiveConsoleReady -WindowsUsername $WindowsUsername)) {
+  Write-Warning "Interactive console session for '$WindowsUsername' not ready yet. Apollo install should be rerun after auto-login."
+}
 if ($ApolloInstallerUrl -eq "") {
   $ApolloInstallerUrl = Get-GitHubLatestAssetUrl "ClassicOldSong/Apollo" "\\.exe$"
 }

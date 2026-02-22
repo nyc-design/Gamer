@@ -1,6 +1,7 @@
 param(
   [string]$NvidiaDriverUrl = '',
-  [string]$WindowsUsername = 'user'
+  [string]$WindowsUsername = 'user',
+  [string]$WindowsPassword = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -39,6 +40,28 @@ Set-Service AudioEndpointBuilder -StartupType Automatic -ErrorAction SilentlyCon
 Start-Service AudioEndpointBuilder -ErrorAction SilentlyContinue
 Set-Service Audiosrv -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service Audiosrv -ErrorAction SilentlyContinue
+
+# Configure auto-login / no lock for headless game sessions.
+if ($WindowsPassword) {
+  try {
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d $WindowsUsername /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d $WindowsPassword /f | Out-Null
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableCAD /t REG_DWORD /d 1 /f | Out-Null
+    reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f | Out-Null
+    powercfg /change monitor-timeout-ac 0 | Out-Null
+    powercfg /change monitor-timeout-dc 0 | Out-Null
+    powercfg /change standby-timeout-ac 0 | Out-Null
+    powercfg /change standby-timeout-dc 0 | Out-Null
+    powercfg /change hibernate-timeout-ac 0 | Out-Null
+    powercfg /change hibernate-timeout-dc 0 | Out-Null
+    Write-Host "Configured auto-login and disabled lock/sleep for user '$WindowsUsername'."
+  } catch {
+    Write-Warning "Auto-login setup failed: $($_.Exception.Message)"
+  }
+} else {
+  Write-Warning "WindowsPassword not provided: auto-login not configured."
+}
 
 # Required media/runtime deps for Steam + KH + emulator workloads
 try {

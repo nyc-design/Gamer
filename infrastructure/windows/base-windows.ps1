@@ -2,8 +2,10 @@ param(
   [string]$RcloneConfigBase64 = '',
   [string]$R2Remote = 'r2:gamer-roms/me',
   [string]$GcsRemote = 'gcs:gamer-data/me',
+  [string]$ApolloInstallerUrl = '',
   [string]$ApolloUsername = 'gamer',
-  [string]$ApolloPassword = 'gamer'
+  [string]$ApolloPassword = 'gamer',
+  [string]$WindowsUsername = 'user'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -21,6 +23,65 @@ $dirs=@(
   "$base\firmware"
 )
 $dirs | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+
+function Resolve-GitHubLatestAssetUrl {
+  param(
+    [string]$Repo,
+    [string]$AssetRegex
+  )
+  try {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'User-Agent'='gamer-windows-setup' }
+    foreach ($asset in $release.assets) {
+      if ($asset.name -match $AssetRegex) {
+        return $asset.browser_download_url
+      }
+    }
+  } catch {
+    Write-Warning "Failed to resolve latest release for ${Repo}: $($_.Exception.Message)"
+  }
+  return ''
+}
+
+function Ensure-ApolloInstalled {
+  param(
+    [string]$InstallerUrl
+  )
+  $sunshinePath = 'C:\Program Files\Apollo\sunshine.exe'
+  if (Test-Path $sunshinePath) { return $true }
+
+  if (-not $InstallerUrl) {
+    $InstallerUrl = Resolve-GitHubLatestAssetUrl -Repo 'ClassicOldSong/Apollo' -AssetRegex '\.exe$'
+  }
+  if (-not $InstallerUrl) {
+    Write-Warning 'Apollo installer URL unavailable.'
+    return $false
+  }
+
+  try {
+    $installer = 'C:\ProgramData\gamer\setup\apollo-installer.exe'
+    Invoke-WebRequest -Uri $InstallerUrl -OutFile $installer
+    $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+    if ($p.ExitCode -ne 0 -and -not (Test-Path $sunshinePath)) {
+      $p2 = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+      Write-Host "Apollo fallback silent exit code: $($p2.ExitCode)"
+    }
+  } catch {
+    Write-Warning "Apollo install failed: $($_.Exception.Message)"
+  }
+  return (Test-Path $sunshinePath)
+}
+
+# Ensure this step runs after user auto-login (interactive console session available).
+$interactiveReady = $false
+try {
+  $q = quser 2>$null
+  if ($q -match "(?m)^\s*$([regex]::Escape($WindowsUsername))\s+console\s+\d+\s+Active") {
+    $interactiveReady = $true
+  }
+} catch {}
+if (-not $interactiveReady) {
+  throw "Base step requires active console session for user '$WindowsUsername'. Ensure auto-login has occurred, then rerun deploy_base."
+}
 
 # rclone
 function Get-RcloneExe {
@@ -83,6 +144,9 @@ if ($rclone) {
 # Apollo config + credentials
 $apollo='C:\Program Files\Apollo\sunshine.exe'
 $cfg='C:\Program Files\Apollo\config'
+if (-not (Ensure-ApolloInstalled -InstallerUrl $ApolloInstallerUrl)) {
+  throw 'Apollo is not installed; cannot continue base setup.'
+}
 Stop-Service ApolloService -Force -ErrorAction SilentlyContinue
 Ensure-SymlinkDir -LinkPath $cfg -TargetPath "$base\mounts\gcs\configs\apollo"
 
