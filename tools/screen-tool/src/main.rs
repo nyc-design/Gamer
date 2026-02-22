@@ -318,22 +318,56 @@ fn find_emulator_window(display: *mut xlib::Display, pattern: &str) -> Option<(c
     best
 }
 
-/// Check if a secondary emulator window exists
+/// Check if a secondary emulator window exists.
+/// Checks _NET_CLIENT_LIST first, then falls back to recursive XQueryTree
+/// (some emulators create secondary windows as transient/child windows
+/// that openbox doesn't include in _NET_CLIENT_LIST).
 fn secondary_window_exists(display: *mut xlib::Display, patterns: &[String]) -> bool {
     let root = unsafe { xlib::XDefaultRootWindow(display) };
+
+    // First try _NET_CLIENT_LIST (fast, reliable for managed windows)
     if let Some(clients) = get_client_list(display, root) {
         for wid in clients {
-            if let Some(name) = get_window_name(display, wid) {
-                for pat in patterns {
-                    if name.contains(pat.as_str()) {
-                        unsafe {
-                            let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-                            if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
-                                && attrs.width >= 32 && attrs.height >= 32
-                            {
-                                return true;
-                            }
-                        }
+            if check_window_matches(display, wid, patterns) {
+                return true;
+            }
+        }
+    }
+
+    // Fallback: check direct children of root (covers transient/unmanaged windows)
+    unsafe {
+        let mut root_ret: c_ulong = 0;
+        let mut parent_ret: c_ulong = 0;
+        let mut children: *mut c_ulong = ptr::null_mut();
+        let mut nchildren: u32 = 0;
+        if xlib::XQueryTree(display, root, &mut root_ret, &mut parent_ret, &mut children, &mut nchildren) != 0 {
+            let result = if !children.is_null() && nchildren > 0 {
+                let child_slice = std::slice::from_raw_parts(children, nchildren as usize);
+                child_slice.iter().any(|&wid| check_window_matches(display, wid, patterns))
+            } else {
+                false
+            };
+            if !children.is_null() {
+                xlib::XFree(children as *mut c_void);
+            }
+            result
+        } else {
+            false
+        }
+    }
+}
+
+fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[String]) -> bool {
+    if let Some(name) = get_window_name(display, wid) {
+        for pat in patterns {
+            if name.contains(pat.as_str()) {
+                unsafe {
+                    let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+                    if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
+                        && attrs.width >= 32 && attrs.height >= 32
+                        && attrs.map_state == xlib::IsViewable
+                    {
+                        return true;
                     }
                 }
             }
@@ -746,7 +780,7 @@ impl FpsOverlay {
                 let tex = g.create_texture().unwrap();
                 g.bind_texture(glow::TEXTURE_2D, Some(tex));
                 g.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA as i32, tw as i32, th as i32, 0,
-                    glow::RGBA, glow::UNSIGNED_BYTE, Some(&pixels));
+                    glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&pixels)));
                 g.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
                 g.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
                 g.bind_texture(glow::TEXTURE_2D, None);
