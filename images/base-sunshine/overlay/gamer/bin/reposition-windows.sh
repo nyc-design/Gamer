@@ -11,6 +11,7 @@
 ###############################################################################
 
 export DISPLAY=${DISPLAY:-:0}
+SECONDARY_PATTERN=${SECONDARY_PATTERN:-"Secondary Window|Bottom Screen|Subscreen|Screen 2"}
 LOG=/tmp/screen-mode.log
 touch "$LOG" 2>/dev/null || LOG=/dev/null
 
@@ -49,7 +50,7 @@ for wid in $(xdotool search --name "Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam|
     echo "$name" | grep -q "^Shader: " && continue
     if echo "$name" | grep -q "^ScreenTool"; then
         SCREEN_TOOL=$wid
-    elif echo "$name" | grep -q "Secondary Window"; then
+    elif echo "$name" | grep -Eiq "$SECONDARY_PATTERN"; then
         SECONDARY=$wid
     elif echo "$name" | grep -qE "(Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam) [0-9]"; then
         PRIMARY=$wid

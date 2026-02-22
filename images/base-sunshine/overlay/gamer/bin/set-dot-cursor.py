@@ -5,8 +5,9 @@ Set a tiny dot cursor on the active bottom-screen window for touch input.
 Creates an 8x8 cursor with a 4x4 white dot at center, applied per-window
 via XDefineCursor. Top screen keeps the normal arrow cursor.
 
-By default ("auto"), prefers Secondary Window, then ScreenTool, constrained
-to windows currently on DP-2.
+By default ("auto"), applies to both Secondary Window and ScreenTool if
+they are on DP-2. Secondary window matching is configurable with
+SECONDARY_PATTERN env var.
 """
 
 import ctypes
@@ -83,18 +84,24 @@ def is_on_dp2(wid_str, dp2):
     return overlap_w * overlap_h >= int(0.5 * ww * wh)
 
 
-def find_bottom_window(target="auto"):
-    """Find the bottom window by target mode: auto|secondary|screentool."""
+def find_bottom_windows(target="auto"):
+    """Find bottom windows by target mode: auto|secondary|screentool|both."""
     dp2 = parse_dp2_geometry()
+    secondary_pattern = os.environ.get(
+        "SECONDARY_PATTERN", "Secondary Window|Bottom Screen|Subscreen|Screen 2"
+    )
     patterns = []
     if target == "secondary":
-        patterns = ["Secondary Window"]
+        patterns = [secondary_pattern]
     elif target == "screentool":
         patterns = ["^ScreenTool"]
+    elif target == "both":
+        patterns = [secondary_pattern, "^ScreenTool"]
     else:
-        # Prefer emulator bottom window; fallback to screen-tool.
-        patterns = ["Secondary Window", "^ScreenTool"]
+        patterns = [secondary_pattern, "^ScreenTool"]
 
+    found = []
+    seen = set()
     for pattern in patterns:
         try:
             result = subprocess.run(
@@ -106,9 +113,14 @@ def find_bottom_window(target="auto"):
             continue
 
         for wid_str in result.stdout.strip().split():
+            if wid_str in seen:
+                continue
             if is_on_dp2(wid_str, dp2):
-                return int(wid_str)
-    return None
+                seen.add(wid_str)
+                found.append(int(wid_str))
+    return found
+
+
 def apply_dot_cursor(window_id):
     """Create and apply an 8x8 cursor with 4x4 white dot to the given window."""
     lib_path = ctypes.util.find_library("X11")
@@ -183,18 +195,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--target",
-        choices=["auto", "secondary", "screentool"],
+        choices=["auto", "secondary", "screentool", "both"],
         default="auto",
         help="Window target for dot cursor",
     )
     args = parser.parse_args()
 
-    window_id = find_bottom_window(args.target)
-    if not window_id:
+    windows = find_bottom_windows(args.target)
+    if not windows:
         log(f"No target bottom window found (target={args.target}), skipping")
         sys.exit(0)
 
-    if not apply_dot_cursor(window_id):
+    ok = True
+    for window_id in windows:
+        ok = apply_dot_cursor(window_id) and ok
+    if not ok:
         sys.exit(1)
 
 

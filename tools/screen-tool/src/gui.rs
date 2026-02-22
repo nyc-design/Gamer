@@ -585,36 +585,9 @@ impl ScreenToolGui {
         });
         self.clamp_pan_center();
 
-        // Large top tabs for current and future feature modules.
-        egui::TopBottomPanel::top("feature_tabs").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal_centered(|ui| {
-                let crop_selected = self.active_tab == ToolTab::Crop;
-                let perf_selected = self.active_tab == ToolTab::Performance;
-                if ui
-                    .add_sized(
-                        [220.0, 42.0],
-                        egui::Button::new(egui::RichText::new("Screen Crop Tool").size(18.0))
-                            .selected(crop_selected),
-                    )
-                    .clicked()
-                {
-                    self.active_tab = ToolTab::Crop;
-                }
-                ui.add_space(10.0);
-                if ui
-                    .add_sized(
-                        [220.0, 42.0],
-                        egui::Button::new(egui::RichText::new("Performance Monitor").size(18.0))
-                            .selected(perf_selected),
-                    )
-                    .clicked()
-                {
-                    self.active_tab = ToolTab::Performance;
-                }
-            });
-            ui.add_space(4.0);
-        });
+        // Scale controls continuously with available screen real estate.
+        let rect = ctx.screen_rect();
+        let scale = ((rect.width().min(rect.height()) / 900.0).clamp(0.95, 2.4)).max(1.0);
 
         // Toolbar
         if self.show_toolbar {
@@ -724,6 +697,44 @@ impl ScreenToolGui {
                 });
         }
 
+        // Left-side vertical feature tabs (icon buttons).
+        let tab_btn = 56.0 * scale;
+        let tab_pad = 24.0;
+        egui::Area::new(egui::Id::new("feature_tab_controls"))
+            .anchor(egui::Align2::LEFT_CENTER, egui::vec2(tab_pad, 0.0))
+            .interactable(true)
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style())
+                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            if ui
+                                .add_sized(
+                                    [tab_btn, tab_btn],
+                                    egui::Button::new(egui::RichText::new("🔍").size(24.0 * scale))
+                                        .selected(self.active_tab == ToolTab::Crop),
+                                )
+                                .on_hover_text("Screen Crop Tool")
+                                .clicked()
+                            {
+                                self.active_tab = ToolTab::Crop;
+                            }
+                            ui.add_space(8.0 * scale);
+                            if ui
+                                .add_sized(
+                                    [tab_btn, tab_btn],
+                                    egui::Button::new(egui::RichText::new("📈").size(24.0 * scale))
+                                        .selected(self.active_tab == ToolTab::Performance),
+                                )
+                                .on_hover_text("Performance Monitor")
+                                .clicked()
+                            {
+                                self.active_tab = ToolTab::Performance;
+                            }
+                        });
+                    });
+            });
+
         if self.active_tab == ToolTab::Performance {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
@@ -758,14 +769,6 @@ impl ScreenToolGui {
         }
 
         // Always-visible, touch-friendly zoom controls for high-res displays.
-        let screen_h = ctx.screen_rect().height();
-        let scale = if screen_h >= 1400.0 {
-            1.45
-        } else if screen_h >= 1080.0 {
-            1.25
-        } else {
-            1.0
-        };
         let btn_w = 60.0 * scale;
         let btn_h = 48.0 * scale;
         let reset_h = 34.0 * scale;

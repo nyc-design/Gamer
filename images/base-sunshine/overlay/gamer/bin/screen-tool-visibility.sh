@@ -28,6 +28,8 @@ LAST_PINNED_GEOM=""
 POLL_INTERVAL="${SCREEN_TOOL_VIS_POLL_SEC:-0.25}"
 ACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_ACTIVE_POLLS:-2}"
 INACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_INACTIVE_POLLS:-2}"
+CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
+CURSOR_TICK=0
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -100,7 +102,7 @@ pin_screen_tool_to_bottom() {
         LAST_PINNED_GEOM="$target_geom"
         echo "[screen-tool-visibility] Pinned screen-tool to DP-2 ${bot_w}x${bot_h}+${bot_x}+${bot_y}"
         if [ -x /gamer/bin/set-dot-cursor.py ]; then
-            python3 /gamer/bin/set-dot-cursor.py --target screentool >/dev/null 2>&1 || true
+            SECONDARY_PATTERN="$PATTERN" python3 /gamer/bin/set-dot-cursor.py --target both >/dev/null 2>&1 || true
         fi
     fi
 }
@@ -147,7 +149,7 @@ while true; do
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         /gamer/bin/reposition-windows.sh 2>/dev/null || true
         if [ -x /gamer/bin/set-dot-cursor.py ]; then
-            python3 /gamer/bin/set-dot-cursor.py --target screentool >/dev/null 2>&1 || true
+            SECONDARY_PATTERN="$PATTERN" python3 /gamer/bin/set-dot-cursor.py --target both >/dev/null 2>&1 || true
         fi
         HIDDEN=false
     fi
@@ -156,5 +158,15 @@ while true; do
     # cannot strand it on the primary display.
     if [ "$HIDDEN" = "false" ]; then
         pin_screen_tool_to_bottom "$SCREEN_TOOL_WID"
+    fi
+
+    # Periodically refresh dot cursor on both windows to survive cursor resets
+    # from WM/focus changes.
+    CURSOR_TICK=$((CURSOR_TICK + 1))
+    if [ "$CURSOR_TICK" -ge "$CURSOR_REFRESH_POLLS" ]; then
+        CURSOR_TICK=0
+        if [ -x /gamer/bin/set-dot-cursor.py ]; then
+            SECONDARY_PATTERN="$PATTERN" python3 /gamer/bin/set-dot-cursor.py --target both >/dev/null 2>&1 || true
+        fi
     fi
 done
