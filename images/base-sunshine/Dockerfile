@@ -5,15 +5,17 @@
 # Based on CloudyPad's proven Sunshine container patterns:
 # https://github.com/PierreBeucher/cloudypad/tree/master/containers/sunshine
 
-# Build shader-overlay from source
-FROM rust:latest AS build-shader-overlay
+# Build shader-overlay binary and shader-inject LD_PRELOAD library from source
+FROM rust:latest AS build-shaders
 WORKDIR /build
 RUN apt-get update && apt-get install -y \
     libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
     libgl-dev libglu1-mesa-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
-COPY tools/shader-overlay/ .
-RUN cargo build --release && strip target/release/shader-overlay
+COPY tools/shader-overlay/ shader-overlay/
+COPY tools/shader-inject/ shader-inject/
+RUN cd shader-overlay && cargo build --release && strip target/release/shader-overlay
+RUN cd shader-inject && cargo build --release && strip target/release/libshader_inject.so
 
 # Download Sunshine .deb in a separate stage
 FROM alpine/curl:8.14.1 AS download-sunshine
@@ -144,8 +146,10 @@ RUN useradd -m -d /home/gamer -s /bin/bash -u 1001 gamer
 # Copy overlay (scripts, configs)
 COPY images/base-sunshine/overlay/ /
 
-# shader-overlay binary (from Rust build stage)
-COPY --from=build-shader-overlay /build/target/release/shader-overlay /gamer/bin/shader-overlay
+# shader-overlay binary (from Rust build stage) — XComposite-based, for non-NVFBC capture
+COPY --from=build-shaders /build/shader-overlay/target/release/shader-overlay /gamer/bin/shader-overlay
+# shader-inject LD_PRELOAD library — NVFBC-compatible, intercepts glXSwapBuffers
+COPY --from=build-shaders /build/shader-inject/target/release/libshader_inject.so /gamer/lib/libshader_inject.so
 
 # Bundle RetroArch shader presets (subset of slang-shaders)
 RUN --mount=type=cache,target=/var/cache <<EOF

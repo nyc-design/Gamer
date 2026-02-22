@@ -1,0 +1,20 @@
+[package]
+name = "shader-inject"
+version = "0.1.0"
+edition = "2021"
+description = "LD_PRELOAD library that intercepts glXSwapBuffers to apply RetroArch .slangp shaders"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+librashader = { version = "0.10", features = ["runtime-gl", "stable"] }
+glow = "0.16"
+x11 = { version = "2.21", features = ["xlib", "glx"] }
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

@@ -31,6 +31,18 @@ if [ -n "$FAKETIME" ]; then
     export FAKETIME_NO_CACHE=1
 fi
 
+# shader-inject — LD_PRELOAD for NVFBC-compatible shader injection
+# Intercepts glXSwapBuffers to apply RetroArch shaders directly in the emulator's
+# GL pipeline, avoiding XComposite which breaks NVFBC capture.
+if [ -n "${SHADER_PRESET:-}" ] && [ "${SUNSHINE_CAPTURE:-}" = "nvfbc" ] && [ -f /gamer/lib/libshader_inject.so ]; then
+    echo "[azahar] Enabling shader-inject (LD_PRELOAD, NVFBC-compatible)"
+    if [ -n "${LD_PRELOAD:-}" ]; then
+        export LD_PRELOAD="${LD_PRELOAD}:/gamer/lib/libshader_inject.so"
+    else
+        export LD_PRELOAD=/gamer/lib/libshader_inject.so
+    fi
+fi
+
 # Copy default config on first run
 if [ ! -f /home/gamer/config/azahar-emu/qt-config.ini ]; then
     echo "[azahar] First run — copying default config"
@@ -126,24 +138,36 @@ if [ "$ACTIVE_LAYOUT" = "4" ] && [ "${DUAL_SCREEN:-1}" = "1" ]; then
     echo "[azahar] Secondary (bottom): $SECONDARY"
 
     if [ -n "$PRIMARY" ] && [ -n "$SECONDARY" ]; then
-        # Get current display layout for positioning
-        TOP_HEIGHT=$(xrandr --current | grep "^DP-0" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1 | cut -d'x' -f2 | cut -d'+' -f1)
-        TOP_HEIGHT=${TOP_HEIGHT:-1080}
-        TOP_WIDTH=$(xrandr --current | grep "^DP-0" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1 | cut -d'x' -f1)
+        # Get current display layout for positioning (read actual offsets from xrandr)
+        TOP_INFO=$(xrandr --current | grep "^DP-0" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1)
+        BOT_INFO=$(xrandr --current | grep "^DP-2" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1)
+
+        TOP_WIDTH=$(echo "$TOP_INFO" | cut -dx -f1)
+        TOP_HEIGHT=$(echo "$TOP_INFO" | cut -dx -f2 | cut -d+ -f1)
+        TOP_X=$(echo "$TOP_INFO" | cut -d+ -f2)
+        TOP_Y=$(echo "$TOP_INFO" | cut -d+ -f3)
         TOP_WIDTH=${TOP_WIDTH:-1920}
-        BOT_WIDTH=$(xrandr --current | grep "^DP-2" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1 | cut -d'x' -f1)
+        TOP_HEIGHT=${TOP_HEIGHT:-1080}
+        TOP_X=${TOP_X:-0}
+        TOP_Y=${TOP_Y:-0}
+
+        BOT_WIDTH=$(echo "$BOT_INFO" | cut -dx -f1)
+        BOT_HEIGHT=$(echo "$BOT_INFO" | cut -dx -f2 | cut -d+ -f1)
+        BOT_X=$(echo "$BOT_INFO" | cut -d+ -f2)
+        BOT_Y=$(echo "$BOT_INFO" | cut -d+ -f3)
         BOT_WIDTH=${BOT_WIDTH:-1920}
-        BOT_HEIGHT=$(xrandr --current | grep "^DP-2" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1 | cut -d'x' -f2 | cut -d'+' -f1)
         BOT_HEIGHT=${BOT_HEIGHT:-1080}
+        BOT_X=${BOT_X:-0}
+        BOT_Y=${BOT_Y:-1080}
 
         # Position and resize primary window on top display
-        echo "[azahar] Positioning primary at 0,0 (${TOP_WIDTH}x${TOP_HEIGHT})"
-        xdotool windowmove $PRIMARY 0 0
+        echo "[azahar] Positioning primary at ${TOP_X},${TOP_Y} (${TOP_WIDTH}x${TOP_HEIGHT})"
+        xdotool windowmove $PRIMARY $TOP_X $TOP_Y
         xdotool windowsize $PRIMARY $TOP_WIDTH $TOP_HEIGHT
 
         # Position and resize secondary window on bottom display
-        echo "[azahar] Positioning secondary at 0,${TOP_HEIGHT} (${BOT_WIDTH}x${BOT_HEIGHT})"
-        xdotool windowmove $SECONDARY 0 $TOP_HEIGHT
+        echo "[azahar] Positioning secondary at ${BOT_X},${BOT_Y} (${BOT_WIDTH}x${BOT_HEIGHT})"
+        xdotool windowmove $SECONDARY $BOT_X $BOT_Y
         xdotool windowsize $SECONDARY $BOT_WIDTH $BOT_HEIGHT
 
         echo "[azahar] Windows positioned."

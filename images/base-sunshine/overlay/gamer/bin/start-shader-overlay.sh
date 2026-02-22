@@ -17,6 +17,14 @@ if [ -z "${SHADER_PRESET:-}" ]; then
     sleep infinity
 fi
 
+# When using NVFBC capture, shaders are applied via LD_PRELOAD (shader-inject)
+# on the emulator process itself. The standalone overlay is not needed.
+if [ "${SUNSHINE_CAPTURE:-}" = "nvfbc" ] && [ -f /gamer/lib/libshader_inject.so ]; then
+    echo "[shader-overlay] NVFBC mode: shaders applied via LD_PRELOAD on emulator, overlay not needed."
+    sleep infinity
+fi
+
+# Non-NVFBC mode: use the standalone XComposite-based overlay
 # Wait for X server
 /gamer/bin/wait-x.sh
 
