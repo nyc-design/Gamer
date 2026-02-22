@@ -16,6 +16,7 @@ use clap::Parser;
 use glow::HasContext;
 use signal_hook::flag;
 use std::ffi::{CStr, CString};
+use std::mem::MaybeUninit;
 use std::os::raw::{c_int, c_uint, c_ulong, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -333,13 +334,16 @@ impl NvfbcCapture {
                 std::mem::transmute(sym)
             };
 
-            // Get function table
-            let mut fns: NvfbcFunctionList = std::mem::zeroed();
-            fns.dw_version = NVFBC_API_VERSION;
-            let status = create_instance(&mut fns);
+            // Get function table — use MaybeUninit because the struct contains
+            // function pointers that can't be zero-initialized in Rust
+            let mut fns_uninit = MaybeUninit::<NvfbcFunctionList>::uninit();
+            // Only set version field (at the start of the struct)
+            (fns_uninit.as_mut_ptr() as *mut u32).write(NVFBC_API_VERSION);
+            let status = create_instance(fns_uninit.as_mut_ptr());
             if status != NVFBC_SUCCESS {
                 bail!("NvFBCCreateInstance failed: {}", status);
             }
+            let fns = fns_uninit.assume_init();
 
             // Create handle with our GLX context
             gl.make_current_offscreen();
