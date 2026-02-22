@@ -38,12 +38,11 @@ const NVFBC_CAPTURE_TO_GL: u32 = 3;
 const NVFBC_BUFFER_FORMAT_RGBA: u32 = 4;
 const NVFBC_TOGL_TEXTURES_MAX: usize = 2;
 
-// Version packing: (size | (ver << 16) | (api_ver << 24))
-// API version: major=1, minor=8 => (8 | (1 << 8)) = 0x108
-const NVFBC_API_VERSION: u32 = 0x108;
+// NVFBC API version: major=1, minor=7 => (7 | (1 << 8)) = 0x107
+const NVFBC_VERSION: u32 = 0x107;
 
 fn nvfbc_struct_version<T>(ver: u32) -> u32 {
-    (std::mem::size_of::<T>() as u32) | (ver << 16) | (NVFBC_API_VERSION << 24)
+    (std::mem::size_of::<T>() as u32) | (ver << 16) | (NVFBC_VERSION << 24)
 }
 
 #[repr(C)]
@@ -65,7 +64,6 @@ struct NvfbcRandrOutputInfo {
     dw_id: u32,
     name: [u8; 128],
     tracker_box: NvfbcBox,
-    connected: NvfbcBool,
 }
 
 const NVFBC_OUTPUT_MAX: usize = 5;
@@ -338,7 +336,8 @@ impl NvfbcCapture {
             // function pointers that can't be zero-initialized in Rust
             let mut fns_uninit = MaybeUninit::<NvfbcFunctionList>::uninit();
             // Only set version field (at the start of the struct)
-            (fns_uninit.as_mut_ptr() as *mut u32).write(NVFBC_API_VERSION);
+            // Function list version uses NVFBC_VERSION directly (not struct version)
+            (fns_uninit.as_mut_ptr() as *mut u32).write(NVFBC_VERSION);
             let status = create_instance(fns_uninit.as_mut_ptr());
             if status != NVFBC_SUCCESS {
                 bail!("NvFBCCreateInstance failed: {}", status);
@@ -384,9 +383,10 @@ impl NvfbcCapture {
                 let out = &status_params.outputs[i];
                 let name_end = out.name.iter().position(|&b| b == 0).unwrap_or(out.name.len());
                 let name = String::from_utf8_lossy(&out.name[..name_end]);
-                log::info!("  Output {}: '{}' id={} connected={} {}x{}",
-                    i, name, out.dw_id, out.connected, out.tracker_box.w, out.tracker_box.h);
-                if name.trim() == output_name && out.connected != 0 {
+                log::info!("  Output {}: '{}' id={} {}x{}+{}+{}",
+                    i, name, out.dw_id, out.tracker_box.w, out.tracker_box.h,
+                    out.tracker_box.x, out.tracker_box.y);
+                if name.trim() == output_name {
                     output_id = out.dw_id;
                     found = true;
                 }
