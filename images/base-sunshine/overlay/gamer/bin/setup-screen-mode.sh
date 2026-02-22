@@ -87,5 +87,5 @@ if [ -x "$SCRIPT_DIR/reposition-windows.sh" ]; then
     "$SCRIPT_DIR/reposition-windows.sh" &
 fi
 
-# Note: Bottom screen input remapping is handled by input-remap-proxy.py
-# (evdev-level uinput proxy), not CTM. See Sunshine bug #3696.
+# Note: Bottom screen input mapping is now handled natively by Sunshine
+# prerelease builds. Keep input-remap proxy disabled unless debugging.
