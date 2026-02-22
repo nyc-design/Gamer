@@ -86,6 +86,9 @@ apt-get install -y \
     libpulse0 \
     libxcb-cursor0
 
+# libfaketime — in-game clock spoofing for time-sensitive games (Pokemon, etc.)
+apt-get install -y libfaketime
+
 apt-get clean
 EOF
 
@@ -124,6 +127,10 @@ ENV SUNSHINE_CAPTURE=nvfbc
 # Sunshine credentials
 ENV SUNSHINE_USERNAME=admin
 ENV SUNSHINE_PASSWORD_BASE64=YWRtaW4=
+
+# libfaketime config (optional — set per save slot)
+# FAKETIME: fake time string (e.g., "2011-03-06 12:00:00")
+ENV FAKETIME=""
 
 # Shader overlay config (optional — set to enable)
 # SHADER_PRESET: path to .slangp file for primary window

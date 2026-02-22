@@ -16,7 +16,6 @@ apt-get install -y --no-install-recommends \
     libqt6multimedia6 \
     libqt6opengl6-dev \
     libglu1-mesa \
-    libfaketime \
     fuse3 \
     libfuse3-3
 
@@ -50,4 +49,3 @@ ENV APPIMAGE_EXTRACT_AND_RUN=1
 ENV ROM_FILENAME=""
 ENV LAYOUT_OPTION=4
 ENV AZAHAR_FULLSCREEN=0
-ENV FAKETIME=""

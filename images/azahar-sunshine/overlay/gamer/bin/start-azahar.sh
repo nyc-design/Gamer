@@ -24,24 +24,8 @@ echo "[azahar] Starting Azahar 3DS emulator..."
 # Wait a bit for Sunshine to be ready
 sleep 2
 
-# libfaketime — only activate if FAKETIME is set
-if [ -n "$FAKETIME" ]; then
-    echo "[azahar] Enabling libfaketime: ${FAKETIME}"
-    export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
-    export FAKETIME_NO_CACHE=1
-fi
-
-# shader-inject — LD_PRELOAD for NVFBC-compatible shader injection
-# Intercepts glXSwapBuffers to apply RetroArch shaders directly in the emulator's
-# GL pipeline, avoiding XComposite which breaks NVFBC capture.
-if [ -n "${SHADER_PRESET:-}" ] && [ "${SUNSHINE_CAPTURE:-}" = "nvfbc" ] && [ -f /gamer/lib/libshader_inject.so ]; then
-    echo "[azahar] Enabling shader-inject (LD_PRELOAD, NVFBC-compatible)"
-    if [ -n "${LD_PRELOAD:-}" ]; then
-        export LD_PRELOAD="${LD_PRELOAD}:/gamer/lib/libshader_inject.so"
-    else
-        export LD_PRELOAD=/gamer/lib/libshader_inject.so
-    fi
-fi
+# Shared LD_PRELOAD setup (libfaketime + shader-inject)
+source /gamer/bin/setup-preload.sh
 
 # Copy default config on first run
 if [ ! -f /home/gamer/config/azahar-emu/qt-config.ini ]; then
