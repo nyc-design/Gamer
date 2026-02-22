@@ -25,6 +25,9 @@ HIDDEN=false
 ACTIVE_STREAK=0
 INACTIVE_STREAK=0
 LAST_PINNED_GEOM=""
+POLL_INTERVAL="${SCREEN_TOOL_VIS_POLL_SEC:-0.25}"
+ACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_ACTIVE_POLLS:-2}"
+INACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_INACTIVE_POLLS:-2}"
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -96,11 +99,14 @@ pin_screen_tool_to_bottom() {
         xdotool windowsize "$wid" "$bot_w" "$bot_h" 2>/dev/null
         LAST_PINNED_GEOM="$target_geom"
         echo "[screen-tool-visibility] Pinned screen-tool to DP-2 ${bot_w}x${bot_h}+${bot_x}+${bot_y}"
+        if [ -x /gamer/bin/set-dot-cursor.py ]; then
+            python3 /gamer/bin/set-dot-cursor.py --target screentool >/dev/null 2>&1 || true
+        fi
     fi
 }
 
 while true; do
-    sleep 1
+    sleep "$POLL_INTERVAL"
 
     # Find secondary window.
     # We only count it as active when it's viewable and occupying bottom display.
@@ -128,18 +134,21 @@ while true; do
     fi
 
     # Debounce: require 2 consecutive active polls before hiding.
-    if [ "$ACTIVE_STREAK" -ge 2 ] && [ "$HIDDEN" = "false" ]; then
+    if [ "$ACTIVE_STREAK" -ge "$ACTIVE_DEBOUNCE_POLLS" ] && [ "$HIDDEN" = "false" ]; then
         echo "[screen-tool-visibility] Secondary active, hiding screen-tool"
         xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
         HIDDEN=true
     fi
 
     # Debounce: require 2 consecutive inactive polls before showing.
-    if [ "$INACTIVE_STREAK" -ge 2 ] && [ "$HIDDEN" = "true" ]; then
+    if [ "$INACTIVE_STREAK" -ge "$INACTIVE_DEBOUNCE_POLLS" ] && [ "$HIDDEN" = "true" ]; then
         echo "[screen-tool-visibility] Secondary inactive, showing screen-tool"
         xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         /gamer/bin/reposition-windows.sh 2>/dev/null || true
+        if [ -x /gamer/bin/set-dot-cursor.py ]; then
+            python3 /gamer/bin/set-dot-cursor.py --target screentool >/dev/null 2>&1 || true
+        fi
         HIDDEN=false
     fi
 

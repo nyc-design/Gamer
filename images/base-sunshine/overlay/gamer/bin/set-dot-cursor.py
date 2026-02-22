@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Set a tiny dot cursor on the bottom screen (Secondary Window) for touch input.
+Set a tiny dot cursor on the active bottom-screen window for touch input.
 
 Creates an 8x8 cursor with a 4x4 white dot at center, applied per-window
-via XDefineCursor. Only affects the bottom screen — top screen keeps the
-normal arrow cursor.
+via XDefineCursor. Top screen keeps the normal arrow cursor.
 
-Called by reposition-windows.sh after window positioning.
-Requires: python3, libX11, xdotool.
+By default ("auto"), prefers Secondary Window, then ScreenTool, constrained
+to windows currently on DP-2.
 """
 
 import ctypes
@@ -15,6 +14,7 @@ import ctypes.util
 import subprocess
 import sys
 import os
+import argparse
 
 LOG_PREFIX = "[dot-cursor]"
 
@@ -23,31 +23,92 @@ def log(msg):
     print(f"{LOG_PREFIX} {msg}", flush=True)
 
 
-def find_bottom_window():
-    """Find the Azahar Secondary Window by title."""
+def parse_dp2_geometry():
+    """Return DP-2 geometry tuple (x, y, w, h) or None."""
     try:
-        result = subprocess.run(
-            ["xdotool", "search", "--name", "Secondary Window"],
-            capture_output=True, text=True, timeout=5
-        )
-    except Exception as e:
-        log(f"xdotool search failed: {e}")
+        out = subprocess.run(
+            ["xrandr", "--current"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:
         return None
-
-    for wid_str in result.stdout.strip().split():
-        try:
-            geom = subprocess.run(
-                ["xdotool", "getwindowgeometry", "--shell", wid_str],
-                capture_output=True, text=True, timeout=5
-            )
-            for line in geom.stdout.split("\n"):
-                if line.startswith("HEIGHT=") and int(line.split("=")[1]) > 100:
-                    return int(wid_str)
-        except Exception:
+    for line in out.splitlines():
+        if not line.startswith("DP-2 "):
             continue
+        import re
+        m = re.search(r"(\d+)x(\d+)\+(\d+)\+(\d+)", line)
+        if not m:
+            continue
+        w, h, x, y = map(int, m.groups())
+        return (x, y, w, h)
     return None
 
 
+def get_window_geometry(wid_str):
+    try:
+        geom = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", wid_str],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:
+        return None
+    vals = {}
+    for line in geom.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            vals[k.strip()] = v.strip()
+    try:
+        return (
+            int(vals.get("X", "0")),
+            int(vals.get("Y", "0")),
+            int(vals.get("WIDTH", "0")),
+            int(vals.get("HEIGHT", "0")),
+        )
+    except ValueError:
+        return None
+
+
+def is_on_dp2(wid_str, dp2):
+    if dp2 is None:
+        return True
+    wg = get_window_geometry(wid_str)
+    if wg is None:
+        return False
+    wx, wy, ww, wh = wg
+    dx, dy, dw, dh = dp2
+    # Large-overlap check with minimum size guard
+    if ww < 120 or wh < 120:
+        return False
+    overlap_w = max(0, min(wx + ww, dx + dw) - max(wx, dx))
+    overlap_h = max(0, min(wy + wh, dy + dh) - max(wy, dy))
+    return overlap_w * overlap_h >= int(0.5 * ww * wh)
+
+
+def find_bottom_window(target="auto"):
+    """Find the bottom window by target mode: auto|secondary|screentool."""
+    dp2 = parse_dp2_geometry()
+    patterns = []
+    if target == "secondary":
+        patterns = ["Secondary Window"]
+    elif target == "screentool":
+        patterns = ["^ScreenTool"]
+    else:
+        # Prefer emulator bottom window; fallback to screen-tool.
+        patterns = ["Secondary Window", "^ScreenTool"]
+
+    for pattern in patterns:
+        try:
+            result = subprocess.run(
+                ["xdotool", "search", "--name", pattern],
+                capture_output=True, text=True, timeout=5
+            )
+        except Exception as e:
+            log(f"xdotool search failed for '{pattern}': {e}")
+            continue
+
+        for wid_str in result.stdout.strip().split():
+            if is_on_dp2(wid_str, dp2):
+                return int(wid_str)
+    return None
 def apply_dot_cursor(window_id):
     """Create and apply an 8x8 cursor with 4x4 white dot to the given window."""
     lib_path = ctypes.util.find_library("X11")
@@ -119,9 +180,18 @@ def apply_dot_cursor(window_id):
 def main():
     os.environ.setdefault("DISPLAY", ":0")
 
-    window_id = find_bottom_window()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--target",
+        choices=["auto", "secondary", "screentool"],
+        default="auto",
+        help="Window target for dot cursor",
+    )
+    args = parser.parse_args()
+
+    window_id = find_bottom_window(args.target)
     if not window_id:
-        log("No bottom window found, skipping")
+        log(f"No target bottom window found (target={args.target}), skipping")
         sys.exit(0)
 
     if not apply_dot_cursor(window_id):

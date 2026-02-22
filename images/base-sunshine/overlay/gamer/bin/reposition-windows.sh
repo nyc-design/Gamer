@@ -111,10 +111,14 @@ if [ -n "$SCREEN_TOOL" ]; then
     xdotool windowsize "$SCREEN_TOOL" "$BOT_WIDTH" "$BOT_HEIGHT"
 fi
 
-# Apply dot cursor to bottom screen window for touch-friendly UX
+# Apply dot cursor to active bottom window for touch-friendly UX
 SCRIPT_DIR=$(dirname "$0")
-if [ -n "$SECONDARY" ] && [ -f "$SCRIPT_DIR/set-dot-cursor.py" ]; then
-    python3 "$SCRIPT_DIR/set-dot-cursor.py" >> "$LOG" 2>&1 &
+if [ -f "$SCRIPT_DIR/set-dot-cursor.py" ]; then
+    if [ -n "$SECONDARY" ]; then
+        python3 "$SCRIPT_DIR/set-dot-cursor.py" --target secondary >> "$LOG" 2>&1 &
+    elif [ -n "$SCREEN_TOOL" ]; then
+        python3 "$SCRIPT_DIR/set-dot-cursor.py" --target screentool >> "$LOG" 2>&1 &
+    fi
 fi
 
 echo "[$(date)] reposition: done" >> "$LOG"

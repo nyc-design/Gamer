@@ -202,6 +202,9 @@ void main() {
 }
 
 pub struct ScreenToolGui {
+    // Main feature tabs
+    active_tab: ToolTab,
+
     // Source selection
     pub available_outputs: Vec<OutputInfo>,
     pub selected_output_idx: usize,
@@ -242,9 +245,16 @@ pub struct ScreenToolGui {
     style_initialized: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolTab {
+    Crop,
+    Performance,
+}
+
 impl ScreenToolGui {
     pub fn new(outputs: Vec<OutputInfo>) -> Self {
         Self {
+            active_tab: ToolTab::Crop,
             available_outputs: outputs,
             selected_output_idx: 0,
             zoom_level: 1.0,
@@ -269,6 +279,10 @@ impl ScreenToolGui {
             saved_slots: [None, None, None],
             style_initialized: false,
         }
+    }
+
+    pub fn wants_capture(&self) -> bool {
+        self.active_tab == ToolTab::Crop
     }
 
     fn ensure_style(&mut self, ctx: &egui::Context) {
@@ -400,6 +414,17 @@ impl ScreenToolGui {
     /// Render the NVFBC texture as a fullscreen quad using raw GL.
     /// Call this BEFORE egui rendering so the toolbar overlays on top.
     pub fn render_capture(&mut self, gl: &Arc<glow::Context>, viewport_w: u32, viewport_h: u32) {
+        if self.active_tab == ToolTab::Performance {
+            unsafe {
+                gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.disable(glow::BLEND);
+                gl.clear_color(0.02, 0.02, 0.03, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+            return;
+        }
+
         if self.current_nvfbc_tex_id == 0 {
             return;
         }
@@ -560,6 +585,37 @@ impl ScreenToolGui {
         });
         self.clamp_pan_center();
 
+        // Large top tabs for current and future feature modules.
+        egui::TopBottomPanel::top("feature_tabs").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal_centered(|ui| {
+                let crop_selected = self.active_tab == ToolTab::Crop;
+                let perf_selected = self.active_tab == ToolTab::Performance;
+                if ui
+                    .add_sized(
+                        [220.0, 42.0],
+                        egui::Button::new(egui::RichText::new("Screen Crop Tool").size(18.0))
+                            .selected(crop_selected),
+                    )
+                    .clicked()
+                {
+                    self.active_tab = ToolTab::Crop;
+                }
+                ui.add_space(10.0);
+                if ui
+                    .add_sized(
+                        [220.0, 42.0],
+                        egui::Button::new(egui::RichText::new("Performance Monitor").size(18.0))
+                            .selected(perf_selected),
+                    )
+                    .clicked()
+                {
+                    self.active_tab = ToolTab::Performance;
+                }
+            });
+            ui.add_space(4.0);
+        });
+
         // Toolbar
         if self.show_toolbar {
             egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -620,6 +676,10 @@ impl ScreenToolGui {
                     ui.separator();
                     ui.checkbox(&mut self.show_stats_panel, "Stats");
                     ui.checkbox(&mut self.show_help_panel, "Help");
+                    ui.label(match self.active_tab {
+                        ToolTab::Crop => "Mode: Crop",
+                        ToolTab::Performance => "Mode: Perf",
+                    });
                 });
             });
         }
@@ -664,25 +724,76 @@ impl ScreenToolGui {
                 });
         }
 
+        if self.active_tab == ToolTab::Performance {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Performance Monitor");
+                        ui.add_space(18.0);
+                        egui::Grid::new("perf_grid")
+                            .num_columns(2)
+                            .spacing([24.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label("Render FPS");
+                                ui.label(format!("{:.0}", self.fps));
+                                ui.end_row();
+                                ui.label("Capture FPS (new)");
+                                ui.label(format!("{:.0}", self.capture_fps));
+                                ui.end_row();
+                                ui.label("Capture size");
+                                ui.label(format!("{}x{}", self.capture_size.0, self.capture_size.1));
+                                ui.end_row();
+                                ui.label("Zoom");
+                                ui.label(format!("{:.2}x", self.zoom_level));
+                                ui.end_row();
+                                ui.label("Pan");
+                                ui.label(format!("{:.3}, {:.3}", self.pan_center.0, self.pan_center.1));
+                                ui.end_row();
+                            });
+                    });
+                });
+            return;
+        }
+
         // Always-visible, touch-friendly zoom controls for high-res displays.
+        let screen_h = ctx.screen_rect().height();
+        let scale = if screen_h >= 1400.0 {
+            1.45
+        } else if screen_h >= 1080.0 {
+            1.25
+        } else {
+            1.0
+        };
+        let btn_w = 60.0 * scale;
+        let btn_h = 48.0 * scale;
+        let reset_h = 34.0 * scale;
+        let pad = 24.0;
         egui::Area::new(egui::Id::new("quick_zoom_controls"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0))
+            .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
             .interactable(true)
             .show(ctx, |ui| {
                 egui::Frame::window(ui.style())
-                    .inner_margin(egui::Margin::same(8))
+                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
-                            if ui.add_sized([54.0, 42.0], egui::Button::new("+")).clicked() {
+                            if ui
+                                .add_sized([btn_w, btn_h], egui::Button::new(egui::RichText::new("+").size(22.0 * scale)))
+                                .clicked()
+                            {
                                 self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
                             }
-                            ui.add_space(6.0);
-                            if ui.add_sized([54.0, 42.0], egui::Button::new("−")).clicked() {
+                            ui.add_space(8.0 * scale);
+                            if ui
+                                .add_sized([btn_w, btn_h], egui::Button::new(egui::RichText::new("−").size(22.0 * scale)))
+                                .clicked()
+                            {
                                 self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
                             }
-                            ui.add_space(6.0);
+                            ui.add_space(8.0 * scale);
                             if ui
-                                .add_sized([54.0, 30.0], egui::Button::new("1x"))
+                                .add_sized([btn_w, reset_h], egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)))
                                 .clicked()
                             {
                                 self.reset_view();

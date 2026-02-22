@@ -231,25 +231,27 @@ fn main() -> Result<()> {
             last_output_refresh = Instant::now();
         }
 
-        // Grab frame from NVFBC (needs offscreen context)
-        unsafe {
-            gl.make_current_offscreen();
-        }
-        let grab_result = capture.grab_frame();
+        // Grab frame from NVFBC only when crop view is active.
+        if gui.wants_capture() {
+            unsafe {
+                gl.make_current_offscreen();
+            }
+            let grab_result = capture.grab_frame();
 
-        // Store the texture for raw GL rendering
-        if let Ok((tex_id, src_w, src_h, is_new)) = grab_result {
-            gui.update_capture_texture(
-                &gl.glow_ctx,
-                tex_id,
-                src_w,
-                src_h,
-                capture.screen_width,
-                capture.screen_height,
-                is_new,
-            );
-        } else if let Err(e) = grab_result {
-            log::warn!("NVFBC grab failed: {}", e);
+            // Store the texture for raw GL rendering
+            if let Ok((tex_id, src_w, src_h, is_new)) = grab_result {
+                gui.update_capture_texture(
+                    &gl.glow_ctx,
+                    tex_id,
+                    src_w,
+                    src_h,
+                    capture.screen_width,
+                    capture.screen_height,
+                    is_new,
+                );
+            } else if let Err(e) = grab_result {
+                log::warn!("NVFBC grab failed: {}", e);
+            }
         }
 
         // Check for SIGUSR1 screenshot signal
