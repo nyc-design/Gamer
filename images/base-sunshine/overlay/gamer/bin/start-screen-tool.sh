@@ -39,12 +39,16 @@ BOT_Y=${BOT_Y:-1080}
 # Build args — NVFBC captures DP-0, output renders on DP-2
 ARGS=(
     --capture-output "DP-0"
-    --output-x "$BOT_X"
-    --output-y "$BOT_Y"
-    --output-width "$BOT_WIDTH"
-    --output-height "$BOT_HEIGHT"
-    --max-fps "${SCREEN_TOOL_MAX_FPS:-30}"
+    --x "$BOT_X"
+    --y "$BOT_Y"
+    --width "$BOT_WIDTH"
+    --height "$BOT_HEIGHT"
 )
+
+# Backward/forward compatible: only pass --max-fps if this binary supports it.
+if /gamer/bin/screen-tool --help 2>/dev/null | grep -q -- '--max-fps'; then
+    ARGS+=(--max-fps "${SCREEN_TOOL_MAX_FPS:-30}")
+fi
 
 echo "[screen-tool] Starting: screen-tool ${ARGS[*]}"
 exec /gamer/bin/screen-tool "${ARGS[@]}"

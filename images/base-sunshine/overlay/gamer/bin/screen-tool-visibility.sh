@@ -2,8 +2,11 @@
 ###############################################################################
 # screen-tool-visibility.sh — Controls screen-tool visibility.
 #
-# Polls every 1 second. When a "Secondary Window" exists (emulator dual-window
-# mode), hides the screen-tool. When it disappears, shows and repositions it.
+# Polls every 1 second. When a "Secondary Window" is active on DP-2, lowers
+# screen-tool behind it. Otherwise raises screen-tool back to the front.
+#
+# NOTE: We intentionally avoid X unmap/map here because frequent map-state
+# transitions can trigger GLX/NVIDIA instability during layout hot-swaps.
 #
 # Env vars:
 #   SCREEN_TOOL_ENABLED   - Set to "0" to disable (default: "1")
@@ -20,7 +23,7 @@ if [ -z "$PATTERN" ]; then
     PATTERN="Secondary Window"
 fi
 SCREEN_TOOL_NAME="ScreenTool"
-HIDDEN=false
+LOWERED=false
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -89,18 +92,16 @@ while true; do
         continue
     fi
 
-    if [ "$SECONDARY_VISIBLE" = "true" ] && [ "$HIDDEN" = "false" ]; then
-        # Secondary window is visible — hide screen-tool
-        echo "[screen-tool-visibility] Secondary window visible, hiding screen-tool"
-        xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
-        HIDDEN=true
-    elif [ "$SECONDARY_VISIBLE" = "false" ] && [ "$HIDDEN" = "true" ]; then
-        # Secondary window hidden/gone — show and reposition screen-tool
-        echo "[screen-tool-visibility] Secondary window hidden, showing screen-tool"
-        xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
+    if [ "$SECONDARY_VISIBLE" = "true" ] && [ "$LOWERED" = "false" ]; then
+        # Secondary window is active — keep screen-tool behind it.
+        echo "[screen-tool-visibility] Secondary active, lowering screen-tool"
+        xdotool windowlower "$SCREEN_TOOL_WID" 2>/dev/null
+        LOWERED=true
+    elif [ "$SECONDARY_VISIBLE" = "false" ] && [ "$LOWERED" = "true" ]; then
+        # Secondary inactive — bring screen-tool back to front and place it.
+        echo "[screen-tool-visibility] Secondary inactive, raising screen-tool"
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
-        # Let reposition-windows.sh handle the correct placement
         /gamer/bin/reposition-windows.sh 2>/dev/null || true
-        HIDDEN=false
+        LOWERED=false
     fi
 done

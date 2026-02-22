@@ -438,11 +438,6 @@ impl NvfbcCapture {
                 output_name
             );
 
-            let mut release_params = NvfbcReleaseContextParams {
-                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
-            };
-            let _ = (fns.release_context)(handle, &mut release_params);
-
             Ok(Self {
                 fns,
                 handle,
@@ -509,15 +504,6 @@ impl NvfbcCapture {
     pub fn recreate_session(&mut self) -> Result<()> {
         unsafe {
             // Destroy existing capture session
-            let mut bind_params = NvfbcBindContextParams {
-                dw_version: nvfbc_struct_version::<NvfbcBindContextParams>(1),
-            };
-            let status = (self.fns.bind_context)(self.handle, &mut bind_params);
-            if status != NVFBC_SUCCESS {
-                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
-                bail!("recreate bind_context failed: {}", err.to_string_lossy());
-            }
-
             let mut destroy_params = NvfbcDestroyCaptureSessionParams {
                 dw_version: nvfbc_struct_version::<NvfbcDestroyCaptureSessionParams>(1),
             };
@@ -591,11 +577,6 @@ impl NvfbcCapture {
                 self.height
             );
 
-            let mut release_params = NvfbcReleaseContextParams {
-                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
-            };
-            let _ = (self.fns.release_context)(self.handle, &mut release_params);
-
             Ok(())
         }
     }
@@ -603,15 +584,6 @@ impl NvfbcCapture {
     /// Grab a frame, returns (GL texture ID, width, height, is_new).
     pub fn grab_frame(&mut self) -> Result<(u32, u32, u32, bool)> {
         unsafe {
-            let mut bind_params = NvfbcBindContextParams {
-                dw_version: nvfbc_struct_version::<NvfbcBindContextParams>(1),
-            };
-            let status = (self.fns.bind_context)(self.handle, &mut bind_params);
-            if status != NVFBC_SUCCESS {
-                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
-                bail!("nvFBCBindContext: {}", err.to_string_lossy());
-            }
-
             let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
             let mut grab_params: NvfbcToGlGrabFrameParams = std::mem::zeroed();
             grab_params.dw_version = nvfbc_struct_version::<NvfbcToGlGrabFrameParams>(2);
@@ -619,10 +591,6 @@ impl NvfbcCapture {
             grab_params.frame_grab_info = &mut grab_info;
 
             let status = (self.fns.to_gl_grab_frame)(self.handle, &mut grab_params);
-            let mut release_params = NvfbcReleaseContextParams {
-                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
-            };
-            let _ = (self.fns.release_context)(self.handle, &mut release_params);
             if status != NVFBC_SUCCESS {
                 let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
                 bail!("nvFBCToGLGrabFrame: {}", err.to_string_lossy());
