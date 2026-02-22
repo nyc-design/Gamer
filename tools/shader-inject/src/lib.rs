@@ -12,6 +12,7 @@
 //!   SHADER_PRESET_BOTTOM  - Path to .slangp preset for secondary window (dual-screen)
 //!   SHADER_WINDOW         - Substring to match in primary window title
 //!   SHADER_WINDOW_BOTTOM  - Substring to match in secondary window title
+//!   SHADER_PASSTHROUGH    - Set to "1" to skip shader processing (blit roundtrip only, for debugging)
 
 use glow::HasContext;
 use std::collections::HashMap;
@@ -41,6 +42,7 @@ struct DrawablePipeline {
     height: u32,
     frame_count: usize,
     glow_ctx: Arc<glow::Context>,
+    tex_format: u32,
 }
 
 // Global state
@@ -49,7 +51,6 @@ static mut STATE: Option<GlobalState> = None;
 
 struct GlobalState {
     pipelines: HashMap<glx::GLXDrawable, DrawablePipeline>,
-    // Window matching config
     primary_preset: Option<PathBuf>,
     primary_match: Option<String>,
     secondary_preset: Option<PathBuf>,
@@ -58,6 +59,7 @@ struct GlobalState {
     // Value is the frame count when we last checked
     pending: HashMap<glx::GLXDrawable, usize>,
     global_frame: usize,
+    passthrough: bool,
 }
 
 extern "C" {
@@ -68,7 +70,6 @@ const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 /// Initialize global state from env vars
 fn init_global() {
     INIT.call_once(|| {
-        // Initialize logging
         let _ = env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or("info")
         ).try_init();
@@ -88,17 +89,17 @@ fn init_global() {
         let primary_match = std::env::var("SHADER_WINDOW").ok();
         let secondary_preset = std::env::var("SHADER_PRESET_BOTTOM").ok().map(PathBuf::from);
         let secondary_match = std::env::var("SHADER_WINDOW_BOTTOM").ok();
+        let passthrough = std::env::var("SHADER_PASSTHROUGH").ok().map_or(false, |v| v == "1");
 
-        log::info!("[shader-inject] Initialized");
+        log::info!("[shader-inject] Initialized (passthrough={})", passthrough);
         if let Some(ref p) = primary_preset {
             log::info!("[shader-inject] Primary shader: {:?} (match: {:?})", p, primary_match);
         }
         if let Some(ref p) = secondary_preset {
             log::info!("[shader-inject] Secondary shader: {:?} (match: {:?})", p, secondary_match);
         }
-
         if primary_preset.is_none() {
-            log::info!("[shader-inject] No SHADER_PRESET set, passthrough mode");
+            log::info!("[shader-inject] No SHADER_PRESET set, no-op mode");
         }
 
         unsafe {
@@ -110,6 +111,7 @@ fn init_global() {
                 secondary_match,
                 pending: HashMap::new(),
                 global_frame: 0,
+                passthrough,
             });
         }
     });
@@ -177,14 +179,11 @@ fn get_window_title(display: *mut xlib::Display, drawable: glx::GLXDrawable) -> 
         // (top-level windows have the game name; child widgets may just say "Azahar")
         for _ in 0..10 {
             if let Some(title) = read_window_name(display, window) {
-                // Check if this looks like the real title (contains game name or "Secondary")
-                // If it's just a generic name like "Azahar", keep walking up
                 if title.len() > 10 || window == root {
                     return Some(title);
                 }
             }
 
-            // Walk up to parent
             let mut parent: xlib::Window = 0;
             let mut root_ret: xlib::Window = 0;
             let mut children: *mut xlib::Window = std::ptr::null_mut();
@@ -196,7 +195,6 @@ fn get_window_title(display: *mut xlib::Display, drawable: glx::GLXDrawable) -> 
                 xlib::XFree(children as *mut c_void);
             }
             if parent == 0 || parent == root_ret {
-                // Reached the root — return whatever title we have for the original window
                 return read_window_name(display, drawable as xlib::Window);
             }
             window = parent;
@@ -213,7 +211,7 @@ fn get_window_size(display: *mut xlib::Display, drawable: glx::GLXDrawable) -> (
         if xlib::XGetWindowAttributes(display, drawable as xlib::Window, &mut attrs) != 0 {
             (attrs.width as u32, attrs.height as u32)
         } else {
-            (1920, 1080) // fallback
+            (1920, 1080)
         }
     }
 }
@@ -269,11 +267,13 @@ fn try_create_pipeline(
         })
     });
 
+    let tex_format = glow::RGBA8;
+
     // Create input texture (to copy the back buffer into)
     let input_texture = unsafe {
         let tex = glow_ctx.create_texture().ok()?;
         glow_ctx.bind_texture(glow::TEXTURE_2D, Some(tex));
-        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, width as i32, height as i32);
+        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, width as i32, height as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
         glow_ctx.bind_texture(glow::TEXTURE_2D, None);
@@ -303,7 +303,7 @@ fn try_create_pipeline(
     let (output_texture, output_fbo) = unsafe {
         let tex = glow_ctx.create_texture().ok()?;
         glow_ctx.bind_texture(glow::TEXTURE_2D, Some(tex));
-        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, width as i32, height as i32);
+        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, width as i32, height as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
         glow_ctx.bind_texture(glow::TEXTURE_2D, None);
@@ -361,72 +361,81 @@ fn try_create_pipeline(
         height,
         frame_count: 0,
         glow_ctx,
+        tex_format,
     })
 }
 
 /// Apply shader to the current back buffer before swapping
-fn apply_shader(pipeline: &mut DrawablePipeline) {
+fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
     unsafe {
         let gl = &pipeline.glow_ctx;
+        let w = pipeline.width as i32;
+        let h = pipeline.height as i32;
 
-        // Save current viewport
+        // Save GL state that librashader modifies
         let mut saved_viewport = [0i32; 4];
         gl.get_parameter_i32_slice(glow::VIEWPORT, &mut saved_viewport);
+        let saved_scissor = gl.is_enabled(glow::SCISSOR_TEST);
+        let saved_blend = gl.is_enabled(glow::BLEND);
+        let saved_srgb = gl.is_enabled(glow::FRAMEBUFFER_SRGB);
 
         // Step 1: Copy back buffer (default FBO) to input texture via blit
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None); // read from back buffer
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pipeline.capture_fbo)); // write to input texture
-        gl.blit_framebuffer(
-            0, 0, pipeline.width as i32, pipeline.height as i32,
-            0, 0, pipeline.width as i32, pipeline.height as i32,
-            glow::COLOR_BUFFER_BIT,
-            glow::NEAREST,
-        );
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pipeline.capture_fbo));
+        gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
 
-        // Step 2: Run shader chain: input_texture -> output_texture
-        let input = GLImage {
-            handle: Some(pipeline.input_texture),
-            format: glow::RGBA8,
-            size: Size { width: pipeline.width, height: pipeline.height },
-        };
+        if passthrough {
+            // Passthrough: blit input directly back to back buffer (no shader)
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(pipeline.capture_fbo));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+        } else {
+            // Step 2: Run shader chain: input_texture -> output_texture
+            let input = GLImage {
+                handle: Some(pipeline.input_texture),
+                format: pipeline.tex_format,
+                size: Size { width: pipeline.width, height: pipeline.height },
+            };
 
-        let output = GLImage {
-            handle: Some(pipeline.output_texture),
-            format: glow::RGBA8,
-            size: Size { width: pipeline.width, height: pipeline.height },
-        };
+            let output = GLImage {
+                handle: Some(pipeline.output_texture),
+                format: pipeline.tex_format,
+                size: Size { width: pipeline.width, height: pipeline.height },
+            };
 
-        let viewport = Viewport {
-            x: 0.0,
-            y: 0.0,
-            mvp: None,
-            output: &output,
-            size: Size { width: pipeline.width, height: pipeline.height },
-        };
+            let viewport = Viewport {
+                x: 0.0,
+                y: 0.0,
+                mvp: None,
+                output: &output,
+                size: Size { width: pipeline.width, height: pipeline.height },
+            };
 
-        if let Err(e) = pipeline.filter_chain.frame(
-            &input, &viewport, pipeline.frame_count, Some(&FrameOptions::default())
-        ) {
-            log::error!("[shader-inject] Shader frame error: {:?}", e);
-            // Restore state and return without modifying the buffer
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
-            return;
+            if let Err(e) = pipeline.filter_chain.frame(
+                &input, &viewport, pipeline.frame_count, Some(&FrameOptions::default())
+            ) {
+                log::error!("[shader-inject] Shader frame error: {:?}", e);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+                gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+                return;
+            }
+
+            // Step 3: Blit shader output back to back buffer (default FBO)
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(pipeline.output_fbo));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::BLEND);
+            gl.color_mask(true, true, true, true);
+            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
         }
 
-        // Step 3: Blit shader output back to back buffer (default FBO)
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(pipeline.output_fbo)); // read from shader output
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None); // write to back buffer
-        gl.blit_framebuffer(
-            0, 0, pipeline.width as i32, pipeline.height as i32,
-            0, 0, pipeline.width as i32, pipeline.height as i32,
-            glow::COLOR_BUFFER_BIT,
-            glow::NEAREST,
-        );
-
-        // Restore state
+        // Restore all GL state
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+        if saved_scissor { gl.enable(glow::SCISSOR_TEST); } else { gl.disable(glow::SCISSOR_TEST); }
+        if saved_blend { gl.enable(glow::BLEND); } else { gl.disable(glow::BLEND); }
+        if saved_srgb { gl.enable(glow::FRAMEBUFFER_SRGB); } else { gl.disable(glow::FRAMEBUFFER_SRGB); }
 
         pipeline.frame_count += 1;
     }
@@ -440,7 +449,6 @@ pub unsafe extern "C" fn glXSwapBuffers(display: *mut xlib::Display, drawable: g
     let state = match STATE.as_mut() {
         Some(s) => s,
         None => {
-            // Fallback: call real swap if state init failed
             if let Some(real) = REAL_SWAP {
                 real(display, drawable);
             }
@@ -478,16 +486,15 @@ pub unsafe extern "C" fn glXSwapBuffers(display: *mut xlib::Display, drawable: g
     }
 
     // Apply shader if we have a pipeline
+    let passthrough = state.passthrough;
     if let Some(pipeline) = state.pipelines.get_mut(&drawable) {
-        // Check for window resize
         let (w, h) = get_window_size(display, drawable);
         if w != pipeline.width || h != pipeline.height {
             log::info!("[shader-inject] Window resized to {}x{}, recreating pipeline", w, h);
             state.pipelines.remove(&drawable);
             state.pending.remove(&drawable);
-            // Will be recreated on next frame
         } else {
-            apply_shader(pipeline);
+            apply_shader(pipeline, passthrough);
         }
     }
 
