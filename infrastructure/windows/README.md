@@ -16,6 +16,13 @@ This folder contains scripts to provision and bootstrap Windows GPU hosts for Ga
 - `scripts/apollo-on-client-connect.ps1` / `apollo-on-client-disconnect.ps1` — simple hooks for dual-screen behavior.
 - `deploy_startup.py` / `deploy_base.py` / `deploy_azahar.py` / `deploy_agent.py` — staged deploy runners over SSH.
 
+## Current test VM access (temporary)
+
+- Username: `user`
+- Password: `GamerWin4090!`
+
+> Temporary credential for active manual validation. Rotate/remove before production use.
+
 ## Quick start
 
 ```bash
