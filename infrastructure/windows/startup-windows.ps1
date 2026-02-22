@@ -121,6 +121,21 @@ function Invoke-WindowsActivation {
   & ([ScriptBlock]::Create((irm https://get.activated.win))) /HWID
 }
 
+function Test-WindowsIsActivated {
+  try {
+    $winProducts = Get-CimInstance SoftwareLicensingProduct -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.PartialProductKey -and
+        $_.Name -like 'Windows*'
+      }
+    if (-not $winProducts) { return $false }
+    return [bool]($winProducts | Where-Object { $_.LicenseStatus -eq 1 })
+  } catch {
+    Write-Warning "Activation status check failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 # Core services
 Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service sshd -ErrorAction SilentlyContinue
@@ -160,8 +175,13 @@ if ($WindowsPassword) {
 # Performance baseline for cloud gaming (CPU scheduling/capture overhead).
 Apply-GameHostPerformanceProfile
 
-# Placeholder hook for Windows activation flow.
-Invoke-WindowsActivation
+# Activation hook: run only when Windows is currently unactivated.
+if (Test-WindowsIsActivated) {
+  Write-Host "Windows already activated. Skipping activation step."
+} else {
+  Write-Host "Windows not activated. Running activation step."
+  Invoke-WindowsActivation
+}
 
 # Required media/runtime deps for Steam + KH + emulator workloads
 if (Install-MediaFeaturePack) {
