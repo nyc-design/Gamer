@@ -346,10 +346,16 @@ impl NvfbcCapture {
             let fns = fns_uninit.assume_init();
 
             // Create handle with our GLX context
+            // Magic key to enable NVFBC on consumer GPUs (same as Sunshine)
+            // See: https://github.com/keylase/nvidia-patch
+            let magic_key: [u32; 4] = [0xAEF57AC5, 0x401D1A39, 0x1B856BBE, 0x9ED0CEBA];
+
             gl.make_current_offscreen();
             let mut handle: NvfbcSessionHandle = 0;
             let mut create_params: NvfbcCreateHandleParams = std::mem::zeroed();
             create_params.dw_version = nvfbc_struct_version::<NvfbcCreateHandleParams>(2);
+            create_params.private_data = magic_key.as_ptr() as *const c_void;
+            create_params.private_data_size = std::mem::size_of_val(&magic_key) as u32;
             create_params.externally_managed_context = 1;
             create_params.glx_ctx = gl.glx_context as *mut c_void;
             create_params.glx_fb_config = gl.output_fb_config as *mut c_void;
