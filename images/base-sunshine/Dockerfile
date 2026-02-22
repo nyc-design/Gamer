@@ -141,6 +141,10 @@ ENV SHADER_PRESET=""
 ENV SHADER_PRESET_BOTTOM=""
 ENV SHADER_WINDOW=""
 ENV SHADER_WINDOW_BOTTOM=""
+# SHADER_SOURCE_SIZE: original game resolution for primary (e.g., "400x240" for 3DS top)
+# SHADER_SOURCE_SIZE_BOTTOM: original game resolution for secondary (e.g., "320x240" for 3DS bottom)
+ENV SHADER_SOURCE_SIZE=""
+ENV SHADER_SOURCE_SIZE_BOTTOM=""
 
 # NVIDIA driver env (set by host/orchestrator)
 ENV NVIDIA_ENABLE=true

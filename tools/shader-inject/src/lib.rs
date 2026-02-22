@@ -8,11 +8,13 @@
 //! 4. Call the real glXSwapBuffers
 //!
 //! Env vars:
-//!   SHADER_PRESET         - Path to .slangp preset for primary window
-//!   SHADER_PRESET_BOTTOM  - Path to .slangp preset for secondary window (dual-screen)
-//!   SHADER_WINDOW         - Substring to match in primary window title
-//!   SHADER_WINDOW_BOTTOM  - Substring to match in secondary window title
-//!   SHADER_PASSTHROUGH    - Set to "1" to skip shader processing (blit roundtrip only, for debugging)
+//!   SHADER_PRESET           - Path to .slangp preset for primary window
+//!   SHADER_PRESET_BOTTOM    - Path to .slangp preset for secondary window (dual-screen)
+//!   SHADER_WINDOW           - Substring to match in primary window title
+//!   SHADER_WINDOW_BOTTOM    - Substring to match in secondary window title
+//!   SHADER_SOURCE_SIZE      - Original game resolution for primary (e.g., "400x240" for 3DS top)
+//!   SHADER_SOURCE_SIZE_BOTTOM - Original game resolution for secondary (e.g., "320x240" for 3DS bottom)
+//!   SHADER_PASSTHROUGH      - Set to "1" to skip shader processing (blit roundtrip only, for debugging)
 
 use glow::HasContext;
 use std::collections::HashMap;
@@ -34,12 +36,14 @@ static mut REAL_SWAP: Option<GlXSwapBuffersFn> = None;
 // Per-drawable shader pipeline state
 struct DrawablePipeline {
     filter_chain: FilterChain,
-    input_texture: glow::Texture,
-    output_texture: glow::Texture,
-    output_fbo: glow::Framebuffer,
-    capture_fbo: glow::Framebuffer,
-    width: u32,
-    height: u32,
+    input_texture: glow::Texture,      // at source_width x source_height (original game res)
+    output_texture: glow::Texture,     // at width x height (window/output res)
+    output_fbo: glow::Framebuffer,     // writes to output_texture
+    capture_fbo: glow::Framebuffer,    // writes to input_texture
+    width: u32,                        // window/output width
+    height: u32,                       // window/output height
+    source_width: u32,                 // original game resolution width
+    source_height: u32,                // original game resolution height
     frame_count: usize,
     glow_ctx: Arc<glow::Context>,
     tex_format: u32,
@@ -53,13 +57,27 @@ struct GlobalState {
     pipelines: HashMap<glx::GLXDrawable, DrawablePipeline>,
     primary_preset: Option<PathBuf>,
     primary_match: Option<String>,
+    primary_source_size: Option<(u32, u32)>,
     secondary_preset: Option<PathBuf>,
     secondary_match: Option<String>,
+    secondary_source_size: Option<(u32, u32)>,
     // Drawables we checked but didn't match yet — re-check every N frames
     // Value is the frame count when we last checked
     pending: HashMap<glx::GLXDrawable, usize>,
     global_frame: usize,
     passthrough: bool,
+}
+
+/// Parse a "WxH" string into (width, height)
+fn parse_size(s: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() == 2 {
+        let w = parts[0].parse().ok()?;
+        let h = parts[1].parse().ok()?;
+        Some((w, h))
+    } else {
+        None
+    }
 }
 
 extern "C" {
@@ -87,16 +105,18 @@ fn init_global() {
 
         let primary_preset = std::env::var("SHADER_PRESET").ok().map(PathBuf::from);
         let primary_match = std::env::var("SHADER_WINDOW").ok();
+        let primary_source_size = std::env::var("SHADER_SOURCE_SIZE").ok().and_then(|s| parse_size(&s));
         let secondary_preset = std::env::var("SHADER_PRESET_BOTTOM").ok().map(PathBuf::from);
         let secondary_match = std::env::var("SHADER_WINDOW_BOTTOM").ok();
+        let secondary_source_size = std::env::var("SHADER_SOURCE_SIZE_BOTTOM").ok().and_then(|s| parse_size(&s));
         let passthrough = std::env::var("SHADER_PASSTHROUGH").ok().map_or(false, |v| v == "1");
 
         log::info!("[shader-inject] Initialized (passthrough={})", passthrough);
         if let Some(ref p) = primary_preset {
-            log::info!("[shader-inject] Primary shader: {:?} (match: {:?})", p, primary_match);
+            log::info!("[shader-inject] Primary shader: {:?} (match: {:?}, source: {:?})", p, primary_match, primary_source_size);
         }
         if let Some(ref p) = secondary_preset {
-            log::info!("[shader-inject] Secondary shader: {:?} (match: {:?})", p, secondary_match);
+            log::info!("[shader-inject] Secondary shader: {:?} (match: {:?}, source: {:?})", p, secondary_match, secondary_source_size);
         }
         if primary_preset.is_none() {
             log::info!("[shader-inject] No SHADER_PRESET set, no-op mode");
@@ -107,8 +127,10 @@ fn init_global() {
                 pipelines: HashMap::new(),
                 primary_preset,
                 primary_match,
+                primary_source_size,
                 secondary_preset,
                 secondary_match,
+                secondary_source_size,
                 pending: HashMap::new(),
                 global_frame: 0,
                 passthrough,
@@ -225,22 +247,22 @@ fn try_create_pipeline(
     let title = get_window_title(display, drawable)?;
     log::info!("[shader-inject] Window title for drawable 0x{:x}: '{}'", drawable, title);
 
-    // Match against configured window patterns
-    let preset_path = if let Some(ref pattern) = state.primary_match {
+    // Match against configured window patterns and get source size
+    let (preset_path, source_size) = if let Some(ref pattern) = state.primary_match {
         if title.contains(pattern.as_str()) && !title.contains("Secondary") {
-            state.primary_preset.as_ref()
+            (state.primary_preset.as_ref(), state.primary_source_size)
         } else if let Some(ref sec_pattern) = state.secondary_match {
             if title.contains(sec_pattern.as_str()) {
-                state.secondary_preset.as_ref()
+                (state.secondary_preset.as_ref(), state.secondary_source_size)
             } else {
-                None
+                (None, None)
             }
         } else {
-            None
+            (None, None)
         }
     } else {
         // No pattern specified — apply primary shader to all windows
-        state.primary_preset.as_ref()
+        (state.primary_preset.as_ref(), state.primary_source_size)
     };
 
     let preset_path = preset_path?;
@@ -251,9 +273,12 @@ fn try_create_pipeline(
     }
 
     let (width, height) = get_window_size(display, drawable);
+    // Source size is the original game resolution — shaders use this as OriginalSize.
+    // If not specified, defaults to window size (shaders won't see a scaling difference).
+    let (source_width, source_height) = source_size.unwrap_or((width, height));
     log::info!(
-        "[shader-inject] Creating pipeline for '{}' (0x{:x}) {}x{} with {:?}",
-        title, drawable, width, height, preset_path
+        "[shader-inject] Creating pipeline for '{}' (0x{:x}) {}x{} (source {}x{}) with {:?}",
+        title, drawable, width, height, source_width, source_height, preset_path
     );
 
     // Create glow context from current GL context's function pointers
@@ -269,11 +294,14 @@ fn try_create_pipeline(
 
     let tex_format = glow::RGBA8;
 
-    // Create input texture (to copy the back buffer into)
+    // Create input texture at SOURCE resolution (original game res).
+    // The back buffer (at window res) is downscaled into this texture via blit.
+    // librashader reads input.size as OriginalSize, so shaders like lcd3x
+    // see the correct source-to-output scaling ratio for subpixel patterns.
     let input_texture = unsafe {
         let tex = glow_ctx.create_texture().ok()?;
         glow_ctx.bind_texture(glow::TEXTURE_2D, Some(tex));
-        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, width as i32, height as i32);
+        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, source_width as i32, source_height as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
         glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
         glow_ctx.bind_texture(glow::TEXTURE_2D, None);
@@ -359,6 +387,8 @@ fn try_create_pipeline(
         capture_fbo,
         width,
         height,
+        source_width,
+        source_height,
         frame_count: 0,
         glow_ctx,
         tex_format,
@@ -371,6 +401,8 @@ fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
         let gl = &pipeline.glow_ctx;
         let w = pipeline.width as i32;
         let h = pipeline.height as i32;
+        let sw = pipeline.source_width as i32;
+        let sh = pipeline.source_height as i32;
 
         // Save GL state that librashader modifies
         let mut saved_viewport = [0i32; 4];
@@ -379,22 +411,24 @@ fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
         let saved_blend = gl.is_enabled(glow::BLEND);
         let saved_srgb = gl.is_enabled(glow::FRAMEBUFFER_SRGB);
 
-        // Step 1: Copy back buffer (default FBO) to input texture via blit
+        // Step 1: Downscale back buffer to input texture at source resolution.
+        // librashader reads input.size as OriginalSize, so the shader sees
+        // the real source-to-output scaling ratio for subpixel patterns.
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pipeline.capture_fbo));
-        gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+        gl.blit_framebuffer(0, 0, w, h, 0, 0, sw, sh, glow::COLOR_BUFFER_BIT, glow::LINEAR);
 
         if passthrough {
             // Passthrough: blit input directly back to back buffer (no shader)
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(pipeline.capture_fbo));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            gl.blit_framebuffer(0, 0, sw, sh, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::LINEAR);
         } else {
-            // Step 2: Run shader chain: input_texture -> output_texture
+            // Step 2: Run shader chain: input_texture (source res) -> output_texture (output res)
             let input = GLImage {
                 handle: Some(pipeline.input_texture),
                 format: pipeline.tex_format,
-                size: Size { width: pipeline.width, height: pipeline.height },
+                size: Size { width: pipeline.source_width, height: pipeline.source_height },
             };
 
             let output = GLImage {
