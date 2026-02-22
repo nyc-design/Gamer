@@ -15,7 +15,15 @@ fn save_framebuffer_ppm(gl: &glow::Context, width: u32, height: u32, path: &str)
     unsafe {
         let size = (width * height * 3) as usize;
         let mut pixels = vec![0u8; size];
-        gl.read_pixels(0, 0, width as i32, height as i32, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut pixels)));
+        gl.read_pixels(
+            0,
+            0,
+            width as i32,
+            height as i32,
+            glow::RGB,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut pixels)),
+        );
         // GL reads bottom-to-top, flip vertically
         let row_bytes = (width * 3) as usize;
         for y in 0..height as usize / 2 {
@@ -75,7 +83,10 @@ in vec2 v_uv;
 out vec4 color;
 uniform sampler2D u_texture;
 void main() {
-    color = texture(u_texture, v_uv);
+    // NVFBC ToGL with BGRA source can appear with swapped R/B on some stacks.
+    // Swizzle back here so gameplay colors remain correct.
+    vec4 c = texture(u_texture, v_uv);
+    color = vec4(c.b, c.g, c.r, c.a);
 }
 "#;
 
@@ -139,7 +150,13 @@ void main() {
 
             gl.bind_vertex_array(None);
 
-            Self { program, vao, vbo, u_uv_offset, u_uv_scale }
+            Self {
+                program,
+                vao,
+                vbo,
+                u_uv_offset,
+                u_uv_scale,
+            }
         }
     }
 
@@ -155,8 +172,16 @@ void main() {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             // Ensure proper sampling for NVFBC texture
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
 
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
@@ -194,11 +219,27 @@ pub struct ScreenToolGui {
     // UI state
     pub show_toolbar: bool,
     pub screenshot_requested: bool,
+    pub show_stats_panel: bool,
+    pub show_help_panel: bool,
 
     // FPS tracking
     frame_count: u32,
     fps: f32,
     last_fps_time: std::time::Instant,
+
+    // Capture freshness tracking
+    new_frame_count: u32,
+    capture_fps: f32,
+    last_capture_fps_time: std::time::Instant,
+    last_capture_diag_time: std::time::Instant,
+    last_capture_diag_tex_id: u32,
+    last_capture_diag_size: (u32, u32),
+
+    // Saved zoom/pan slots for quick recall (minimap-style workflows)
+    saved_slots: [Option<((f32, f32), f32)>; 3],
+
+    // One-time style init for a cleaner, modern overlay look
+    style_initialized: bool,
 }
 
 impl ScreenToolGui {
@@ -214,23 +255,127 @@ impl ScreenToolGui {
             texture_uv_scale: (1.0, 1.0),
             show_toolbar: true,
             screenshot_requested: false,
+            show_stats_panel: true,
+            show_help_panel: false,
             frame_count: 0,
             fps: 0.0,
             last_fps_time: std::time::Instant::now(),
+            new_frame_count: 0,
+            capture_fps: 0.0,
+            last_capture_fps_time: std::time::Instant::now(),
+            last_capture_diag_time: std::time::Instant::now(),
+            last_capture_diag_tex_id: 0,
+            last_capture_diag_size: (0, 0),
+            saved_slots: [None, None, None],
+            style_initialized: false,
+        }
+    }
+
+    fn ensure_style(&mut self, ctx: &egui::Context) {
+        if self.style_initialized {
+            return;
+        }
+        self.style_initialized = true;
+
+        let mut style = (*ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        );
+        ctx.set_style(style);
+
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgba_premultiplied(18, 20, 28, 215);
+        visuals.window_fill = egui::Color32::from_rgba_premultiplied(18, 20, 28, 225);
+        visuals.widgets.noninteractive.bg_fill =
+            egui::Color32::from_rgba_premultiplied(35, 38, 52, 210);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(46, 50, 70, 200);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(65, 74, 110, 220);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(77, 94, 142, 240);
+        ctx.set_visuals(visuals);
+    }
+
+    pub fn reset_view(&mut self) {
+        self.zoom_level = 1.0;
+        self.pan_center = (0.5, 0.5);
+    }
+
+    fn clamp_pan_center(&mut self) {
+        self.pan_center.0 = self.pan_center.0.clamp(0.0, 1.0);
+        self.pan_center.1 = self.pan_center.1.clamp(0.0, 1.0);
+    }
+
+    fn set_view(&mut self, center: (f32, f32), zoom: f32) {
+        self.pan_center = center;
+        self.zoom_level = zoom.clamp(1.0, 8.0);
+        self.clamp_pan_center();
+    }
+
+    fn apply_quick_preset(&mut self, name: &str) {
+        match name {
+            "Full" => self.reset_view(),
+            "TL" => self.set_view((0.25, 0.25), 3.0),
+            "TR" => self.set_view((0.75, 0.25), 3.0),
+            "BL" => self.set_view((0.25, 0.75), 3.0),
+            "BR" => self.set_view((0.75, 0.75), 3.0),
+            "Center" => self.set_view((0.5, 0.5), 3.0),
+            _ => {}
         }
     }
 
     /// Store the NVFBC texture ID. With output tracking, NVFBC returns a texture
     /// sized exactly to the tracked output (not the full screen), so UV scale is always (1,1).
-    pub fn update_capture_texture(&mut self, _gl: &Arc<glow::Context>, gl_texture_id: u32, width: u32, height: u32, screen_width: u32, screen_height: u32) {
+    pub fn update_capture_texture(
+        &mut self,
+        _gl: &Arc<glow::Context>,
+        gl_texture_id: u32,
+        width: u32,
+        height: u32,
+        screen_width: u32,
+        screen_height: u32,
+        is_new_frame: bool,
+    ) {
         let prev_tex = self.current_nvfbc_tex_id;
         self.current_nvfbc_tex_id = gl_texture_id;
         self.capture_size = (width, height);
         self.texture_uv_scale = (1.0, 1.0);
-        // Log on first frame or texture change
-        if prev_tex != gl_texture_id {
-            log::info!("NVFBC tex {}: capture={}x{}, screen={}x{}, uv_scale=(1.0, 1.0)",
-                gl_texture_id, width, height, screen_width, screen_height);
+        if is_new_frame {
+            self.new_frame_count += 1;
+        }
+        let capture_elapsed = self.last_capture_fps_time.elapsed().as_secs_f32();
+        if capture_elapsed >= 1.0 {
+            self.capture_fps = self.new_frame_count as f32 / capture_elapsed;
+            self.new_frame_count = 0;
+            self.last_capture_fps_time = std::time::Instant::now();
+        }
+        // Avoid per-frame log spam (textures alternate in the ring buffer).
+        // Emit diagnostics only when dimensions change or every ~10 seconds.
+        let dims_changed = self.last_capture_diag_size != (width, height);
+        let tex_changed = self.last_capture_diag_tex_id != gl_texture_id && prev_tex == 0;
+        let periodic = self.last_capture_diag_time.elapsed().as_secs() >= 10;
+        if dims_changed || tex_changed || periodic {
+            log::debug!(
+                "NVFBC tex {}: capture={}x{}, screen={}x{}, uv_scale=(1.0, 1.0), new_frame={}",
+                gl_texture_id,
+                width,
+                height,
+                screen_width,
+                screen_height,
+                is_new_frame
+            );
+            self.last_capture_diag_time = std::time::Instant::now();
+            self.last_capture_diag_tex_id = gl_texture_id;
+            self.last_capture_diag_size = (width, height);
         }
     }
 
@@ -265,24 +410,61 @@ impl ScreenToolGui {
 
         let (uv_offset, uv_scale) = self.uv_params();
 
+        // "1x" semantics: show the full captured output, preserving aspect ratio.
+        // We draw into a fitted viewport (letter/pillar-box if needed) instead of
+        // stretching or cropping to the app window dimensions.
+        let (src_w, src_h) = self.capture_size;
+        let (draw_x, draw_y, draw_w, draw_h) = if src_w > 0 && src_h > 0 {
+            let src_aspect = src_w as f32 / src_h as f32;
+            let dst_aspect = viewport_w as f32 / viewport_h.max(1) as f32;
+            if dst_aspect > src_aspect {
+                // Window wider than source => pillarbox
+                let h = viewport_h as i32;
+                let w = (h as f32 * src_aspect).round() as i32;
+                ((viewport_w as i32 - w) / 2, 0, w.max(1), h.max(1))
+            } else {
+                // Window taller than source => letterbox
+                let w = viewport_w as i32;
+                let h = (w as f32 / src_aspect).round() as i32;
+                (0, (viewport_h as i32 - h) / 2, w.max(1), h.max(1))
+            }
+        } else {
+            (0, 0, viewport_w as i32, viewport_h as i32)
+        };
+
         unsafe {
             gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.viewport(draw_x, draw_y, draw_w, draw_h);
         }
 
-        self.quad_renderer.as_ref().unwrap().draw(gl, self.current_nvfbc_tex_id, uv_offset, uv_scale);
+        self.quad_renderer.as_ref().unwrap().draw(
+            gl,
+            self.current_nvfbc_tex_id,
+            uv_offset,
+            uv_scale,
+        );
 
         // Save screenshot after quad is drawn (before egui overlay)
         if self.screenshot_requested {
             self.screenshot_requested = false;
-            save_framebuffer_ppm(gl, viewport_w, viewport_h, "/tmp/screen-tool-screenshot.ppm");
+            save_framebuffer_ppm(
+                gl,
+                viewport_w,
+                viewport_h,
+                "/tmp/screen-tool-screenshot.ppm",
+            );
         }
     }
 
     /// Main UI function — called inside window.frame() for the egui overlay.
     /// Only renders the toolbar and handles input — the texture is rendered separately.
     pub fn show(&mut self, ctx: &egui::Context, _capture: &mut Option<&mut NvfbcCapture>) {
+        self.ensure_style(ctx);
+
         // Track FPS
         self.frame_count += 1;
         let elapsed = self.last_fps_time.elapsed().as_secs_f32();
@@ -297,9 +479,14 @@ impl ScreenToolGui {
             if i.key_pressed(egui::Key::Tab) || i.key_pressed(egui::Key::H) {
                 self.show_toolbar = !self.show_toolbar;
             }
+            if i.key_pressed(egui::Key::F1) {
+                self.show_stats_panel = !self.show_stats_panel;
+            }
+            if i.key_pressed(egui::Key::F2) {
+                self.show_help_panel = !self.show_help_panel;
+            }
             if i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::R) {
-                self.zoom_level = 1.0;
-                self.pan_center = (0.5, 0.5);
+                self.reset_view();
             }
             if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
                 self.zoom_level = (self.zoom_level * 1.5).min(8.0);
@@ -312,27 +499,74 @@ impl ScreenToolGui {
             }
             // Arrow key panning
             let pan_step = 0.05 / self.zoom_level;
-            if i.key_pressed(egui::Key::ArrowLeft) { self.pan_center.0 -= pan_step; }
-            if i.key_pressed(egui::Key::ArrowRight) { self.pan_center.0 += pan_step; }
-            if i.key_pressed(egui::Key::ArrowUp) { self.pan_center.1 -= pan_step; }
-            if i.key_pressed(egui::Key::ArrowDown) { self.pan_center.1 += pan_step; }
-            // Number keys to select output
-            for (idx, key) in [
-                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
-                egui::Key::Num4, egui::Key::Num5,
-            ].iter().enumerate() {
-                if i.key_pressed(*key) && idx < self.available_outputs.len() {
-                    self.selected_output_idx = idx;
+            if i.key_pressed(egui::Key::ArrowLeft) {
+                self.pan_center.0 -= pan_step;
+            }
+            if i.key_pressed(egui::Key::ArrowRight) {
+                self.pan_center.0 += pan_step;
+            }
+            if i.key_pressed(egui::Key::ArrowUp) {
+                self.pan_center.1 -= pan_step;
+            }
+            if i.key_pressed(egui::Key::ArrowDown) {
+                self.pan_center.1 += pan_step;
+            }
+            // Alt+Number keys to select output (reserve plain 1..3 for crop slots)
+            if i.modifiers.alt {
+                for (idx, key) in [
+                    egui::Key::Num1,
+                    egui::Key::Num2,
+                    egui::Key::Num3,
+                    egui::Key::Num4,
+                    egui::Key::Num5,
+                ]
+                .iter()
+                .enumerate()
+                {
+                    if i.key_pressed(*key) && idx < self.available_outputs.len() {
+                        self.selected_output_idx = idx;
+                    }
+                }
+            }
+
+            // Ctrl+1/2/3 save current crop slot. Plain 1/2/3 loads slot if it exists.
+            if i.modifiers.ctrl {
+                if i.key_pressed(egui::Key::Num1) {
+                    self.saved_slots[0] = Some((self.pan_center, self.zoom_level));
+                }
+                if i.key_pressed(egui::Key::Num2) {
+                    self.saved_slots[1] = Some((self.pan_center, self.zoom_level));
+                }
+                if i.key_pressed(egui::Key::Num3) {
+                    self.saved_slots[2] = Some((self.pan_center, self.zoom_level));
+                }
+            } else {
+                if i.key_pressed(egui::Key::Num1) {
+                    if let Some((center, zoom)) = self.saved_slots[0] {
+                        self.set_view(center, zoom);
+                    }
+                }
+                if i.key_pressed(egui::Key::Num2) {
+                    if let Some((center, zoom)) = self.saved_slots[1] {
+                        self.set_view(center, zoom);
+                    }
+                }
+                if i.key_pressed(egui::Key::Num3) {
+                    if let Some((center, zoom)) = self.saved_slots[2] {
+                        self.set_view(center, zoom);
+                    }
                 }
             }
         });
+        self.clamp_pan_center();
 
         // Toolbar
         if self.show_toolbar {
             egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Display:");
-                    let current_name = self.available_outputs
+                    let current_name = self
+                        .available_outputs
                         .get(self.selected_output_idx)
                         .map(|o| o.name.as_str())
                         .unwrap_or("None");
@@ -340,7 +574,8 @@ impl ScreenToolGui {
                         .selected_text(current_name)
                         .show_ui(ui, |ui| {
                             for (idx, output) in self.available_outputs.iter().enumerate() {
-                                let label = format!("{} ({}x{})", output.name, output.width, output.height);
+                                let label =
+                                    format!("{} ({}x{})", output.name, output.width, output.height);
                                 ui.selectable_value(&mut self.selected_output_idx, idx, label);
                             }
                         });
@@ -348,24 +583,113 @@ impl ScreenToolGui {
                     ui.separator();
 
                     ui.label("Zoom:");
-                    ui.add(egui::Slider::new(&mut self.zoom_level, 1.0..=8.0)
-                        .logarithmic(true)
-                        .text("x"));
+                    ui.add(
+                        egui::Slider::new(&mut self.zoom_level, 1.0..=8.0)
+                            .logarithmic(true)
+                            .text("x"),
+                    );
 
                     if ui.button("Reset").clicked() {
-                        self.zoom_level = 1.0;
-                        self.pan_center = (0.5, 0.5);
+                        self.reset_view();
                     }
 
                     ui.separator();
 
-                    ui.label(format!("{:.0} FPS", self.fps));
-                    if self.capture_size.0 > 0 {
-                        ui.label(format!("{}x{}", self.capture_size.0, self.capture_size.1));
+                    ui.label("Quick:");
+                    for label in ["Full", "TL", "TR", "BL", "BR", "Center"] {
+                        if ui.small_button(label).clicked() {
+                            self.apply_quick_preset(label);
+                        }
                     }
+
+                    ui.separator();
+
+                    ui.label("Slots:");
+                    for idx in 0..3 {
+                        let slot_text = format!("S{}", idx + 1);
+                        if ui.small_button(slot_text).clicked() {
+                            if let Some((center, zoom)) = self.saved_slots[idx] {
+                                self.set_view(center, zoom);
+                            }
+                        }
+                        if ui.small_button(format!("Save {}", idx + 1)).clicked() {
+                            self.saved_slots[idx] = Some((self.pan_center, self.zoom_level));
+                        }
+                    }
+
+                    ui.separator();
+                    ui.checkbox(&mut self.show_stats_panel, "Stats");
+                    ui.checkbox(&mut self.show_help_panel, "Help");
                 });
             });
         }
+
+        if self.show_stats_panel {
+            egui::Window::new("Performance")
+                .default_pos(egui::pos2(10.0, 56.0))
+                .resizable(false)
+                .collapsible(true)
+                .show(ctx, |ui| {
+                    ui.label(format!("Render FPS: {:.0}", self.fps));
+                    ui.label(format!("Capture FPS (new): {:.0}", self.capture_fps));
+                    if self.capture_size.0 > 0 {
+                        ui.label(format!(
+                            "Capture: {}x{}",
+                            self.capture_size.0, self.capture_size.1
+                        ));
+                    }
+                    ui.label(format!("Zoom: {:.2}x", self.zoom_level));
+                    ui.label(format!(
+                        "Pan: {:.3}, {:.3}",
+                        self.pan_center.0, self.pan_center.1
+                    ));
+                });
+        }
+
+        if self.show_help_panel {
+            egui::Window::new("Controls")
+                .default_pos(egui::pos2(280.0, 56.0))
+                .resizable(false)
+                .collapsible(true)
+                .show(ctx, |ui| {
+                    ui.label("Scroll: Zoom");
+                    ui.label("Drag / Arrows: Pan");
+                    ui.label("Tab/H: Toggle toolbar");
+                    ui.label("F1: Toggle stats");
+                    ui.label("F2: Toggle help");
+                    ui.label("Alt+1..5: Switch display output");
+                    ui.label("Ctrl+1..3: Save crop slots");
+                    ui.label("1..3: Recall crop slots");
+                    ui.label("F5: Save screenshot");
+                });
+        }
+
+        // Always-visible, touch-friendly zoom controls for high-res displays.
+        egui::Area::new(egui::Id::new("quick_zoom_controls"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0))
+            .interactable(true)
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style())
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            if ui.add_sized([54.0, 42.0], egui::Button::new("+")).clicked() {
+                                self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
+                            }
+                            ui.add_space(6.0);
+                            if ui.add_sized([54.0, 42.0], egui::Button::new("−")).clicked() {
+                                self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
+                            }
+                            ui.add_space(6.0);
+                            if ui
+                                .add_sized([54.0, 30.0], egui::Button::new("1x"))
+                                .clicked()
+                            {
+                                self.reset_view();
+                            }
+                        });
+                    });
+            });
 
         // Transparent central panel — only for capturing scroll/drag input
         egui::CentralPanel::default()
@@ -386,12 +710,15 @@ impl ScreenToolGui {
 
                 // Drag to pan
                 if response.dragged_by(egui::PointerButton::Primary) {
-                    let delta = response.drag_delta();
-                    let scale = 1.0 / self.zoom_level;
-                    self.pan_center.0 -= delta.x / available_size.x * scale;
-                    self.pan_center.1 -= delta.y / available_size.y * scale;
+                    let delta = ui.input(|i| i.pointer.delta());
+                    if available_size.x > 1.0 && available_size.y > 1.0 {
+                        let scale = 1.0 / self.zoom_level;
+                        self.pan_center.0 -= delta.x / available_size.x * scale;
+                        self.pan_center.1 -= delta.y / available_size.y * scale;
+                    }
                 }
             });
+        self.clamp_pan_center();
     }
 
     pub fn destroy(&mut self, gl: &Arc<glow::Context>) {

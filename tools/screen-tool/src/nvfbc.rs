@@ -1,6 +1,7 @@
 //! NVFBC FFI bindings and zero-copy GPU capture.
 
 use anyhow::{bail, Result};
+use std::ffi::c_char;
 use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
 use std::os::raw::c_void;
@@ -17,7 +18,8 @@ pub(crate) type NvfbcStatus = u32;
 pub(crate) const NVFBC_SUCCESS: NvfbcStatus = 0;
 const NVFBC_TRACKING_OUTPUT: u32 = 1;
 const NVFBC_CAPTURE_TO_GL: u32 = 3;
-const NVFBC_BUFFER_FORMAT_RGBA: u32 = 4;
+// Native X11/NVIDIA desktop format for NvFBC is BGRA.
+const NVFBC_BUFFER_FORMAT_BGRA: u32 = 5;
 const NVFBC_TOGL_TEXTURES_MAX: usize = 2;
 
 // NVFBC API version: major=1, minor=7 => (7 | (1 << 8)) = 0x107
@@ -30,10 +32,18 @@ fn nvfbc_struct_version<T>(ver: u32) -> u32 {
 // ─── FFI structs ─────────────────────────────────────────────────────────────
 
 #[repr(C)]
-struct NvfbcSize { w: u32, h: u32 }
+struct NvfbcSize {
+    w: u32,
+    h: u32,
+}
 
 #[repr(C)]
-struct NvfbcBox { x: u32, y: u32, w: u32, h: u32 }
+struct NvfbcBox {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
 
 #[repr(C)]
 struct NvfbcRandrOutputInfo {
@@ -112,6 +122,16 @@ struct NvfbcDestroyCaptureSessionParams {
     dw_version: u32,
 }
 
+#[repr(C)]
+struct NvfbcBindContextParams {
+    dw_version: u32,
+}
+
+#[repr(C)]
+struct NvfbcReleaseContextParams {
+    dw_version: u32,
+}
+
 const NVFBC_TOGL_GRAB_FLAGS_NOWAIT: u32 = 1;
 
 #[repr(C)]
@@ -124,16 +144,24 @@ struct NvfbcToGlGrabFrameParams {
 }
 
 // Function pointer types
-type FnCreateHandle = unsafe extern "C" fn(*mut NvfbcSessionHandle, *mut NvfbcCreateHandleParams) -> NvfbcStatus;
+type FnCreateHandle =
+    unsafe extern "C" fn(*mut NvfbcSessionHandle, *mut NvfbcCreateHandleParams) -> NvfbcStatus;
 type FnDestroyHandle = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
-type FnGetStatus = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcGetStatusParams) -> NvfbcStatus;
-type FnCreateCaptureSession = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcCreateCaptureSessionParams) -> NvfbcStatus;
-type FnDestroyCaptureSession = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcDestroyCaptureSessionParams) -> NvfbcStatus;
-type FnToGlSetup = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlSetupParams) -> NvfbcStatus;
-type FnToGlGrabFrame = unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlGrabFrameParams) -> NvfbcStatus;
-type FnBindContext = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
-type FnReleaseContext = unsafe extern "C" fn(NvfbcSessionHandle, *mut c_void) -> NvfbcStatus;
-type FnGetLastErrorStr = unsafe extern "C" fn(NvfbcSessionHandle) -> *const i8;
+type FnGetStatus =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcGetStatusParams) -> NvfbcStatus;
+type FnCreateCaptureSession =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcCreateCaptureSessionParams) -> NvfbcStatus;
+type FnDestroyCaptureSession =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcDestroyCaptureSessionParams) -> NvfbcStatus;
+type FnToGlSetup =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlSetupParams) -> NvfbcStatus;
+type FnToGlGrabFrame =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcToGlGrabFrameParams) -> NvfbcStatus;
+type FnBindContext =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcBindContextParams) -> NvfbcStatus;
+type FnReleaseContext =
+    unsafe extern "C" fn(NvfbcSessionHandle, *mut NvfbcReleaseContextParams) -> NvfbcStatus;
+type FnGetLastErrorStr = unsafe extern "C" fn(NvfbcSessionHandle) -> *const c_char;
 
 #[repr(C)]
 struct NvfbcFunctionList {
@@ -170,6 +198,10 @@ pub struct NvfbcCapture {
     handle: NvfbcSessionHandle,
     textures: [u32; NVFBC_TOGL_TEXTURES_MAX],
     output_id: u32,
+    capture_x: u32,
+    capture_y: u32,
+    capture_w: u32,
+    capture_h: u32,
     pub width: u32,
     pub height: u32,
     pub screen_width: u32,
@@ -187,7 +219,10 @@ impl NvfbcCapture {
             let lib = libc::dlopen(lib_name.as_ptr(), libc::RTLD_NOW);
             if lib.is_null() {
                 let err = CStr::from_ptr(libc::dlerror());
-                bail!("Failed to load libnvidia-fbc.so.1: {}", err.to_string_lossy());
+                bail!(
+                    "Failed to load libnvidia-fbc.so.1: {}",
+                    err.to_string_lossy()
+                );
             }
             log::debug!("[NVFBC] gl.display after dlopen: {:?}", gl.display);
 
@@ -208,13 +243,19 @@ impl NvfbcCapture {
                 bail!("NvFBCCreateInstance failed: {}", status);
             }
             let fns = fns_uninit.assume_init();
-            log::debug!("[NVFBC] gl.display after NvFBCCreateInstance: {:?}", gl.display);
+            log::debug!(
+                "[NVFBC] gl.display after NvFBCCreateInstance: {:?}",
+                gl.display
+            );
 
             // Magic key to enable NVFBC on consumer GPUs (same as Sunshine)
             let magic_key: [u32; 4] = [0xAEF57AC5, 0x401D1A39, 0x1B856BBE, 0x9ED0CEBA];
 
             gl.make_current_offscreen();
-            log::debug!("[NVFBC] gl.display after make_current_offscreen: {:?}", gl.display);
+            log::debug!(
+                "[NVFBC] gl.display after make_current_offscreen: {:?}",
+                gl.display
+            );
 
             let mut handle: NvfbcSessionHandle = 0;
             let mut create_params: NvfbcCreateHandleParams = std::mem::zeroed();
@@ -230,7 +271,10 @@ impl NvfbcCapture {
             log::debug!("  dw_version: 0x{:08x}", create_params.dw_version);
             log::debug!("  private_data: {:?}", create_params.private_data);
             log::debug!("  private_data_size: {}", create_params.private_data_size);
-            log::debug!("  externally_managed_context: {}", create_params.externally_managed_context);
+            log::debug!(
+                "  externally_managed_context: {}",
+                create_params.externally_managed_context
+            );
             log::debug!("  glx_ctx: {:?}", create_params.glx_ctx);
             log::debug!("  glx_fb_config: {:?}", create_params.glx_fb_config);
             log::debug!("[NVFBC] gl.display before create_handle: {:?}", gl.display);
@@ -243,8 +287,21 @@ impl NvfbcCapture {
                 bail!("nvFBCCreateHandle failed: {}", err.to_string_lossy());
             }
 
+            // Bind NvFBC context to this thread for subsequent calls.
+            let mut bind_params = NvfbcBindContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcBindContextParams>(1),
+            };
+            let status = (fns.bind_context)(handle, &mut bind_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((fns.get_last_error_str)(handle));
+                bail!("nvFBCBindContext failed: {}", err.to_string_lossy());
+            }
+
             // Get status to find output ID
-            log::debug!("[NVFBC] Preparing NvfbcGetStatusParams (size={})", std::mem::size_of::<NvfbcGetStatusParams>());
+            log::debug!(
+                "[NVFBC] Preparing NvfbcGetStatusParams (size={})",
+                std::mem::size_of::<NvfbcGetStatusParams>()
+            );
             let mut status_params: NvfbcGetStatusParams = std::mem::zeroed();
             status_params.dw_version = nvfbc_struct_version::<NvfbcGetStatusParams>(2);
             log::debug!("[NVFBC] gl.display before get_status: {:?}", gl.display);
@@ -257,20 +314,43 @@ impl NvfbcCapture {
                 bail!("nvFBCGetStatus failed: {}", err.to_string_lossy());
             }
 
-            log::info!("NVFBC: {} outputs, screen {}x{}", status_params.output_num,
-                status_params.screen_size.w, status_params.screen_size.h);
+            log::info!(
+                "NVFBC: {} outputs, screen {}x{}",
+                status_params.output_num,
+                status_params.screen_size.w,
+                status_params.screen_size.h
+            );
 
             let mut output_id = 0u32;
+            let mut capture_x = 0u32;
+            let mut capture_y = 0u32;
+            let mut capture_w = status_params.screen_size.w;
+            let mut capture_h = status_params.screen_size.h;
             let mut found = false;
             for i in 0..status_params.output_num as usize {
                 let out = &status_params.outputs[i];
-                let name_end = out.name.iter().position(|&b| b == 0).unwrap_or(out.name.len());
+                let name_end = out
+                    .name
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(out.name.len());
                 let name = String::from_utf8_lossy(&out.name[..name_end]);
-                log::info!("  Output {}: '{}' id={} {}x{}+{}+{}",
-                    i, name, out.dw_id, out.tracker_box.w, out.tracker_box.h,
-                    out.tracker_box.x, out.tracker_box.y);
+                log::info!(
+                    "  Output {}: '{}' id={} {}x{}+{}+{}",
+                    i,
+                    name,
+                    out.dw_id,
+                    out.tracker_box.w,
+                    out.tracker_box.h,
+                    out.tracker_box.x,
+                    out.tracker_box.y
+                );
                 if name.trim() == output_name {
                     output_id = out.dw_id;
+                    capture_x = out.tracker_box.x;
+                    capture_y = out.tracker_box.y;
+                    capture_w = out.tracker_box.w;
+                    capture_h = out.tracker_box.h;
                     found = true;
                 }
             }
@@ -278,7 +358,11 @@ impl NvfbcCapture {
             if !found {
                 bail!("NVFBC output '{}' not found", output_name);
             }
-            log::info!("NVFBC: tracking output '{}' (id={})", output_name, output_id);
+            log::info!(
+                "NVFBC: tracking output '{}' (id={})",
+                output_name,
+                output_id
+            );
 
             // Create capture session
             let mut session_params: NvfbcCreateCaptureSessionParams = std::mem::zeroed();
@@ -286,19 +370,33 @@ impl NvfbcCapture {
             session_params.capture_type = NVFBC_CAPTURE_TO_GL;
             session_params.tracking_type = NVFBC_TRACKING_OUTPUT;
             session_params.output_id = output_id;
+            session_params.capture_box = NvfbcBox {
+                x: capture_x,
+                y: capture_y,
+                w: capture_w,
+                h: capture_h,
+            };
+            session_params.frame_size = NvfbcSize {
+                w: capture_w,
+                h: capture_h,
+            };
+            session_params.round_frame_size = 0;
             session_params.with_cursor = 0;
             session_params.allow_direct_capture = 1;
 
             let status = (fns.create_capture_session)(handle, &mut session_params);
             if status != NVFBC_SUCCESS {
                 let err = CStr::from_ptr((fns.get_last_error_str)(handle));
-                bail!("nvFBCCreateCaptureSession failed: {}", err.to_string_lossy());
+                bail!(
+                    "nvFBCCreateCaptureSession failed: {}",
+                    err.to_string_lossy()
+                );
             }
 
             // Setup ToGL
             let mut gl_params: NvfbcToGlSetupParams = std::mem::zeroed();
             gl_params.dw_version = nvfbc_struct_version::<NvfbcToGlSetupParams>(2);
-            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_RGBA;
+            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_BGRA;
 
             let status = (fns.to_gl_setup)(handle, &mut gl_params);
             if status != NVFBC_SUCCESS {
@@ -306,9 +404,13 @@ impl NvfbcCapture {
                 bail!("nvFBCToGLSetUp failed: {}", err.to_string_lossy());
             }
 
-            log::info!("NVFBC ToGL: textures=[{}, {}] target=0x{:x} format=0x{:x}",
-                gl_params.textures[0], gl_params.textures[1],
-                gl_params.tex_target, gl_params.tex_format);
+            log::info!(
+                "NVFBC ToGL: textures=[{}, {}] target=0x{:x} format=0x{:x}",
+                gl_params.textures[0],
+                gl_params.textures[1],
+                gl_params.tex_target,
+                gl_params.tex_format
+            );
 
             // Grab one frame to get dimensions
             let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
@@ -321,15 +423,37 @@ impl NvfbcCapture {
             let status = (fns.to_gl_grab_frame)(handle, &mut grab_params);
             if status != NVFBC_SUCCESS {
                 let err = CStr::from_ptr((fns.get_last_error_str)(handle));
-                bail!("Initial nvFBCToGLGrabFrame failed: {}", err.to_string_lossy());
+                bail!(
+                    "Initial nvFBCToGLGrabFrame failed: {}",
+                    err.to_string_lossy()
+                );
             }
 
             let width = grab_info.dw_width;
             let height = grab_info.dw_height;
-            log::info!("NVFBC: capturing {}x{} from '{}'", width, height, output_name);
+            log::info!(
+                "NVFBC: capturing {}x{} from '{}'",
+                width,
+                height,
+                output_name
+            );
+
+            let mut release_params = NvfbcReleaseContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
+            };
+            let _ = (fns.release_context)(handle, &mut release_params);
 
             Ok(Self {
-                fns, handle, textures: gl_params.textures, output_id, width, height,
+                fns,
+                handle,
+                textures: gl_params.textures,
+                output_id,
+                capture_x,
+                capture_y,
+                capture_w,
+                capture_h,
+                width,
+                height,
                 screen_width: status_params.screen_size.w,
                 screen_height: status_params.screen_size.h,
                 _lib: lib,
@@ -349,19 +473,51 @@ impl NvfbcCapture {
             let mut results = Vec::new();
             for i in 0..status_params.output_num as usize {
                 let out = &status_params.outputs[i];
-                let name_end = out.name.iter().position(|&b| b == 0).unwrap_or(out.name.len());
-                let name = String::from_utf8_lossy(&out.name[..name_end]).trim().to_string();
+                let name_end = out
+                    .name
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(out.name.len());
+                let name = String::from_utf8_lossy(&out.name[..name_end])
+                    .trim()
+                    .to_string();
                 results.push((out.dw_id, name, out.tracker_box.w, out.tracker_box.h));
             }
             results
         }
     }
 
+    /// Switch capture output by NVFBC output id.
+    pub fn switch_output_by_id(&mut self, output_id: u32) -> Result<()> {
+        self.output_id = output_id;
+        if let Some((_, _, w, h)) = self
+            .list_outputs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == output_id)
+        {
+            self.capture_x = 0;
+            self.capture_y = 0;
+            self.capture_w = w;
+            self.capture_h = h;
+        }
+        self.recreate_session()
+    }
+
     /// Recreate the capture session and ToGL setup. Called when the display
-    /// resolution changes (e.g., client connects with different resolution).
+    /// resolution changes (e.g., client connects with different resolution),
+    /// or when switching outputs.
     pub fn recreate_session(&mut self) -> Result<()> {
         unsafe {
             // Destroy existing capture session
+            let mut bind_params = NvfbcBindContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcBindContextParams>(1),
+            };
+            let status = (self.fns.bind_context)(self.handle, &mut bind_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("recreate bind_context failed: {}", err.to_string_lossy());
+            }
+
             let mut destroy_params = NvfbcDestroyCaptureSessionParams {
                 dw_version: nvfbc_struct_version::<NvfbcDestroyCaptureSessionParams>(1),
             };
@@ -377,19 +533,33 @@ impl NvfbcCapture {
             session_params.capture_type = NVFBC_CAPTURE_TO_GL;
             session_params.tracking_type = NVFBC_TRACKING_OUTPUT;
             session_params.output_id = self.output_id;
+            session_params.capture_box = NvfbcBox {
+                x: self.capture_x,
+                y: self.capture_y,
+                w: self.capture_w,
+                h: self.capture_h,
+            };
+            session_params.frame_size = NvfbcSize {
+                w: self.capture_w,
+                h: self.capture_h,
+            };
+            session_params.round_frame_size = 0;
             session_params.with_cursor = 0;
             session_params.allow_direct_capture = 1;
 
             let status = (self.fns.create_capture_session)(self.handle, &mut session_params);
             if status != NVFBC_SUCCESS {
                 let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
-                bail!("recreate nvFBCCreateCaptureSession failed: {}", err.to_string_lossy());
+                bail!(
+                    "recreate nvFBCCreateCaptureSession failed: {}",
+                    err.to_string_lossy()
+                );
             }
 
             // Re-setup ToGL
             let mut gl_params: NvfbcToGlSetupParams = std::mem::zeroed();
             gl_params.dw_version = nvfbc_struct_version::<NvfbcToGlSetupParams>(2);
-            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_RGBA;
+            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_BGRA;
 
             let status = (self.fns.to_gl_setup)(self.handle, &mut gl_params);
             if status != NVFBC_SUCCESS {
@@ -415,7 +585,16 @@ impl NvfbcCapture {
 
             self.width = grab_info.dw_width;
             self.height = grab_info.dw_height;
-            log::info!("NVFBC: session recreated, now capturing {}x{}", self.width, self.height);
+            log::info!(
+                "NVFBC: session recreated, now capturing {}x{}",
+                self.width,
+                self.height
+            );
+
+            let mut release_params = NvfbcReleaseContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
+            };
+            let _ = (self.fns.release_context)(self.handle, &mut release_params);
 
             Ok(())
         }
@@ -424,6 +603,15 @@ impl NvfbcCapture {
     /// Grab a frame, returns (GL texture ID, width, height, is_new).
     pub fn grab_frame(&mut self) -> Result<(u32, u32, u32, bool)> {
         unsafe {
+            let mut bind_params = NvfbcBindContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcBindContextParams>(1),
+            };
+            let status = (self.fns.bind_context)(self.handle, &mut bind_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("nvFBCBindContext: {}", err.to_string_lossy());
+            }
+
             let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
             let mut grab_params: NvfbcToGlGrabFrameParams = std::mem::zeroed();
             grab_params.dw_version = nvfbc_struct_version::<NvfbcToGlGrabFrameParams>(2);
@@ -431,6 +619,10 @@ impl NvfbcCapture {
             grab_params.frame_grab_info = &mut grab_info;
 
             let status = (self.fns.to_gl_grab_frame)(self.handle, &mut grab_params);
+            let mut release_params = NvfbcReleaseContextParams {
+                dw_version: nvfbc_struct_version::<NvfbcReleaseContextParams>(1),
+            };
+            let _ = (self.fns.release_context)(self.handle, &mut release_params);
             if status != NVFBC_SUCCESS {
                 let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
                 bail!("nvFBCToGLGrabFrame: {}", err.to_string_lossy());
@@ -439,7 +631,12 @@ impl NvfbcCapture {
             self.width = grab_info.dw_width;
             self.height = grab_info.dw_height;
             let tex_id = self.textures[grab_params.dw_texture_index as usize];
-            Ok((tex_id, grab_info.dw_width, grab_info.dw_height, grab_info.b_is_new_frame != 0))
+            Ok((
+                tex_id,
+                grab_info.dw_width,
+                grab_info.dw_height,
+                grab_info.b_is_new_frame != 0,
+            ))
         }
     }
 }

@@ -10,8 +10,9 @@
 //!   +/- keys          — Zoom in/out
 //!   Escape / R        — Reset to 1x full view
 //!   Tab / H           — Toggle toolbar visibility
-//!   1-5               — Switch display output
+//!   Alt+1-5           — Switch display output
 //!   F5 / SIGUSR1      — Save framebuffer screenshot to /tmp/
+//!   F1 / F2           — Toggle stats/help panels
 
 mod gl_state;
 mod gui;
@@ -24,7 +25,7 @@ use signal_hook::flag;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gl_state::GlState;
 use gui::{OutputInfo, ScreenToolGui};
@@ -32,7 +33,10 @@ use nvfbc::NvfbcCapture;
 use window::{AppEvent, AppWindow};
 
 #[derive(Parser)]
-#[command(name = "screen-tool", about = "X11 magnifier with NVFBC capture and egui GUI")]
+#[command(
+    name = "screen-tool",
+    about = "X11 magnifier with NVFBC capture and egui GUI"
+)]
 struct Args {
     /// NVFBC output name to capture (e.g. "DP-0")
     #[arg(long, default_value = "DP-0")]
@@ -43,20 +47,24 @@ struct Args {
     title: String,
 
     /// Initial window X position
-    #[arg(long, default_value = "0")]
+    #[arg(long, visible_alias = "output-x", default_value = "0")]
     x: i32,
 
     /// Initial window Y position
-    #[arg(long, default_value = "0")]
+    #[arg(long, visible_alias = "output-y", default_value = "0")]
     y: i32,
 
     /// Initial window width
-    #[arg(long, default_value = "640")]
+    #[arg(long, visible_alias = "output-width", default_value = "640")]
     width: u32,
 
     /// Initial window height
-    #[arg(long, default_value = "480")]
+    #[arg(long, visible_alias = "output-height", default_value = "480")]
     height: u32,
+
+    /// Maximum render/update rate to keep overhead bounded.
+    #[arg(long, default_value = "60")]
+    max_fps: u32,
 }
 
 fn main() -> Result<()> {
@@ -84,14 +92,26 @@ fn main() -> Result<()> {
     let mut window = AppWindow::new(&gl, &args.title, args.x, args.y, args.width, args.height)?;
 
     // Initialize NVFBC capture (after window creation)
-    unsafe { gl.make_current_offscreen(); }
+    unsafe {
+        gl.make_current_offscreen();
+    }
     let mut capture = NvfbcCapture::new(&gl, &args.capture_output)?;
 
     // Enumerate available outputs for the GUI dropdown
-    let outputs = capture.list_outputs().iter().map(|(id, name, w, h)| {
-        OutputInfo { id: *id, name: name.clone(), width: *w, height: *h }
-    }).collect::<Vec<_>>();
-    let selected_idx = outputs.iter().position(|o| o.name == args.capture_output).unwrap_or(0);
+    let outputs = capture
+        .list_outputs()
+        .iter()
+        .map(|(id, name, w, h)| OutputInfo {
+            id: *id,
+            name: name.clone(),
+            width: *w,
+            height: *h,
+        })
+        .collect::<Vec<_>>();
+    let selected_idx = outputs
+        .iter()
+        .position(|o| o.name == args.capture_output)
+        .unwrap_or(0);
 
     // Create the GUI
     let mut gui = ScreenToolGui::new(outputs);
@@ -99,10 +119,16 @@ fn main() -> Result<()> {
 
     // Track which output the NVFBC session is currently capturing
     let mut current_output_idx = selected_idx;
+    let target_frame_time =
+        Duration::from_micros((1_000_000u64 / args.max_fps.max(1) as u64).max(1));
 
-    log::info!("screen-tool running. Tab=toolbar, scroll=zoom, drag=pan, Esc=reset, F5=screenshot.");
+    log::info!(
+        "screen-tool running. Tab=toolbar, scroll=zoom, drag=pan, Esc=reset, F5=screenshot."
+    );
 
     loop {
+        let frame_start = Instant::now();
+
         if shutdown.load(Ordering::Relaxed) {
             log::info!("Shutdown signal received");
             break;
@@ -129,17 +155,40 @@ fn main() -> Result<()> {
         // Check if GUI wants to switch to a different output
         if gui.selected_output_idx != current_output_idx {
             let new_output = &gui.available_outputs[gui.selected_output_idx];
-            log::info!("Switching NVFBC to output '{}' (id={})", new_output.name, new_output.id);
-            current_output_idx = gui.selected_output_idx;
+            log::info!(
+                "Switching NVFBC to output '{}' (id={})",
+                new_output.name,
+                new_output.id
+            );
+            match capture.switch_output_by_id(new_output.id) {
+                Ok(()) => {
+                    current_output_idx = gui.selected_output_idx;
+                    gui.reset_view();
+                }
+                Err(e) => {
+                    log::error!("Failed to switch NVFBC output '{}': {}", new_output.name, e);
+                    gui.selected_output_idx = current_output_idx;
+                }
+            }
         }
 
         // Grab frame from NVFBC (needs offscreen context)
-        unsafe { gl.make_current_offscreen(); }
+        unsafe {
+            gl.make_current_offscreen();
+        }
         let grab_result = capture.grab_frame();
 
         // Store the texture for raw GL rendering
-        if let Ok((tex_id, src_w, src_h, _is_new)) = grab_result {
-            gui.update_capture_texture(&gl.glow_ctx, tex_id, src_w, src_h, capture.screen_width, capture.screen_height);
+        if let Ok((tex_id, src_w, src_h, is_new)) = grab_result {
+            gui.update_capture_texture(
+                &gl.glow_ctx,
+                tex_id,
+                src_w,
+                src_h,
+                capture.screen_width,
+                capture.screen_height,
+                is_new,
+            );
         } else if let Err(e) = grab_result {
             log::warn!("NVFBC grab failed: {}", e);
         }
@@ -153,15 +202,22 @@ fn main() -> Result<()> {
         //   1. Run egui UI logic (collect shapes, no painting yet)
         //   2. Draw NVFBC texture as fullscreen background quad (raw GL)
         //   3. Paint egui overlay on top and swap buffers
-        window.begin_frame(|ctx| { gui.show(ctx, &mut Some(&mut capture)); });
+        window.begin_frame(|ctx| {
+            gui.show(ctx, &mut Some(&mut capture));
+        });
 
-        unsafe { gl.make_current(window.glx_window); }
+        unsafe {
+            gl.make_current(window.glx_window);
+        }
         gui.render_capture(&gl.glow_ctx, window.width, window.height);
 
         window.end_frame(&gl);
 
-        // Minimal sleep — NVFBC NOWAIT returns immediately if no new frame
-        thread::sleep(Duration::from_millis(1));
+        // Frame cap for low overhead / minimal contention with game + Sunshine.
+        let elapsed = frame_start.elapsed();
+        if elapsed < target_frame_time {
+            thread::sleep(target_frame_time - elapsed);
+        }
     }
 
     gui.destroy(&gl.glow_ctx);

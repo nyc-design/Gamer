@@ -8,6 +8,7 @@
 #
 # Env vars:
 #   SCREEN_TOOL_ENABLED   - Set to "0" to disable (default: "1")
+#   SCREEN_TOOL_MAX_FPS   - Render/update cap to minimize overhead (default: "30")
 #   DUAL_SCREEN           - Dual-screen mode flag (tool still runs, but yields)
 ###############################################################################
 
@@ -42,6 +43,7 @@ ARGS=(
     --output-y "$BOT_Y"
     --output-width "$BOT_WIDTH"
     --output-height "$BOT_HEIGHT"
+    --max-fps "${SCREEN_TOOL_MAX_FPS:-30}"
 )
 
 echo "[screen-tool] Starting: screen-tool ${ARGS[*]}"
