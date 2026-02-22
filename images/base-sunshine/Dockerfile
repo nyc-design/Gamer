@@ -17,6 +17,16 @@ COPY tools/shader-inject/ shader-inject/
 RUN cd shader-overlay && cargo build --release && strip target/release/shader-overlay
 RUN cd shader-inject && cargo build --release && strip target/release/libshader_inject.so
 
+# Build screen-tool binary (secondary display zoom/crop viewer)
+FROM rust:latest AS build-screen-tool
+WORKDIR /build
+RUN apt-get update && apt-get install -y \
+    libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
+    libgl-dev libglu1-mesa-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/screen-tool/ screen-tool/
+RUN cd screen-tool && cargo build --release && strip target/release/screen-tool
+
 # Download Sunshine .deb in a separate stage
 FROM alpine/curl:8.14.1 AS download-sunshine
 WORKDIR /app
@@ -146,6 +156,12 @@ ENV SHADER_WINDOW_BOTTOM=""
 ENV SHADER_SOURCE_SIZE=""
 ENV SHADER_SOURCE_SIZE_BOTTOM=""
 
+# Screen tool config (secondary display zoom/crop viewer)
+# SCREEN_TOOL_ENABLED: set to "0" to disable
+# SCREEN_TOOL_WINDOW: window title to capture (auto-detects emulator if empty)
+ENV SCREEN_TOOL_ENABLED=1
+ENV SCREEN_TOOL_WINDOW=""
+
 # NVIDIA driver env (set by host/orchestrator)
 ENV NVIDIA_ENABLE=true
 ENV NVIDIA_DRIVER_VERSION=""
@@ -161,6 +177,8 @@ COPY images/base-sunshine/overlay/ /
 COPY --from=build-shaders /build/shader-overlay/target/release/shader-overlay /gamer/bin/shader-overlay
 # shader-inject LD_PRELOAD library — NVFBC-compatible, intercepts glXSwapBuffers
 COPY --from=build-shaders /build/shader-inject/target/release/libshader_inject.so /gamer/lib/libshader_inject.so
+# screen-tool binary — zoom/crop viewer for the secondary display
+COPY --from=build-screen-tool /build/screen-tool/target/release/screen-tool /gamer/bin/screen-tool
 
 # Bundle RetroArch shader presets (subset of slang-shaders)
 RUN --mount=type=cache,target=/var/cache <<EOF
