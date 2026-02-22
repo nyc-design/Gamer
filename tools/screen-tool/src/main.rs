@@ -307,6 +307,7 @@ struct NvfbcCapture {
     fns: NvfbcFunctionList,
     handle: NvfbcSessionHandle,
     textures: [u32; NVFBC_TOGL_TEXTURES_MAX],
+    output_id: u32,
     width: u32,
     height: u32,
     _lib: *mut c_void, // dlopen handle
@@ -449,10 +450,68 @@ impl NvfbcCapture {
                 fns,
                 handle,
                 textures: gl_params.textures,
+                output_id,
                 width,
                 height,
                 _lib: lib,
             })
+        }
+    }
+
+    /// Recreate the capture session and ToGL setup. Called when the display
+    /// resolution changes (e.g., client connects with different resolution).
+    fn recreate_session(&mut self) -> Result<()> {
+        unsafe {
+            // Destroy existing capture session
+            (self.fns.destroy_capture_session)(self.handle, ptr::null_mut());
+
+            // Create new capture session with same output
+            let mut session_params: NvfbcCreateCaptureSessionParams = std::mem::zeroed();
+            session_params.dw_version = nvfbc_struct_version::<NvfbcCreateCaptureSessionParams>(6);
+            session_params.capture_type = NVFBC_CAPTURE_TO_GL;
+            session_params.tracking_type = NVFBC_TRACKING_OUTPUT;
+            session_params.output_id = self.output_id;
+            session_params.with_cursor = 0;
+            session_params.allow_direct_capture = 1;
+
+            let status = (self.fns.create_capture_session)(self.handle, &mut session_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("recreate nvFBCCreateCaptureSession failed: {}", err.to_string_lossy());
+            }
+
+            // Re-setup ToGL
+            let mut gl_params: NvfbcToGlSetupParams = std::mem::zeroed();
+            gl_params.dw_version = nvfbc_struct_version::<NvfbcToGlSetupParams>(2);
+            gl_params.buffer_format = NVFBC_BUFFER_FORMAT_RGBA;
+
+            let status = (self.fns.to_gl_setup)(self.handle, &mut gl_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("recreate nvFBCToGLSetUp failed: {}", err.to_string_lossy());
+            }
+
+            self.textures = gl_params.textures;
+
+            // Grab one frame to get new dimensions
+            let mut grab_info: NvfbcFrameGrabInfo = std::mem::zeroed();
+            let mut grab_params: NvfbcToGlGrabFrameParams = std::mem::zeroed();
+            grab_params.dw_version = nvfbc_struct_version::<NvfbcToGlGrabFrameParams>(2);
+            grab_params.dw_flags = 0;
+            grab_params.frame_grab_info = &mut grab_info;
+            grab_params.dw_timeout_ms = 5000;
+
+            let status = (self.fns.to_gl_grab_frame)(self.handle, &mut grab_params);
+            if status != NVFBC_SUCCESS {
+                let err = CStr::from_ptr((self.fns.get_last_error_str)(self.handle));
+                bail!("recreate grab failed: {}", err.to_string_lossy());
+            }
+
+            self.width = grab_info.dw_width;
+            self.height = grab_info.dw_height;
+            log::info!("NVFBC: session recreated, now capturing {}x{}", self.width, self.height);
+
+            Ok(())
         }
     }
 
@@ -627,6 +686,7 @@ impl OutputWindow {
 
             let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
             swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
+            swa.override_redirect = 1; // bypass WM — we control position/size
             swa.event_mask = xlib::StructureNotifyMask | xlib::ExposureMask
                 | xlib::ButtonPressMask | xlib::ButtonReleaseMask
                 | xlib::PointerMotionMask | xlib::KeyPressMask;
@@ -634,7 +694,7 @@ impl OutputWindow {
             let window = xlib::XCreateWindow(
                 display, root, x, y, width, height, 0,
                 (*visual).depth, xlib::InputOutput as u32, (*visual).visual,
-                xlib::CWColormap | xlib::CWEventMask, &mut swa,
+                xlib::CWColormap | xlib::CWOverrideRedirect | xlib::CWEventMask, &mut swa,
             );
             xlib::XFree(visual as *mut c_void);
             if window == 0 { bail!("Failed to create output window"); }
@@ -939,6 +999,8 @@ fn main() -> Result<()> {
     let mut fps_value: f32 = 0.0;
     let mut fps_overlay = FpsOverlay::new();
     let mut last_secondary_check = Instant::now();
+    let mut last_capture_w = capture.width;
+    let mut last_capture_h = capture.height;
 
     let mut event: xlib::XEvent = unsafe { std::mem::zeroed() };
 
@@ -1005,6 +1067,21 @@ fn main() -> Result<()> {
                                 log::info!("Window resized: {}x{} -> {}x{}", output.width, output.height, new_w, new_h);
                                 output.width = new_w;
                                 output.height = new_h;
+
+                                // Display mode likely changed — check if NVFBC needs recreation
+                                let (dp0_w, dp0_h) = read_dp0_size();
+                                if dp0_w != last_capture_w || dp0_h != last_capture_h {
+                                    log::info!("DP-0 changed: {}x{} -> {}x{}, recreating NVFBC session",
+                                        last_capture_w, last_capture_h, dp0_w, dp0_h);
+                                    gl.make_current_offscreen();
+                                    match capture.recreate_session() {
+                                        Ok(()) => {
+                                            last_capture_w = capture.width;
+                                            last_capture_h = capture.height;
+                                        }
+                                        Err(e) => log::error!("NVFBC recreate failed: {}", e),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1092,6 +1169,28 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Read DP-0 current resolution from xrandr.
+fn read_dp0_size() -> (u32, u32) {
+    if let Ok(output) = std::process::Command::new("xrandr").arg("--current").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if line.starts_with("DP-0") && line.contains("connected") {
+                if let Some(geom) = line.split_whitespace()
+                    .find(|s| s.contains('x') && s.contains('+'))
+                {
+                    let parts: Vec<&str> = geom.split(|c| c == 'x' || c == '+').collect();
+                    if parts.len() >= 2 {
+                        let w = parts[0].parse().unwrap_or(1920);
+                        let h = parts[1].parse().unwrap_or(1080);
+                        return (w, h);
+                    }
+                }
+            }
+        }
+    }
+    (1920, 1080)
 }
 
 /// Read DP-2 position and size from xrandr output.
