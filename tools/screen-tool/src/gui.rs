@@ -88,6 +88,40 @@ fn discover_shader_presets() -> Vec<String> {
     presets
 }
 
+fn initial_shader_root() -> String {
+    for root in ["/gamer/shaders", "/gamer"] {
+        if std::path::Path::new(root).exists() {
+            return root.to_string();
+        }
+    }
+    "/gamer".to_string()
+}
+
+fn list_shader_entries(dir: &str) -> (Vec<String>, Vec<String>) {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(v) => v,
+        Err(_) => return (dirs, files),
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            dirs.push(p.to_string_lossy().to_string());
+        } else if p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("slangp"))
+            .unwrap_or(false)
+        {
+            files.push(p.to_string_lossy().to_string());
+        }
+    }
+    dirs.sort();
+    files.sort();
+    (dirs, files)
+}
+
 fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     let file = match target {
         "primary" => std::env::var("SHADER_PRESET_FILE")
@@ -302,7 +336,9 @@ pub struct ScreenToolGui {
 
     // shader preset control
     shader_presets: Vec<String>,
-    shader_filter: String,
+    shader_root_dir: String,
+    shader_current_dir: String,
+    shader_selected: Option<String>,
     shader_status: Option<String>,
     shader_status_until: Option<Instant>,
 }
@@ -350,7 +386,9 @@ impl ScreenToolGui {
             ui_scale_user: default_ui_scale,
             system_stats: SystemStatsSnapshot::default(),
             shader_presets: discover_shader_presets(),
-            shader_filter: String::new(),
+            shader_root_dir: initial_shader_root(),
+            shader_current_dir: initial_shader_root(),
+            shader_selected: None,
             shader_status: None,
             shader_status_until: None,
         }
@@ -494,12 +532,12 @@ impl ScreenToolGui {
     /// Render the NVFBC texture as a fullscreen quad using raw GL.
     /// Call this BEFORE egui rendering so the toolbar overlays on top.
     pub fn render_capture(&mut self, gl: &Arc<glow::Context>, viewport_w: u32, viewport_h: u32) {
-        if self.active_tab == ToolTab::Performance {
+        if self.active_tab != ToolTab::Crop {
             unsafe {
                 gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
                 gl.disable(glow::SCISSOR_TEST);
                 gl.disable(glow::BLEND);
-                gl.clear_color(0.02, 0.02, 0.03, 1.0);
+                gl.clear_color(0.04, 0.045, 0.06, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
             }
             return;
@@ -782,6 +820,7 @@ impl ScreenToolGui {
                     ui.label("Ctrl+1..3: Save crop slots");
                     ui.label("1..3: Recall crop slots");
                     ui.label("F5: Save screenshot");
+                    ui.label("Ctrl+Alt+F10: Toggle tool overlay");
                 });
         }
 
@@ -789,85 +828,151 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.add_space(24.0);
-                    ui.vertical_centered(|ui| {
-                        ui.heading(egui::RichText::new("Performance Monitor").size(42.0 * scale));
-                        ui.add_space(20.0 * scale);
-                        egui::Grid::new("perf_grid")
-                            .num_columns(2)
-                            .spacing([36.0 * scale, 18.0 * scale])
-                            .show(ui, |ui| {
-                                let name_size = 22.0 * scale;
-                                let value_size = 30.0 * scale;
-                                ui.label(egui::RichText::new("Top-screen FPS").size(name_size));
-                                ui.label(
-                                    egui::RichText::new(format!("{:.0}", self.capture_fps))
-                                        .size(value_size)
-                                        .strong(),
-                                );
-                                ui.end_row();
-                                ui.label(egui::RichText::new("Render FPS").size(name_size));
-                                ui.label(
-                                    egui::RichText::new(format!("{:.0}", self.fps))
-                                        .size(value_size)
-                                        .strong(),
-                                );
-                                ui.end_row();
-                                ui.label(egui::RichText::new("CPU usage").size(name_size));
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{:.1}%",
-                                        self.system_stats.cpu_usage_pct
-                                    ))
-                                    .size(value_size)
-                                    .strong(),
-                                );
-                                ui.end_row();
-                                ui.label(egui::RichText::new("RAM").size(name_size));
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{:.1} / {:.1} GiB",
-                                        self.system_stats.ram_used_gib,
-                                        self.system_stats.ram_total_gib
-                                    ))
-                                    .size(value_size)
-                                    .strong(),
-                                );
-                                ui.end_row();
-                                ui.label(egui::RichText::new("GPU usage").size(name_size));
-                                let gpu_text = self
-                                    .system_stats
-                                    .gpu_usage_pct
-                                    .map(|v| format!("{:.0}%", v))
-                                    .unwrap_or_else(|| "N/A".to_string());
-                                ui.label(egui::RichText::new(gpu_text).size(value_size).strong());
-                                ui.end_row();
-                                ui.label(egui::RichText::new("GPU memory").size(name_size));
-                                let gpu_mem_text = match (
-                                    self.system_stats.gpu_mem_used_mib,
-                                    self.system_stats.gpu_mem_total_mib,
-                                ) {
-                                    (Some(used), Some(total)) => {
-                                        format!("{} / {} MiB", used, total)
-                                    }
-                                    _ => "N/A".to_string(),
-                                };
-                                ui.label(
-                                    egui::RichText::new(gpu_mem_text).size(value_size).strong(),
-                                );
-                                ui.end_row();
-                                ui.label(egui::RichText::new("Capture size").size(name_size));
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} x {}",
-                                        self.capture_size.0, self.capture_size.1
-                                    ))
-                                    .size(value_size)
-                                    .strong(),
-                                );
-                                ui.end_row();
-                            });
-                    });
+                    let cpu = self.system_stats.cpu_usage_pct.clamp(0.0, 100.0);
+                    let ram = if self.system_stats.ram_total_gib > 0.0 {
+                        (self.system_stats.ram_used_gib / self.system_stats.ram_total_gib * 100.0)
+                            .clamp(0.0, 100.0)
+                    } else {
+                        0.0
+                    };
+                    let gpu = self
+                        .system_stats
+                        .gpu_usage_pct
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 100.0);
+
+                    let panel_w = (620.0 * scale).clamp(560.0, ui.available_width() - 60.0);
+                    ui.with_layout(
+                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                        |ui| {
+                            egui::Frame::window(ui.style())
+                                .inner_margin(egui::Margin::same((20.0 * scale) as i8))
+                                .show(ui, |ui| {
+                                    ui.set_width(panel_w);
+                                    ui.vertical_centered(|ui| {
+                                        ui.heading(
+                                            egui::RichText::new("Performance Monitor")
+                                                .size(34.0 * scale),
+                                        );
+                                    });
+                                    ui.add_space(12.0 * scale);
+
+                                    let bar_h = 18.0 * scale;
+                                    let name_size = 20.0 * scale;
+                                    let value_size = 24.0 * scale;
+
+                                    let draw_metric = |ui: &mut egui::Ui,
+                                                       name: &str,
+                                                       pct: f32,
+                                                       text: String,
+                                                       color: egui::Color32| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(name).size(name_size));
+                                            ui.add_space(10.0 * scale);
+                                            let bar = egui::ProgressBar::new(pct / 100.0)
+                                                .desired_width(panel_w * 0.45)
+                                                .fill(color)
+                                                .show_percentage();
+                                            ui.add_sized([panel_w * 0.45, bar_h], bar);
+                                            ui.add_space(8.0 * scale);
+                                            ui.label(
+                                                egui::RichText::new(text)
+                                                    .size(value_size)
+                                                    .strong(),
+                                            );
+                                        });
+                                    };
+
+                                    draw_metric(
+                                        ui,
+                                        "CPU",
+                                        cpu,
+                                        format!("{:.1}%", cpu),
+                                        egui::Color32::from_rgb(242, 135, 68),
+                                    );
+                                    draw_metric(
+                                        ui,
+                                        "RAM",
+                                        ram,
+                                        format!(
+                                            "{:.1}/{:.1} GiB",
+                                            self.system_stats.ram_used_gib,
+                                            self.system_stats.ram_total_gib
+                                        ),
+                                        egui::Color32::from_rgb(108, 176, 255),
+                                    );
+                                    draw_metric(
+                                        ui,
+                                        "GPU",
+                                        gpu,
+                                        self.system_stats
+                                            .gpu_usage_pct
+                                            .map(|v| format!("{:.0}%", v))
+                                            .unwrap_or_else(|| "N/A".to_string()),
+                                        egui::Color32::from_rgb(109, 212, 128),
+                                    );
+
+                                    ui.separator();
+                                    egui::Grid::new("perf_grid_bottom")
+                                        .num_columns(2)
+                                        .spacing([24.0 * scale, 12.0 * scale])
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new("Top-screen FPS")
+                                                    .size(name_size),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.0}",
+                                                    self.capture_fps
+                                                ))
+                                                .size(value_size)
+                                                .strong(),
+                                            );
+                                            ui.end_row();
+                                            ui.label(
+                                                egui::RichText::new("Render FPS").size(name_size),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("{:.0}", self.fps))
+                                                    .size(value_size)
+                                                    .strong(),
+                                            );
+                                            ui.end_row();
+                                            ui.label(
+                                                egui::RichText::new("GPU memory").size(name_size),
+                                            );
+                                            let gpu_mem_text = match (
+                                                self.system_stats.gpu_mem_used_mib,
+                                                self.system_stats.gpu_mem_total_mib,
+                                            ) {
+                                                (Some(used), Some(total)) => {
+                                                    format!("{} / {} MiB", used, total)
+                                                }
+                                                _ => "N/A".to_string(),
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(gpu_mem_text)
+                                                    .size(value_size)
+                                                    .strong(),
+                                            );
+                                            ui.end_row();
+                                            ui.label(
+                                                egui::RichText::new("Capture size").size(name_size),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} x {}",
+                                                    self.capture_size.0, self.capture_size.1
+                                                ))
+                                                .size(value_size)
+                                                .strong(),
+                                            );
+                                            ui.end_row();
+                                        });
+                                });
+                        },
+                    );
                 });
         }
 
@@ -875,93 +980,191 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.add_space(16.0 * scale);
-                    ui.vertical_centered(|ui| {
-                        ui.heading(egui::RichText::new("Shader Presets").size(38.0 * scale));
-                        ui.add_space(8.0 * scale);
-                        ui.label("Apply live preset swaps for top/bottom shaders.");
-                        ui.add_space(12.0 * scale);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Filter:");
-                        ui.text_edit_singleline(&mut self.shader_filter);
-                        if ui.button("Refresh").clicked() {
-                            self.shader_presets = discover_shader_presets();
-                        }
-                    });
-                    ui.add_space(8.0 * scale);
-
-                    let filter = self.shader_filter.to_lowercase();
-                    let filtered: Vec<&str> = self
-                        .shader_presets
-                        .iter()
-                        .map(|s| s.as_str())
-                        .filter(|p| filter.is_empty() || p.to_lowercase().contains(&filter))
-                        .collect();
-                    let item_height = 28.0 * scale;
-                    egui::ScrollArea::vertical().show_rows(
-                        ui,
-                        item_height,
-                        filtered.len(),
-                        |ui, rows| {
-                            for idx in rows {
-                                if let Some(path) = filtered.get(idx) {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(*path);
-                                        if ui.button("Top").clicked() {
-                                            match write_shader_file("primary", path) {
-                                                Ok(()) => {
-                                                    reload_shader_overlay_process();
-                                                    self.shader_status =
-                                                        Some(format!("Top shader → {}", path));
-                                                    self.shader_status_until = Some(
-                                                        Instant::now() + Duration::from_secs(4),
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    self.shader_status =
-                                                        Some(format!("Failed (top): {}", e));
-                                                    self.shader_status_until = Some(
-                                                        Instant::now() + Duration::from_secs(4),
-                                                    );
+                    let panel_w = (980.0 * scale).clamp(780.0, ui.available_width() - 60.0);
+                    let panel_h = (650.0 * scale).clamp(500.0, ui.available_height() - 40.0);
+                    ui.with_layout(
+                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                        |ui| {
+                            egui::Frame::window(ui.style())
+                                .inner_margin(egui::Margin::same((16.0 * scale) as i8))
+                                .show(ui, |ui| {
+                                    ui.set_min_size(egui::vec2(panel_w, panel_h));
+                                    ui.set_max_width(panel_w);
+                                    ui.vertical_centered(|ui| {
+                                        ui.heading(
+                                            egui::RichText::new("Shader Presets")
+                                                .size(34.0 * scale),
+                                        );
+                                        ui.label(
+                                            "Choose a preset and apply to Top / Bottom / Both",
+                                        );
+                                    });
+                                    ui.add_space(10.0 * scale);
+                                    ui.horizontal(|ui| {
+                                        ui.label("Current folder:");
+                                        ui.monospace(&self.shader_current_dir);
+                                        if ui.button("↑ Up").clicked() {
+                                            if let Some(parent) =
+                                                std::path::Path::new(&self.shader_current_dir)
+                                                    .parent()
+                                            {
+                                                let parent = parent.to_string_lossy().to_string();
+                                                if parent.starts_with(&self.shader_root_dir) {
+                                                    self.shader_current_dir = parent;
                                                 }
                                             }
                                         }
-                                        if ui.button("Bottom").clicked() {
-                                            match write_shader_file("secondary", path) {
-                                                Ok(()) => {
-                                                    reload_shader_overlay_process();
-                                                    self.shader_status =
-                                                        Some(format!("Bottom shader → {}", path));
-                                                    self.shader_status_until = Some(
-                                                        Instant::now() + Duration::from_secs(4),
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    self.shader_status =
-                                                        Some(format!("Failed (bottom): {}", e));
-                                                    self.shader_status_until = Some(
-                                                        Instant::now() + Duration::from_secs(4),
-                                                    );
-                                                }
-                                            }
+                                        if ui.button("Refresh").clicked() {
+                                            self.shader_presets = discover_shader_presets();
                                         }
                                     });
-                                }
-                            }
+
+                                    ui.separator();
+                                    ui.columns(2, |cols| {
+                                        cols[0].heading("Folders");
+                                        cols[1].heading("Presets");
+
+                                        let (dirs, files) =
+                                            list_shader_entries(&self.shader_current_dir);
+
+                                        egui::ScrollArea::vertical()
+                                            .max_height(panel_h * 0.58)
+                                            .show(&mut cols[0], |ui| {
+                                                for d in dirs {
+                                                    let label = format!(
+                                                        "📁 {}",
+                                                        std::path::Path::new(&d)
+                                                            .file_name()
+                                                            .and_then(|s| s.to_str())
+                                                            .unwrap_or(&d)
+                                                    );
+                                                    if ui.button(label).clicked() {
+                                                        self.shader_current_dir = d;
+                                                        self.shader_selected = None;
+                                                    }
+                                                }
+                                            });
+
+                                        egui::ScrollArea::vertical()
+                                            .max_height(panel_h * 0.58)
+                                            .show(&mut cols[1], |ui| {
+                                                for file in files {
+                                                    let selected = self
+                                                        .shader_selected
+                                                        .as_ref()
+                                                        .map(|s| s == &file)
+                                                        .unwrap_or(false);
+                                                    let label = std::path::Path::new(&file)
+                                                        .file_name()
+                                                        .and_then(|s| s.to_str())
+                                                        .unwrap_or(&file)
+                                                        .to_string();
+                                                    if ui
+                                                        .selectable_label(selected, label)
+                                                        .clicked()
+                                                    {
+                                                        self.shader_selected = Some(file);
+                                                    }
+                                                }
+                                            });
+                                    });
+
+                                    ui.separator();
+                                    if let Some(selected) = self.shader_selected.clone() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label("Selected:");
+                                            ui.monospace(&selected);
+                                        });
+                                        ui.add_space(6.0 * scale);
+                                        ui.horizontal(|ui| {
+                                            let apply = |target: &str,
+                                                         path: &str,
+                                                         status: &mut Option<String>,
+                                                         until: &mut Option<Instant>| {
+                                                match write_shader_file(target, path) {
+                                                    Ok(()) => {
+                                                        reload_shader_overlay_process();
+                                                        *status = Some(format!(
+                                                            "{} shader → {}",
+                                                            target, path
+                                                        ));
+                                                        *until = Some(
+                                                            Instant::now() + Duration::from_secs(4),
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        *status = Some(format!(
+                                                            "Failed ({}): {}",
+                                                            target, e
+                                                        ));
+                                                        *until = Some(
+                                                            Instant::now() + Duration::from_secs(4),
+                                                        );
+                                                    }
+                                                }
+                                            };
+
+                                            if ui.button("Apply to Top").clicked() {
+                                                apply(
+                                                    "primary",
+                                                    &selected,
+                                                    &mut self.shader_status,
+                                                    &mut self.shader_status_until,
+                                                );
+                                            }
+                                            if ui.button("Apply to Bottom").clicked() {
+                                                apply(
+                                                    "secondary",
+                                                    &selected,
+                                                    &mut self.shader_status,
+                                                    &mut self.shader_status_until,
+                                                );
+                                            }
+                                            if ui.button("Apply to Both").clicked() {
+                                                match write_shader_file("primary", &selected) {
+                                                    Ok(()) => {
+                                                        let _ = write_shader_file(
+                                                            "secondary",
+                                                            &selected,
+                                                        );
+                                                        reload_shader_overlay_process();
+                                                        self.shader_status = Some(format!(
+                                                            "Both shaders → {}",
+                                                            selected
+                                                        ));
+                                                        self.shader_status_until = Some(
+                                                            Instant::now() + Duration::from_secs(4),
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        self.shader_status =
+                                                            Some(format!("Failed (both): {}", e));
+                                                        self.shader_status_until = Some(
+                                                            Instant::now() + Duration::from_secs(4),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    } else {
+                                        ui.label(
+                                            "Select a shader preset file to enable apply buttons.",
+                                        );
+                                    }
+
+                                    if let Some(until) = self.shader_status_until {
+                                        if Instant::now() > until {
+                                            self.shader_status = None;
+                                            self.shader_status_until = None;
+                                        }
+                                    }
+                                    if let Some(status) = &self.shader_status {
+                                        ui.add_space(8.0 * scale);
+                                        ui.label(status);
+                                    }
+                                });
                         },
                     );
-                    if let Some(until) = self.shader_status_until {
-                        if Instant::now() > until {
-                            self.shader_status = None;
-                            self.shader_status_until = None;
-                        }
-                    }
-                    if let Some(status) = &self.shader_status {
-                        ui.add_space(8.0 * scale);
-                        ui.label(status);
-                    }
                 });
         }
 

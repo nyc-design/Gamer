@@ -30,6 +30,7 @@ ACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_ACTIVE_POLLS:-2}"
 INACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_INACTIVE_POLLS:-2}"
 CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
+MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/tmp/screen-tool.mode}"
 
 # Wait for X server
 /gamer/bin/wait-x.sh
@@ -110,6 +111,11 @@ pin_screen_tool_to_bottom() {
 while true; do
     sleep "$POLL_INTERVAL"
 
+    MODE="auto"
+    if [ -f "$MODE_FILE" ]; then
+        MODE="$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
+    fi
+
     # Find secondary window.
     # We only count it as active when it's viewable and occupying bottom display.
     SECONDARY_VISIBLE=false
@@ -124,6 +130,16 @@ while true; do
     SCREEN_TOOL_WID=$(xdotool search --name "$SCREEN_TOOL_NAME" 2>/dev/null | head -1)
 
     if [ -z "$SCREEN_TOOL_WID" ]; then
+        continue
+    fi
+
+    if [ "$MODE" = "force_show" ]; then
+        if [ "$HIDDEN" = "true" ]; then
+            xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
+            HIDDEN=false
+        fi
+        xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
+        pin_screen_tool_to_bottom "$SCREEN_TOOL_WID"
         continue
     fi
 
