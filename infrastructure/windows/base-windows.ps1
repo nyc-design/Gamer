@@ -71,6 +71,35 @@ function Ensure-ApolloInstalled {
   return (Test-Path $sunshinePath)
 }
 
+function Ensure-ApolloAutostart {
+  param(
+    [string]$ApolloExePath,
+    [string]$ConfigDir
+  )
+
+  try {
+    # Primary Apollo instance (official service) should always start at boot.
+    sc.exe config ApolloService start= auto | Out-Null
+  } catch {}
+
+  try {
+    # Secondary instance for dual-screen should start on boot using alternate config.
+    $setupDir = 'C:\ProgramData\gamer\setup'
+    New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
+    $run2 = Join-Path $setupDir 'run-apollo2.cmd'
+    @"
+@echo off
+cd /d "C:\Program Files\Apollo"
+"$ApolloExePath" "$ConfigDir\sunshine_2.conf"
+"@ | Set-Content $run2 -Encoding Ascii
+
+    schtasks /Delete /TN GamerApollo2 /F 2>$null | Out-Null
+    schtasks /Create /TN GamerApollo2 /TR $run2 /SC ONSTART /RU SYSTEM /RL HIGHEST /F | Out-Null
+  } catch {
+    Write-Warning "Failed to configure Apollo secondary autostart: $($_.Exception.Message)"
+  }
+}
+
 # Ensure this step runs after user auto-login (interactive console session available).
 $interactiveReady = $false
 try {
@@ -184,6 +213,7 @@ stream_audio = true
 install_steam_audio_drivers = false
 "@ | Set-Content "$cfg\sunshine_2.conf" -Encoding UTF8
 }
+Ensure-ApolloAutostart -ApolloExePath $apollo -ConfigDir $cfg
 & $apollo --creds $ApolloUsername $ApolloPassword | Out-Null
 
 # Azahar config symlink to rclone-backed path

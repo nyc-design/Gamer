@@ -185,6 +185,9 @@ What is now included in `startup-windows.ps1`:
 Apollo install ordering hardening:
 - Apollo install is now performed in `base-windows.ps1` only after an active `console` session for the Windows user is detected.
 - This guarantees Apollo setup runs after user auto-login state is available (instead of pre-login/session0 timing).
+- Autostart on boot is enforced:
+  - `ApolloService` startup type is set to `Automatic` (instance 1)
+  - `GamerApollo2` scheduled task is created as `ONSTART` for `sunshine_2.conf` (instance 2)
 
 Validation commands:
 
