@@ -101,8 +101,8 @@ sudo docker run -d \
   -e SUNSHINE_CAPTURE=nvfbc \
   -e SUNSHINE_USERNAME=admin \
   -e SUNSHINE_PASSWORD_BASE64=YWRtaW4= \
-  -e NVIDIA_ENABLE=true \
-  -e NVIDIA_DRIVER_TYPE=display \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e NVIDIA_DRIVER_CAPABILITIES=all \
   -e SHADER_PRESET=/gamer/shaders/handheld/lcd3x.slangp \
   -e SHADER_PRESET_BOTTOM=/gamer/shaders/handheld/lcd3x.slangp \
   -e SHADER_WINDOW=Azahar \
@@ -256,6 +256,20 @@ Sunshine uses several ports per instance. With `--network host`, all are directl
 | `SHADER_SOURCE_SIZE_BOTTOM` | (empty) | Native game resolution for secondary (e.g., `320x240`) |
 | `SHADER_PASSTHROUGH` | (empty) | Set to `1` for blit-only mode (no shader, for debugging) |
 | `RUST_LOG` | (empty) | Set to `info` or `debug` for shader-inject logging |
+
+### Screen Tool (Secondary Display Zoom/Crop Viewer)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SCREEN_TOOL_ENABLED` | `1` | Set to `0` to disable the screen tool |
+| `SCREEN_TOOL_WINDOW` | (empty) | Window title to capture (auto-detects emulator if empty) |
+
+The screen tool captures the primary emulator window via XComposite and displays it on DP-2 (bottom screen). Features:
+- **Click-drag zoom**: Left-click and drag to select a region, which is then zoomed to fill the screen
+- **Nested zoom**: Can zoom within an already-zoomed view for deeper magnification
+- **Right-click reset**: Right-click returns to full view
+- **FPS overlay**: Press F1 to toggle an FPS counter
+- **Auto-yield**: Automatically hides when a secondary emulator window appears (e.g., 3DS bottom screen) and reappears when it disappears
 
 ### Time Spoofing
 
