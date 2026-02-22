@@ -15,6 +15,8 @@
 //!   SHADER_SOURCE_SIZE      - Original game resolution for primary (e.g., "400x240" for 3DS top)
 //!   SHADER_SOURCE_SIZE_BOTTOM - Original game resolution for secondary (e.g., "320x240" for 3DS bottom)
 //!   SHADER_PASSTHROUGH      - Set to "1" to skip shader processing (blit roundtrip only, for debugging)
+//!   SHADER_PRESET_FILE      - Optional file path containing active primary preset (live-updated)
+//!   SHADER_PRESET_BOTTOM_FILE - Optional file path containing active secondary preset (live-updated)
 
 use glow::HasContext;
 use std::collections::HashMap;
@@ -36,14 +38,14 @@ static mut REAL_SWAP: Option<GlXSwapBuffersFn> = None;
 // Per-drawable shader pipeline state
 struct DrawablePipeline {
     filter_chain: FilterChain,
-    input_texture: glow::Texture,      // at source_width x source_height (original game res)
-    output_texture: glow::Texture,     // at width x height (window/output res)
-    output_fbo: glow::Framebuffer,     // writes to output_texture
-    capture_fbo: glow::Framebuffer,    // writes to input_texture
-    width: u32,                        // window/output width
-    height: u32,                       // window/output height
-    source_width: u32,                 // original game resolution width
-    source_height: u32,                // original game resolution height
+    input_texture: glow::Texture, // at source_width x source_height (original game res)
+    output_texture: glow::Texture, // at width x height (window/output res)
+    output_fbo: glow::Framebuffer, // writes to output_texture
+    capture_fbo: glow::Framebuffer, // writes to input_texture
+    width: u32,                   // window/output width
+    height: u32,                  // window/output height
+    source_width: u32,            // original game resolution width
+    source_height: u32,           // original game resolution height
     frame_count: usize,
     glow_ctx: Arc<glow::Context>,
     tex_format: u32,
@@ -61,6 +63,8 @@ struct GlobalState {
     secondary_preset: Option<PathBuf>,
     secondary_match: Option<String>,
     secondary_source_size: Option<(u32, u32)>,
+    primary_preset_file: PathBuf,
+    secondary_preset_file: PathBuf,
     // Drawables we checked but didn't match yet — re-check every N frames
     // Value is the frame count when we last checked
     pending: HashMap<glx::GLXDrawable, usize>,
@@ -88,9 +92,8 @@ const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 /// Initialize global state from env vars
 fn init_global() {
     INIT.call_once(|| {
-        let _ = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("info")
-        ).try_init();
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
 
         // Resolve real glXSwapBuffers
         unsafe {
@@ -105,18 +108,44 @@ fn init_global() {
 
         let primary_preset = std::env::var("SHADER_PRESET").ok().map(PathBuf::from);
         let primary_match = std::env::var("SHADER_WINDOW").ok();
-        let primary_source_size = std::env::var("SHADER_SOURCE_SIZE").ok().and_then(|s| parse_size(&s));
-        let secondary_preset = std::env::var("SHADER_PRESET_BOTTOM").ok().map(PathBuf::from);
+        let primary_source_size = std::env::var("SHADER_SOURCE_SIZE")
+            .ok()
+            .and_then(|s| parse_size(&s));
+        let secondary_preset = std::env::var("SHADER_PRESET_BOTTOM")
+            .ok()
+            .map(PathBuf::from);
         let secondary_match = std::env::var("SHADER_WINDOW_BOTTOM").ok();
-        let secondary_source_size = std::env::var("SHADER_SOURCE_SIZE_BOTTOM").ok().and_then(|s| parse_size(&s));
-        let passthrough = std::env::var("SHADER_PASSTHROUGH").ok().map_or(false, |v| v == "1");
+        let secondary_source_size = std::env::var("SHADER_SOURCE_SIZE_BOTTOM")
+            .ok()
+            .and_then(|s| parse_size(&s));
+        let primary_preset_file = std::env::var("SHADER_PRESET_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/shader_preset_primary.path"));
+        let secondary_preset_file = std::env::var("SHADER_PRESET_BOTTOM_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/shader_preset_secondary.path"));
+        let passthrough = std::env::var("SHADER_PASSTHROUGH")
+            .ok()
+            .map_or(false, |v| v == "1");
 
         log::info!("[shader-inject] Initialized (passthrough={})", passthrough);
         if let Some(ref p) = primary_preset {
-            log::info!("[shader-inject] Primary shader: {:?} (match: {:?}, source: {:?})", p, primary_match, primary_source_size);
+            log::info!(
+                "[shader-inject] Primary shader: {:?} (match: {:?}, source: {:?})",
+                p,
+                primary_match,
+                primary_source_size
+            );
         }
         if let Some(ref p) = secondary_preset {
-            log::info!("[shader-inject] Secondary shader: {:?} (match: {:?}, source: {:?})", p, secondary_match, secondary_source_size);
+            log::info!(
+                "[shader-inject] Secondary shader: {:?} (match: {:?}, source: {:?})",
+                p,
+                secondary_match,
+                secondary_source_size
+            );
         }
         if primary_preset.is_none() {
             log::info!("[shader-inject] No SHADER_PRESET set, no-op mode");
@@ -131,6 +160,8 @@ fn init_global() {
                 secondary_preset,
                 secondary_match,
                 secondary_source_size,
+                primary_preset_file,
+                secondary_preset_file,
                 pending: HashMap::new(),
                 global_frame: 0,
                 passthrough,
@@ -139,19 +170,47 @@ fn init_global() {
     });
 }
 
+fn read_preset_path_from_file(path: &PathBuf) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn maybe_refresh_live_preset_paths(state: &mut GlobalState) {
+    if state.global_frame % 60 != 0 {
+        return;
+    }
+
+    let mut changed = false;
+    let file_primary = read_preset_path_from_file(&state.primary_preset_file);
+    if file_primary != state.primary_preset {
+        state.primary_preset = file_primary;
+        changed = true;
+    }
+
+    let file_secondary = read_preset_path_from_file(&state.secondary_preset_file);
+    if file_secondary != state.secondary_preset {
+        state.secondary_preset = file_secondary;
+        changed = true;
+    }
+
+    if changed {
+        log::info!("[shader-inject] Live shader preset change detected, rebuilding pipelines");
+        state.pipelines.clear();
+        state.pending.clear();
+    }
+}
+
 /// Read _NET_WM_NAME or WM_NAME for a single window
 fn read_window_name(display: *mut xlib::Display, window: xlib::Window) -> Option<String> {
     unsafe {
-        let atom_net_wm_name = xlib::XInternAtom(
-            display,
-            b"_NET_WM_NAME\0".as_ptr() as *const i8,
-            1,
-        );
-        let atom_utf8 = xlib::XInternAtom(
-            display,
-            b"UTF8_STRING\0".as_ptr() as *const i8,
-            1,
-        );
+        let atom_net_wm_name =
+            xlib::XInternAtom(display, b"_NET_WM_NAME\0".as_ptr() as *const i8, 1);
+        let atom_utf8 = xlib::XInternAtom(display, b"UTF8_STRING\0".as_ptr() as *const i8, 1);
 
         if atom_net_wm_name != 0 && atom_utf8 != 0 {
             let mut actual_type: xlib::Atom = 0;
@@ -161,9 +220,18 @@ fn read_window_name(display: *mut xlib::Display, window: xlib::Window) -> Option
             let mut prop: *mut u8 = std::ptr::null_mut();
 
             let status = xlib::XGetWindowProperty(
-                display, window, atom_net_wm_name,
-                0, 1024, 0, atom_utf8,
-                &mut actual_type, &mut actual_format, &mut nitems, &mut bytes_after, &mut prop,
+                display,
+                window,
+                atom_net_wm_name,
+                0,
+                1024,
+                0,
+                atom_utf8,
+                &mut actual_type,
+                &mut actual_format,
+                &mut nitems,
+                &mut bytes_after,
+                &mut prop,
             );
 
             if status == 0 && !prop.is_null() && nitems > 0 {
@@ -210,7 +278,15 @@ fn get_window_title(display: *mut xlib::Display, drawable: glx::GLXDrawable) -> 
             let mut root_ret: xlib::Window = 0;
             let mut children: *mut xlib::Window = std::ptr::null_mut();
             let mut nchildren: u32 = 0;
-            if xlib::XQueryTree(display, window, &mut root_ret, &mut parent, &mut children, &mut nchildren) == 0 {
+            if xlib::XQueryTree(
+                display,
+                window,
+                &mut root_ret,
+                &mut parent,
+                &mut children,
+                &mut nchildren,
+            ) == 0
+            {
                 break;
             }
             if !children.is_null() {
@@ -245,7 +321,11 @@ fn try_create_pipeline(
     state: &GlobalState,
 ) -> Option<DrawablePipeline> {
     let title = get_window_title(display, drawable)?;
-    log::info!("[shader-inject] Window title for drawable 0x{:x}: '{}'", drawable, title);
+    log::info!(
+        "[shader-inject] Window title for drawable 0x{:x}: '{}'",
+        drawable,
+        title
+    );
 
     // Match against configured window patterns and get source size
     let (preset_path, source_size) = if let Some(ref pattern) = state.primary_match {
@@ -278,7 +358,13 @@ fn try_create_pipeline(
     let (source_width, source_height) = source_size.unwrap_or((width, height));
     log::info!(
         "[shader-inject] Creating pipeline for '{}' (0x{:x}) {}x{} (source {}x{}) with {:?}",
-        title, drawable, width, height, source_width, source_height, preset_path
+        title,
+        drawable,
+        width,
+        height,
+        source_width,
+        source_height,
+        preset_path
     );
 
     // Create glow context from current GL context's function pointers
@@ -301,9 +387,23 @@ fn try_create_pipeline(
     let input_texture = unsafe {
         let tex = glow_ctx.create_texture().ok()?;
         glow_ctx.bind_texture(glow::TEXTURE_2D, Some(tex));
-        glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, source_width as i32, source_height as i32);
-        glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        glow_ctx.tex_storage_2d(
+            glow::TEXTURE_2D,
+            1,
+            tex_format,
+            source_width as i32,
+            source_height as i32,
+        );
+        glow_ctx.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        glow_ctx.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
         glow_ctx.bind_texture(glow::TEXTURE_2D, None);
         tex
     };
@@ -313,8 +413,11 @@ fn try_create_pipeline(
         let fbo = glow_ctx.create_framebuffer().ok()?;
         glow_ctx.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         glow_ctx.framebuffer_texture_2d(
-            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D, Some(input_texture), 0
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(input_texture),
+            0,
         );
         let status = glow_ctx.check_framebuffer_status(glow::FRAMEBUFFER);
         if status != glow::FRAMEBUFFER_COMPLETE {
@@ -332,15 +435,26 @@ fn try_create_pipeline(
         let tex = glow_ctx.create_texture().ok()?;
         glow_ctx.bind_texture(glow::TEXTURE_2D, Some(tex));
         glow_ctx.tex_storage_2d(glow::TEXTURE_2D, 1, tex_format, width as i32, height as i32);
-        glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        glow_ctx.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        glow_ctx.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        glow_ctx.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
         glow_ctx.bind_texture(glow::TEXTURE_2D, None);
 
         let fbo = glow_ctx.create_framebuffer().ok()?;
         glow_ctx.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         glow_ctx.framebuffer_texture_2d(
-            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D, Some(tex), 0
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(tex),
+            0,
         );
         let status = glow_ctx.check_framebuffer_status(glow::FRAMEBUFFER);
         if status != glow::FRAMEBUFFER_COMPLETE {
@@ -364,10 +478,19 @@ fn try_create_pipeline(
     };
 
     let filter_chain = unsafe {
-        match FilterChain::load_from_path(preset_path, ShaderFeatures::NONE, Arc::clone(&glow_ctx), Some(&options)) {
+        match FilterChain::load_from_path(
+            preset_path,
+            ShaderFeatures::NONE,
+            Arc::clone(&glow_ctx),
+            Some(&options),
+        ) {
             Ok(fc) => fc,
             Err(e) => {
-                log::error!("[shader-inject] Failed to load shader {:?}: {:?}", preset_path, e);
+                log::error!(
+                    "[shader-inject] Failed to load shader {:?}: {:?}",
+                    preset_path,
+                    e
+                );
                 glow_ctx.delete_framebuffer(output_fbo);
                 glow_ctx.delete_texture(output_texture);
                 glow_ctx.delete_framebuffer(capture_fbo);
@@ -377,7 +500,10 @@ fn try_create_pipeline(
         }
     };
 
-    log::info!("[shader-inject] Pipeline created for drawable 0x{:x}", drawable);
+    log::info!(
+        "[shader-inject] Pipeline created for drawable 0x{:x}",
+        drawable
+    );
 
     Some(DrawablePipeline {
         filter_chain,
@@ -416,25 +542,53 @@ fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
         // the real source-to-output scaling ratio for subpixel patterns.
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pipeline.capture_fbo));
-        gl.blit_framebuffer(0, 0, w, h, 0, 0, sw, sh, glow::COLOR_BUFFER_BIT, glow::LINEAR);
+        gl.blit_framebuffer(
+            0,
+            0,
+            w,
+            h,
+            0,
+            0,
+            sw,
+            sh,
+            glow::COLOR_BUFFER_BIT,
+            glow::LINEAR,
+        );
 
         if passthrough {
             // Passthrough: blit input directly back to back buffer (no shader)
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(pipeline.capture_fbo));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            gl.blit_framebuffer(0, 0, sw, sh, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::LINEAR);
+            gl.blit_framebuffer(
+                0,
+                0,
+                sw,
+                sh,
+                0,
+                0,
+                w,
+                h,
+                glow::COLOR_BUFFER_BIT,
+                glow::LINEAR,
+            );
         } else {
             // Step 2: Run shader chain: input_texture (source res) -> output_texture (output res)
             let input = GLImage {
                 handle: Some(pipeline.input_texture),
                 format: pipeline.tex_format,
-                size: Size { width: pipeline.source_width, height: pipeline.source_height },
+                size: Size {
+                    width: pipeline.source_width,
+                    height: pipeline.source_height,
+                },
             };
 
             let output = GLImage {
                 handle: Some(pipeline.output_texture),
                 format: pipeline.tex_format,
-                size: Size { width: pipeline.width, height: pipeline.height },
+                size: Size {
+                    width: pipeline.width,
+                    height: pipeline.height,
+                },
             };
 
             let viewport = Viewport {
@@ -442,15 +596,26 @@ fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
                 y: 0.0,
                 mvp: None,
                 output: &output,
-                size: Size { width: pipeline.width, height: pipeline.height },
+                size: Size {
+                    width: pipeline.width,
+                    height: pipeline.height,
+                },
             };
 
             if let Err(e) = pipeline.filter_chain.frame(
-                &input, &viewport, pipeline.frame_count, Some(&FrameOptions::default())
+                &input,
+                &viewport,
+                pipeline.frame_count,
+                Some(&FrameOptions::default()),
             ) {
                 log::error!("[shader-inject] Shader frame error: {:?}", e);
                 gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-                gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+                gl.viewport(
+                    saved_viewport[0],
+                    saved_viewport[1],
+                    saved_viewport[2],
+                    saved_viewport[3],
+                );
                 return;
             }
 
@@ -461,15 +626,43 @@ fn apply_shader(pipeline: &mut DrawablePipeline, passthrough: bool) {
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
             gl.color_mask(true, true, true, true);
-            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            gl.blit_framebuffer(
+                0,
+                0,
+                w,
+                h,
+                0,
+                0,
+                w,
+                h,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
+            );
         }
 
         // Restore all GL state
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
-        if saved_scissor { gl.enable(glow::SCISSOR_TEST); } else { gl.disable(glow::SCISSOR_TEST); }
-        if saved_blend { gl.enable(glow::BLEND); } else { gl.disable(glow::BLEND); }
-        if saved_srgb { gl.enable(glow::FRAMEBUFFER_SRGB); } else { gl.disable(glow::FRAMEBUFFER_SRGB); }
+        gl.viewport(
+            saved_viewport[0],
+            saved_viewport[1],
+            saved_viewport[2],
+            saved_viewport[3],
+        );
+        if saved_scissor {
+            gl.enable(glow::SCISSOR_TEST);
+        } else {
+            gl.disable(glow::SCISSOR_TEST);
+        }
+        if saved_blend {
+            gl.enable(glow::BLEND);
+        } else {
+            gl.disable(glow::BLEND);
+        }
+        if saved_srgb {
+            gl.enable(glow::FRAMEBUFFER_SRGB);
+        } else {
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+        }
 
         pipeline.frame_count += 1;
     }
@@ -491,6 +684,7 @@ pub unsafe extern "C" fn glXSwapBuffers(display: *mut xlib::Display, drawable: g
     };
 
     state.global_frame += 1;
+    maybe_refresh_live_preset_paths(state);
 
     // No shader configured — passthrough
     if state.primary_preset.is_none() && state.secondary_preset.is_none() {
@@ -524,7 +718,11 @@ pub unsafe extern "C" fn glXSwapBuffers(display: *mut xlib::Display, drawable: g
     if let Some(pipeline) = state.pipelines.get_mut(&drawable) {
         let (w, h) = get_window_size(display, drawable);
         if w != pipeline.width || h != pipeline.height {
-            log::info!("[shader-inject] Window resized to {}x{}, recreating pipeline", w, h);
+            log::info!(
+                "[shader-inject] Window resized to {}x{}, recreating pipeline",
+                w,
+                h
+            );
             state.pipelines.remove(&drawable);
             state.pending.remove(&drawable);
         } else {

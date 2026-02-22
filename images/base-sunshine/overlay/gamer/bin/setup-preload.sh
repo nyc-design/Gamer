@@ -32,6 +32,14 @@ fi
 # Intercepts glXSwapBuffers to apply RetroArch shaders directly in the emulator's
 # GL pipeline, avoiding XComposite which breaks NVFBC capture.
 if [ -n "${SHADER_PRESET:-}" ] && [ "${SUNSHINE_CAPTURE:-}" = "nvfbc" ] && [ -f /gamer/lib/libshader_inject.so ]; then
+    export SHADER_PRESET_FILE="${SHADER_PRESET_FILE:-/tmp/shader_preset_primary.path}"
+    export SHADER_PRESET_BOTTOM_FILE="${SHADER_PRESET_BOTTOM_FILE:-/tmp/shader_preset_secondary.path}"
+    # Seed live-preset files so screen-tool can hot-swap them later.
+    printf '%s\n' "${SHADER_PRESET}" > "${SHADER_PRESET_FILE}"
+    if [ -n "${SHADER_PRESET_BOTTOM:-}" ]; then
+        printf '%s\n' "${SHADER_PRESET_BOTTOM}" > "${SHADER_PRESET_BOTTOM_FILE}"
+    fi
+
     echo "[setup-preload] Enabling shader-inject (LD_PRELOAD, NVFBC-compatible)"
     if [ -n "${LD_PRELOAD:-}" ]; then
         export LD_PRELOAD="${LD_PRELOAD}:/gamer/lib/libshader_inject.so"

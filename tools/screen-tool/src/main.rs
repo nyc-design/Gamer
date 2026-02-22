@@ -17,6 +17,7 @@
 mod gl_state;
 mod gui;
 mod nvfbc;
+mod system_stats;
 mod window;
 
 use anyhow::Result;
@@ -30,6 +31,7 @@ use std::time::{Duration, Instant};
 use gl_state::GlState;
 use gui::{OutputInfo, ScreenToolGui};
 use nvfbc::NvfbcCapture;
+use system_stats::SystemStatsSampler;
 use window::{AppEvent, AppWindow};
 
 #[derive(Parser)]
@@ -116,6 +118,7 @@ fn main() -> Result<()> {
     // Create the GUI
     let mut gui = ScreenToolGui::new(outputs);
     gui.selected_output_idx = selected_idx;
+    let system_sampler = SystemStatsSampler::start();
 
     // Track which output the NVFBC session is currently capturing
     let mut current_output_idx = selected_idx;
@@ -264,6 +267,7 @@ fn main() -> Result<()> {
         //   2. Draw NVFBC texture as fullscreen background quad (raw GL)
         //   3. Paint egui overlay on top and swap buffers
         window.begin_frame(|ctx| {
+            gui.update_system_stats(system_sampler.snapshot());
             gui.show(ctx, &mut Some(&mut capture));
         });
 

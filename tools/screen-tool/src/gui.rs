@@ -6,8 +6,10 @@
 
 use glow::HasContext;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::nvfbc::NvfbcCapture;
+use crate::system_stats::SystemStatsSnapshot;
 
 /// Save the current GL framebuffer as a PPM image file.
 /// PPM is a simple uncompressed format that needs no extra dependencies.
@@ -53,6 +55,55 @@ pub struct OutputInfo {
     pub name: String,
     pub width: u32,
     pub height: u32,
+}
+
+fn discover_shader_presets() -> Vec<String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+                continue;
+            }
+            if p.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("slangp"))
+                .unwrap_or(false)
+            {
+                out.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    let mut presets = Vec::new();
+    for root in ["/gamer/shaders", "/gamer"] {
+        walk(std::path::Path::new(root), &mut presets);
+    }
+    presets.sort();
+    presets.dedup();
+    presets
+}
+
+fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
+    let file = match target {
+        "primary" => std::env::var("SHADER_PRESET_FILE")
+            .unwrap_or_else(|_| "/tmp/shader_preset_primary.path".to_string()),
+        "secondary" => std::env::var("SHADER_PRESET_BOTTOM_FILE")
+            .unwrap_or_else(|_| "/tmp/shader_preset_secondary.path".to_string()),
+        _ => return Ok(()),
+    };
+    std::fs::write(&file, format!("{preset_path}\n"))?;
+    Ok(())
+}
+
+fn reload_shader_overlay_process() {
+    let _ = std::process::Command::new("pkill")
+        .args(["-HUP", "-f", "shader-overlay"])
+        .output();
 }
 
 /// Raw GL resources for rendering a textured quad.
@@ -243,16 +294,33 @@ pub struct ScreenToolGui {
 
     // One-time style init for a cleaner, modern overlay look
     style_initialized: bool,
+    applied_style_scale: f32,
+    pub ui_scale_user: f32,
+
+    // machine stats (sampled in background thread)
+    system_stats: SystemStatsSnapshot,
+
+    // shader preset control
+    shader_presets: Vec<String>,
+    shader_filter: String,
+    shader_status: Option<String>,
+    shader_status_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolTab {
     Crop,
     Performance,
+    Shaders,
 }
 
 impl ScreenToolGui {
     pub fn new(outputs: Vec<OutputInfo>) -> Self {
+        let default_ui_scale = std::env::var("SCREEN_TOOL_UI_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.8, 3.0);
         Self {
             active_tab: ToolTab::Crop,
             available_outputs: outputs,
@@ -278,6 +346,13 @@ impl ScreenToolGui {
             last_capture_diag_size: (0, 0),
             saved_slots: [None, None, None],
             style_initialized: false,
+            applied_style_scale: 0.0,
+            ui_scale_user: default_ui_scale,
+            system_stats: SystemStatsSnapshot::default(),
+            shader_presets: discover_shader_presets(),
+            shader_filter: String::new(),
+            shader_status: None,
+            shader_status_until: None,
         }
     }
 
@@ -285,26 +360,31 @@ impl ScreenToolGui {
         self.active_tab == ToolTab::Crop
     }
 
-    fn ensure_style(&mut self, ctx: &egui::Context) {
-        if self.style_initialized {
+    pub fn update_system_stats(&mut self, stats: SystemStatsSnapshot) {
+        self.system_stats = stats;
+    }
+
+    fn ensure_style(&mut self, ctx: &egui::Context, ui_scale: f32) {
+        if self.style_initialized && (self.applied_style_scale - ui_scale).abs() < 0.05 {
             return;
         }
         self.style_initialized = true;
+        self.applied_style_scale = ui_scale;
 
         let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.spacing.item_spacing = egui::vec2(8.0 * ui_scale, 6.0 * ui_scale);
+        style.spacing.button_padding = egui::vec2(12.0 * ui_scale, 8.0 * ui_scale);
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+            egui::FontId::new(13.0 * ui_scale, egui::FontFamily::Proportional),
         );
         ctx.set_style(style);
 
@@ -488,7 +568,12 @@ impl ScreenToolGui {
     /// Main UI function — called inside window.frame() for the egui overlay.
     /// Only renders the toolbar and handles input — the texture is rendered separately.
     pub fn show(&mut self, ctx: &egui::Context, _capture: &mut Option<&mut NvfbcCapture>) {
-        self.ensure_style(ctx);
+        let rect = ctx.screen_rect();
+        let auto_scale = ((rect.width() * rect.height()) / (1920.0 * 1080.0))
+            .sqrt()
+            .clamp(0.95, 3.2);
+        let ui_scale = (auto_scale * self.ui_scale_user).clamp(0.85, 4.0);
+        self.ensure_style(ctx, ui_scale);
 
         // Track FPS
         self.frame_count += 1;
@@ -586,8 +671,8 @@ impl ScreenToolGui {
         self.clamp_pan_center();
 
         // Scale controls continuously with available screen real estate.
-        let rect = ctx.screen_rect();
-        let scale = ((rect.width().min(rect.height()) / 900.0).clamp(0.95, 2.4)).max(1.0);
+        let scale =
+            ((rect.width().min(rect.height()) / 620.0).clamp(1.0, 3.8)) * self.ui_scale_user;
 
         // Toolbar
         if self.show_toolbar {
@@ -649,15 +734,18 @@ impl ScreenToolGui {
                     ui.separator();
                     ui.checkbox(&mut self.show_stats_panel, "Stats");
                     ui.checkbox(&mut self.show_help_panel, "Help");
-                    ui.label(match self.active_tab {
-                        ToolTab::Crop => "Mode: Crop",
-                        ToolTab::Performance => "Mode: Perf",
-                    });
+                    ui.separator();
+                    ui.label("UI Scale");
+                    ui.add(
+                        egui::Slider::new(&mut self.ui_scale_user, 0.8..=3.0)
+                            .logarithmic(true)
+                            .show_value(true),
+                    );
                 });
             });
         }
 
-        if self.show_stats_panel {
+        if self.show_stats_panel && self.active_tab == ToolTab::Crop {
             egui::Window::new("Performance")
                 .default_pos(egui::pos2(10.0, 56.0))
                 .resizable(false)
@@ -679,7 +767,7 @@ impl ScreenToolGui {
                 });
         }
 
-        if self.show_help_panel {
+        if self.show_help_panel && self.active_tab == ToolTab::Crop {
             egui::Window::new("Controls")
                 .default_pos(egui::pos2(280.0, 56.0))
                 .resizable(false)
@@ -697,11 +785,282 @@ impl ScreenToolGui {
                 });
         }
 
-        // Left-side vertical feature tabs (icon buttons).
+        if self.active_tab == ToolTab::Performance {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.heading(egui::RichText::new("Performance Monitor").size(42.0 * scale));
+                        ui.add_space(20.0 * scale);
+                        egui::Grid::new("perf_grid")
+                            .num_columns(2)
+                            .spacing([36.0 * scale, 18.0 * scale])
+                            .show(ui, |ui| {
+                                let name_size = 22.0 * scale;
+                                let value_size = 30.0 * scale;
+                                ui.label(egui::RichText::new("Top-screen FPS").size(name_size));
+                                ui.label(
+                                    egui::RichText::new(format!("{:.0}", self.capture_fps))
+                                        .size(value_size)
+                                        .strong(),
+                                );
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Render FPS").size(name_size));
+                                ui.label(
+                                    egui::RichText::new(format!("{:.0}", self.fps))
+                                        .size(value_size)
+                                        .strong(),
+                                );
+                                ui.end_row();
+                                ui.label(egui::RichText::new("CPU usage").size(name_size));
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{:.1}%",
+                                        self.system_stats.cpu_usage_pct
+                                    ))
+                                    .size(value_size)
+                                    .strong(),
+                                );
+                                ui.end_row();
+                                ui.label(egui::RichText::new("RAM").size(name_size));
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{:.1} / {:.1} GiB",
+                                        self.system_stats.ram_used_gib,
+                                        self.system_stats.ram_total_gib
+                                    ))
+                                    .size(value_size)
+                                    .strong(),
+                                );
+                                ui.end_row();
+                                ui.label(egui::RichText::new("GPU usage").size(name_size));
+                                let gpu_text = self
+                                    .system_stats
+                                    .gpu_usage_pct
+                                    .map(|v| format!("{:.0}%", v))
+                                    .unwrap_or_else(|| "N/A".to_string());
+                                ui.label(egui::RichText::new(gpu_text).size(value_size).strong());
+                                ui.end_row();
+                                ui.label(egui::RichText::new("GPU memory").size(name_size));
+                                let gpu_mem_text = match (
+                                    self.system_stats.gpu_mem_used_mib,
+                                    self.system_stats.gpu_mem_total_mib,
+                                ) {
+                                    (Some(used), Some(total)) => {
+                                        format!("{} / {} MiB", used, total)
+                                    }
+                                    _ => "N/A".to_string(),
+                                };
+                                ui.label(
+                                    egui::RichText::new(gpu_mem_text).size(value_size).strong(),
+                                );
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Capture size").size(name_size));
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} x {}",
+                                        self.capture_size.0, self.capture_size.1
+                                    ))
+                                    .size(value_size)
+                                    .strong(),
+                                );
+                                ui.end_row();
+                            });
+                    });
+                });
+        }
+
+        if self.active_tab == ToolTab::Shaders {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    ui.add_space(16.0 * scale);
+                    ui.vertical_centered(|ui| {
+                        ui.heading(egui::RichText::new("Shader Presets").size(38.0 * scale));
+                        ui.add_space(8.0 * scale);
+                        ui.label("Apply live preset swaps for top/bottom shaders.");
+                        ui.add_space(12.0 * scale);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Filter:");
+                        ui.text_edit_singleline(&mut self.shader_filter);
+                        if ui.button("Refresh").clicked() {
+                            self.shader_presets = discover_shader_presets();
+                        }
+                    });
+                    ui.add_space(8.0 * scale);
+
+                    let filter = self.shader_filter.to_lowercase();
+                    let filtered: Vec<&str> = self
+                        .shader_presets
+                        .iter()
+                        .map(|s| s.as_str())
+                        .filter(|p| filter.is_empty() || p.to_lowercase().contains(&filter))
+                        .collect();
+                    let item_height = 28.0 * scale;
+                    egui::ScrollArea::vertical().show_rows(
+                        ui,
+                        item_height,
+                        filtered.len(),
+                        |ui, rows| {
+                            for idx in rows {
+                                if let Some(path) = filtered.get(idx) {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(*path);
+                                        if ui.button("Top").clicked() {
+                                            match write_shader_file("primary", path) {
+                                                Ok(()) => {
+                                                    reload_shader_overlay_process();
+                                                    self.shader_status =
+                                                        Some(format!("Top shader → {}", path));
+                                                    self.shader_status_until = Some(
+                                                        Instant::now() + Duration::from_secs(4),
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    self.shader_status =
+                                                        Some(format!("Failed (top): {}", e));
+                                                    self.shader_status_until = Some(
+                                                        Instant::now() + Duration::from_secs(4),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        if ui.button("Bottom").clicked() {
+                                            match write_shader_file("secondary", path) {
+                                                Ok(()) => {
+                                                    reload_shader_overlay_process();
+                                                    self.shader_status =
+                                                        Some(format!("Bottom shader → {}", path));
+                                                    self.shader_status_until = Some(
+                                                        Instant::now() + Duration::from_secs(4),
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    self.shader_status =
+                                                        Some(format!("Failed (bottom): {}", e));
+                                                    self.shader_status_until = Some(
+                                                        Instant::now() + Duration::from_secs(4),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        },
+                    );
+                    if let Some(until) = self.shader_status_until {
+                        if Instant::now() > until {
+                            self.shader_status = None;
+                            self.shader_status_until = None;
+                        }
+                    }
+                    if let Some(status) = &self.shader_status {
+                        ui.add_space(8.0 * scale);
+                        ui.label(status);
+                    }
+                });
+        }
+
+        // Crop-only interaction layer.
+        if self.active_tab == ToolTab::Crop {
+            // Transparent central panel — only for capturing scroll/drag input
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let available_size = ui.available_size();
+                    let rect = egui::Rect::from_min_size(ui.cursor().min, available_size);
+                    let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+
+                    // Scroll wheel zoom
+                    if response.hovered() {
+                        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                        if scroll != 0.0 {
+                            let factor = if scroll > 0.0 { 1.2 } else { 1.0 / 1.2 };
+                            self.zoom_level = (self.zoom_level * factor).clamp(1.0, 8.0);
+                        }
+                    }
+
+                    // Drag to pan
+                    if response.dragged_by(egui::PointerButton::Primary) {
+                        let delta = ui.input(|i| i.pointer.delta());
+                        if available_size.x > 1.0 && available_size.y > 1.0 {
+                            let scale = 1.0 / self.zoom_level;
+                            self.pan_center.0 -= delta.x / available_size.x * scale;
+                            self.pan_center.1 -= delta.y / available_size.y * scale;
+                        }
+                    }
+                });
+        }
+
+        // Always-visible, touch-friendly zoom controls for high-res displays.
+        let btn_w = 60.0 * scale;
+        let btn_h = 48.0 * scale;
+        let reset_h = 34.0 * scale;
+        let pad = 24.0;
+        egui::Area::new(egui::Id::new("quick_zoom_controls"))
+            .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style())
+                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            if ui
+                                .add_sized(
+                                    [btn_w, btn_h],
+                                    egui::Button::new(egui::RichText::new("+").size(22.0 * scale)),
+                                )
+                                .clicked()
+                            {
+                                if self.active_tab == ToolTab::Crop {
+                                    self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
+                                } else if self.active_tab == ToolTab::Performance {
+                                    self.ui_scale_user = (self.ui_scale_user + 0.1).clamp(0.8, 3.0);
+                                }
+                            }
+                            ui.add_space(8.0 * scale);
+                            if ui
+                                .add_sized(
+                                    [btn_w, btn_h],
+                                    egui::Button::new(egui::RichText::new("−").size(22.0 * scale)),
+                                )
+                                .clicked()
+                            {
+                                if self.active_tab == ToolTab::Crop {
+                                    self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
+                                } else if self.active_tab == ToolTab::Performance {
+                                    self.ui_scale_user = (self.ui_scale_user - 0.1).clamp(0.8, 3.0);
+                                }
+                            }
+                            ui.add_space(8.0 * scale);
+                            if ui
+                                .add_sized(
+                                    [btn_w, reset_h],
+                                    egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)),
+                                )
+                                .clicked()
+                            {
+                                if self.active_tab == ToolTab::Crop {
+                                    self.reset_view();
+                                } else {
+                                    self.ui_scale_user = 1.0;
+                                }
+                            }
+                        });
+                    });
+            });
+
+        // Left-side vertical feature tabs (icon buttons) on top of all content.
         let tab_btn = 56.0 * scale;
         let tab_pad = 24.0;
         egui::Area::new(egui::Id::new("feature_tab_controls"))
             .anchor(egui::Align2::LEFT_CENTER, egui::vec2(tab_pad, 0.0))
+            .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
                 egui::Frame::window(ui.style())
@@ -731,106 +1090,20 @@ impl ScreenToolGui {
                             {
                                 self.active_tab = ToolTab::Performance;
                             }
-                        });
-                    });
-            });
-
-        if self.active_tab == ToolTab::Performance {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    ui.add_space(24.0);
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Performance Monitor");
-                        ui.add_space(18.0);
-                        egui::Grid::new("perf_grid")
-                            .num_columns(2)
-                            .spacing([24.0, 10.0])
-                            .show(ui, |ui| {
-                                ui.label("Render FPS");
-                                ui.label(format!("{:.0}", self.fps));
-                                ui.end_row();
-                                ui.label("Capture FPS (new)");
-                                ui.label(format!("{:.0}", self.capture_fps));
-                                ui.end_row();
-                                ui.label("Capture size");
-                                ui.label(format!("{}x{}", self.capture_size.0, self.capture_size.1));
-                                ui.end_row();
-                                ui.label("Zoom");
-                                ui.label(format!("{:.2}x", self.zoom_level));
-                                ui.end_row();
-                                ui.label("Pan");
-                                ui.label(format!("{:.3}, {:.3}", self.pan_center.0, self.pan_center.1));
-                                ui.end_row();
-                            });
-                    });
-                });
-            return;
-        }
-
-        // Always-visible, touch-friendly zoom controls for high-res displays.
-        let btn_w = 60.0 * scale;
-        let btn_h = 48.0 * scale;
-        let reset_h = 34.0 * scale;
-        let pad = 24.0;
-        egui::Area::new(egui::Id::new("quick_zoom_controls"))
-            .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
-            .interactable(true)
-            .show(ctx, |ui| {
-                egui::Frame::window(ui.style())
-                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
-                    .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            if ui
-                                .add_sized([btn_w, btn_h], egui::Button::new(egui::RichText::new("+").size(22.0 * scale)))
-                                .clicked()
-                            {
-                                self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
-                            }
                             ui.add_space(8.0 * scale);
                             if ui
-                                .add_sized([btn_w, btn_h], egui::Button::new(egui::RichText::new("−").size(22.0 * scale)))
+                                .add_sized(
+                                    [tab_btn, tab_btn],
+                                    egui::Button::new(egui::RichText::new("🎨").size(24.0 * scale))
+                                        .selected(self.active_tab == ToolTab::Shaders),
+                                )
+                                .on_hover_text("Shader Presets")
                                 .clicked()
                             {
-                                self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
-                            }
-                            ui.add_space(8.0 * scale);
-                            if ui
-                                .add_sized([btn_w, reset_h], egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)))
-                                .clicked()
-                            {
-                                self.reset_view();
+                                self.active_tab = ToolTab::Shaders;
                             }
                         });
                     });
-            });
-
-        // Transparent central panel — only for capturing scroll/drag input
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
-                let available_size = ui.available_size();
-                let rect = egui::Rect::from_min_size(ui.cursor().min, available_size);
-                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-
-                // Scroll wheel zoom
-                if response.hovered() {
-                    let scroll = ui.input(|i| i.raw_scroll_delta.y);
-                    if scroll != 0.0 {
-                        let factor = if scroll > 0.0 { 1.2 } else { 1.0 / 1.2 };
-                        self.zoom_level = (self.zoom_level * factor).clamp(1.0, 8.0);
-                    }
-                }
-
-                // Drag to pan
-                if response.dragged_by(egui::PointerButton::Primary) {
-                    let delta = ui.input(|i| i.pointer.delta());
-                    if available_size.x > 1.0 && available_size.y > 1.0 {
-                        let scale = 1.0 / self.zoom_level;
-                        self.pan_center.0 -= delta.x / available_size.x * scale;
-                        self.pan_center.1 -= delta.y / available_size.y * scale;
-                    }
-                }
             });
         self.clamp_pan_center();
     }
