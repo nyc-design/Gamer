@@ -17,7 +17,7 @@ use glow::HasContext;
 use signal_hook::flag;
 use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
-use std::os::raw::{c_int, c_uint, c_ulong, c_void};
+use std::os::raw::{c_int, c_ulong, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -540,39 +540,19 @@ fn get_window_name(display: *mut xlib::Display, window: c_ulong) -> Option<Strin
     }
 }
 
-/// Check if a secondary emulator window exists.
-fn secondary_window_exists(display: *mut xlib::Display, patterns: &[String]) -> bool {
+/// Find a secondary emulator window matching the given patterns.
+/// Returns the window ID if found, or None.
+fn find_secondary_window(display: *mut xlib::Display, patterns: &[String]) -> Option<c_ulong> {
     let root = unsafe { xlib::XDefaultRootWindow(display) };
 
     if let Some(clients) = get_client_list(display, root) {
         for wid in clients {
             if check_window_matches(display, wid, patterns) {
-                return true;
+                return Some(wid);
             }
         }
     }
-
-    // Fallback: check direct children of root (covers transient/unmanaged windows)
-    unsafe {
-        let mut root_ret: c_ulong = 0;
-        let mut parent_ret: c_ulong = 0;
-        let mut children: *mut c_ulong = ptr::null_mut();
-        let mut nchildren: u32 = 0;
-        if xlib::XQueryTree(display, root, &mut root_ret, &mut parent_ret, &mut children, &mut nchildren) != 0 {
-            let result = if !children.is_null() && nchildren > 0 {
-                let child_slice = std::slice::from_raw_parts(children, nchildren as usize);
-                child_slice.iter().any(|&wid| check_window_matches(display, wid, patterns))
-            } else {
-                false
-            };
-            if !children.is_null() {
-                xlib::XFree(children as *mut c_void);
-            }
-            result
-        } else {
-            false
-        }
-    }
+    None
 }
 
 fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[String]) -> bool {
@@ -582,6 +562,7 @@ fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[S
                 unsafe {
                     let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
                     if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
+                        && attrs.map_state == 2 // IsViewable
                         && attrs.width >= 32 && attrs.height >= 32
                     {
                         return true;
@@ -591,6 +572,37 @@ fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[S
         }
     }
     false
+}
+
+/// Check if a window is rendering non-black content by sampling a few pixels.
+/// Samples 5 points across the window center row. Returns true if any pixel
+/// has a non-zero RGB value.
+fn window_has_content(display: *mut xlib::Display, wid: c_ulong) -> bool {
+    unsafe {
+        let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+        if xlib::XGetWindowAttributes(display, wid, &mut attrs) == 0 {
+            return false;
+        }
+        let w = attrs.width;
+        let h = attrs.height;
+        if w < 32 || h < 32 { return false; }
+
+        // Sample 5 pixels along the center row at 20%, 35%, 50%, 65%, 80% width
+        let cy = h / 2;
+        let sample_xs = [w / 5, w * 35 / 100, w / 2, w * 65 / 100, w * 4 / 5];
+
+        for &sx in &sample_xs {
+            let img = xlib::XGetImage(display, wid, sx, cy, 1, 1, !0, xlib::ZPixmap);
+            if img.is_null() { continue; }
+            let pixel = xlib::XGetPixel(img, 0, 0);
+            xlib::XDestroyImage(img);
+            // Check if any color channel is non-zero (not black)
+            if pixel & 0x00FFFFFF != 0 {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // ─── Output window on DP-2 ──────────────────────────────────────────────────
@@ -921,7 +933,7 @@ fn main() -> Result<()> {
     let mut zoom = ZoomRegion::default();
     let mut selecting: Option<(i32, i32)> = None;
     let mut show_fps = false;
-    let mut hidden = false;
+    let mut on_top = true; // screen-tool is on top (visible to NVFBC)
     let mut fps_counter: usize = 0;
     let mut fps_timer = Instant::now();
     let mut fps_value: f32 = 0.0;
@@ -945,7 +957,7 @@ fn main() -> Result<()> {
                 let etype = event.type_;
 
                 match etype {
-                    xlib::ButtonPress if !hidden => {
+                    xlib::ButtonPress => {
                         let e = event.button;
                         if e.window == output.window {
                             match e.button {
@@ -955,7 +967,7 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    xlib::ButtonRelease if !hidden => {
+                    xlib::ButtonRelease => {
                         let e = event.button;
                         if e.window == output.window && e.button == 1 {
                             if let Some((x1, y1)) = selecting.take() {
@@ -980,7 +992,7 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    xlib::KeyPress if !hidden => {
+                    xlib::KeyPress => {
                         let keysym = xlib::XLookupKeysym(&mut event.key as *mut _, 0);
                         if keysym == x11::keysym::XK_F1 as c_ulong {
                             show_fps = !show_fps;
@@ -992,60 +1004,77 @@ fn main() -> Result<()> {
             }
         }
 
-        // Check for secondary window every ~1 second
+        // Check for secondary window every ~1 second.
+        // Instead of hide/show, manage Z-order: if the secondary window is
+        // actively rendering (non-black), lower ourselves behind it.
+        // If it's black or gone, raise ourselves to the front.
         if last_secondary_check.elapsed() >= Duration::from_secs(1) {
             last_secondary_check = Instant::now();
-            let secondary_present = secondary_window_exists(gl.display, &secondary_patterns);
 
-            if secondary_present && !hidden {
-                log::info!("Secondary window detected, hiding screen-tool");
-                output.hide();
-                hidden = true;
-            } else if !secondary_present && hidden {
-                log::info!("Secondary window gone, showing screen-tool");
-                output.show(args.output_x, output_y, args.output_width, args.output_height);
-                hidden = false;
+            let should_be_on_top = match find_secondary_window(gl.display, &secondary_patterns) {
+                Some(sec_wid) => {
+                    // Secondary window exists — check if it has actual content
+                    let has_content = window_has_content(gl.display, sec_wid);
+                    if has_content {
+                        // Secondary is rendering — lower screen-tool behind it
+                        false
+                    } else {
+                        // Secondary is black (single-window mode) — we should be on top
+                        true
+                    }
+                }
+                None => true, // No secondary window — we should be on top
+            };
+
+            if should_be_on_top && !on_top {
+                log::info!("Secondary window gone/black, raising screen-tool");
+                unsafe {
+                    xlib::XRaiseWindow(gl.display, output.window);
+                    xlib::XFlush(gl.display);
+                }
+                on_top = true;
                 zoom = ZoomRegion::default();
                 selecting = None;
+            } else if !should_be_on_top && on_top {
+                log::info!("Secondary window active, lowering screen-tool");
+                unsafe {
+                    xlib::XLowerWindow(gl.display, output.window);
+                    xlib::XFlush(gl.display);
+                }
+                on_top = false;
             }
         }
 
-        // Render
-        if !hidden {
-            // Grab frame from NVFBC (zero-copy, gives us a GL texture)
-            match capture.grab_frame() {
-                Ok((tex_id, src_w, src_h, _is_new)) => {
-                    let cw = src_w as f32;
-                    let ch = src_h as f32;
-                    let sx = (zoom.sx * cw) as i32;
-                    let sy = (zoom.sy * ch) as i32;
-                    let sw = (zoom.sw * cw) as i32;
-                    let sh = (zoom.sh * ch) as i32;
+        // Always render — NVFBC captures whatever is on top of DP-2
+        match capture.grab_frame() {
+            Ok((tex_id, src_w, src_h, _is_new)) => {
+                let cw = src_w as f32;
+                let ch = src_h as f32;
+                let sx = (zoom.sx * cw) as i32;
+                let sy = (zoom.sy * ch) as i32;
+                let sw = (zoom.sw * cw) as i32;
+                let sh = (zoom.sh * ch) as i32;
 
-                    blit_nvfbc_region(&gl, tex_id, src_w, src_h, sx, sy, sw, sh, &output);
+                blit_nvfbc_region(&gl, tex_id, src_w, src_h, sx, sy, sw, sh, &output);
 
-                    fps_counter += 1;
-                    if fps_timer.elapsed() >= Duration::from_secs(1) {
-                        fps_value = fps_counter as f32 / fps_timer.elapsed().as_secs_f32();
-                        fps_counter = 0;
-                        fps_timer = Instant::now();
-                    }
-
-                    if show_fps {
-                        let fps_text = format!("{:.0} FPS", fps_value);
-                        fps_overlay.render(&gl, &output, &fps_text);
-                    }
-
-                    unsafe { glx::glXSwapBuffers(gl.display, output.glx_window); }
+                fps_counter += 1;
+                if fps_timer.elapsed() >= Duration::from_secs(1) {
+                    fps_value = fps_counter as f32 / fps_timer.elapsed().as_secs_f32();
+                    fps_counter = 0;
+                    fps_timer = Instant::now();
                 }
-                Err(e) => {
-                    log::warn!("NVFBC grab failed: {}", e);
-                    thread::sleep(Duration::from_millis(100));
+
+                if show_fps {
+                    let fps_text = format!("{:.0} FPS", fps_value);
+                    fps_overlay.render(&gl, &output, &fps_text);
                 }
+
+                unsafe { glx::glXSwapBuffers(gl.display, output.glx_window); }
             }
-        } else {
-            thread::sleep(Duration::from_millis(100));
-            continue;
+            Err(e) => {
+                log::warn!("NVFBC grab failed: {}", e);
+                thread::sleep(Duration::from_millis(100));
+            }
         }
 
         // No fixed sleep — run as fast as possible, NVFBC NOWAIT returns immediately
