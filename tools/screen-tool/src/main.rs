@@ -363,9 +363,11 @@ fn check_window_matches(display: *mut xlib::Display, wid: c_ulong, patterns: &[S
             if name.contains(pat.as_str()) {
                 unsafe {
                     let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+                    // Don't require IsViewable — some WMs (openbox) may not manage
+                    // secondary windows, leaving them technically unmapped while still
+                    // positioned and rendered via reposition-windows.sh
                     if xlib::XGetWindowAttributes(display, wid, &mut attrs) != 0
                         && attrs.width >= 32 && attrs.height >= 32
-                        && attrs.map_state == xlib::IsViewable
                     {
                         return true;
                     }
