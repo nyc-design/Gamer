@@ -6,7 +6,7 @@ description = "Secondary screen tool: zoom/crop viewer and FPS monitor for the b
 
 [dependencies]
 glow = "0.16"
-x11 = { version = "2.21", features = ["xlib", "glx", "keysym"] }
+x11 = { version = "2.21", features = ["xlib", "glx"] }
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
