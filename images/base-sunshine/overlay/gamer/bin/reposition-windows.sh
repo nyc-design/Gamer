@@ -42,13 +42,16 @@ echo "[$(date)] reposition: DP-0=${TOP_WIDTH}x${TOP_HEIGHT}+${TOP_X}+${TOP_Y} DP
 # Find emulator windows by title (supports Azahar, melonDS, Dolphin, etc.)
 PRIMARY=""
 SECONDARY=""
-for wid in $(xdotool search --name "Azahar|melonDS|Dolphin" 2>/dev/null); do
+SCREEN_TOOL=""
+for wid in $(xdotool search --name "Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam|ScreenTool" 2>/dev/null); do
     name=$(xdotool getwindowname "$wid" 2>/dev/null)
     # Skip shader output windows
     echo "$name" | grep -q "^Shader: " && continue
-    if echo "$name" | grep -q "Secondary Window"; then
+    if echo "$name" | grep -q "^ScreenTool"; then
+        SCREEN_TOOL=$wid
+    elif echo "$name" | grep -q "Secondary Window"; then
         SECONDARY=$wid
-    elif echo "$name" | grep -qE "(Azahar|melonDS|Dolphin) [0-9]"; then
+    elif echo "$name" | grep -qE "(Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam) [0-9]"; then
         PRIMARY=$wid
     fi
 done
@@ -65,8 +68,8 @@ for wid in $(xdotool search --name "^Shader: " 2>/dev/null); do
     fi
 done
 
-if [ -z "$PRIMARY" ] && [ -z "$SECONDARY" ] && [ -z "$SHADER_PRIMARY" ] && [ -z "$SHADER_SECONDARY" ]; then
-    echo "[$(date)] reposition: no emulator or shader windows found, skipping" >> "$LOG"
+if [ -z "$PRIMARY" ] && [ -z "$SECONDARY" ] && [ -z "$SHADER_PRIMARY" ] && [ -z "$SHADER_SECONDARY" ] && [ -z "$SCREEN_TOOL" ]; then
+    echo "[$(date)] reposition: no emulator, shader, or screen-tool windows found, skipping" >> "$LOG"
     exit 0
 fi
 
@@ -98,6 +101,14 @@ if [ -n "$SHADER_SECONDARY" ]; then
     xdotool windowmove "$SHADER_SECONDARY" "$BOT_X" "$BOT_Y"
     xdotool windowsize "$SHADER_SECONDARY" "$BOT_WIDTH" "$BOT_HEIGHT"
     xdotool windowraise "$SHADER_SECONDARY"
+fi
+
+# Position screen-tool on bottom display (only when no secondary emulator window)
+if [ -n "$SCREEN_TOOL" ] && [ -z "$SECONDARY" ]; then
+    echo "[$(date)] reposition: screen-tool $SCREEN_TOOL -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
+    xdotool windowmove "$SCREEN_TOOL" "$BOT_X" "$BOT_Y"
+    xdotool windowsize "$SCREEN_TOOL" "$BOT_WIDTH" "$BOT_HEIGHT"
+    xdotool windowraise "$SCREEN_TOOL"
 fi
 
 # Apply dot cursor to bottom screen window for touch-friendly UX

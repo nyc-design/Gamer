@@ -5,8 +5,8 @@
 # Based on CloudyPad's proven Sunshine container patterns:
 # https://github.com/PierreBeucher/cloudypad/tree/master/containers/sunshine
 
-# Build shader-overlay binary and shader-inject LD_PRELOAD library from source
-FROM rust:latest AS build-shaders
+# Build shader-overlay, shader-inject, and screen-tool from source
+FROM rust:latest AS build-tools
 WORKDIR /build
 RUN apt-get update && apt-get install -y \
     libx11-dev libxcomposite-dev libxdamage-dev libxfixes-dev \
@@ -14,8 +14,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 COPY tools/shader-overlay/ shader-overlay/
 COPY tools/shader-inject/ shader-inject/
+COPY tools/screen-tool/ screen-tool/
 RUN cd shader-overlay && cargo build --release && strip target/release/shader-overlay
 RUN cd shader-inject && cargo build --release && strip target/release/libshader_inject.so
+RUN cd screen-tool && cargo build --release && strip target/release/screen-tool
 
 # Download Sunshine .deb in a separate stage
 FROM alpine/curl:8.14.1 AS download-sunshine
@@ -146,6 +148,12 @@ ENV SHADER_WINDOW_BOTTOM=""
 ENV SHADER_SOURCE_SIZE=""
 ENV SHADER_SOURCE_SIZE_BOTTOM=""
 
+# Screen tool config (secondary display zoom/crop viewer)
+# SCREEN_TOOL_ENABLED: set to "0" to disable
+# SCREEN_TOOL_WINDOW: window title to capture (auto-detects emulator if empty)
+ENV SCREEN_TOOL_ENABLED=1
+ENV SCREEN_TOOL_WINDOW=""
+
 # NVIDIA driver env (set by host/orchestrator)
 ENV NVIDIA_ENABLE=true
 ENV NVIDIA_DRIVER_VERSION=""
@@ -158,9 +166,11 @@ RUN useradd -m -d /home/gamer -s /bin/bash -u 1001 gamer
 COPY images/base-sunshine/overlay/ /
 
 # shader-overlay binary (from Rust build stage) — XComposite-based, for non-NVFBC capture
-COPY --from=build-shaders /build/shader-overlay/target/release/shader-overlay /gamer/bin/shader-overlay
+COPY --from=build-tools /build/shader-overlay/target/release/shader-overlay /gamer/bin/shader-overlay
 # shader-inject LD_PRELOAD library — NVFBC-compatible, intercepts glXSwapBuffers
-COPY --from=build-shaders /build/shader-inject/target/release/libshader_inject.so /gamer/lib/libshader_inject.so
+COPY --from=build-tools /build/shader-inject/target/release/libshader_inject.so /gamer/lib/libshader_inject.so
+# screen-tool binary — zoom/crop viewer and FPS monitor for the secondary display
+COPY --from=build-tools /build/screen-tool/target/release/screen-tool /gamer/bin/screen-tool
 
 # Bundle RetroArch shader presets (subset of slang-shaders)
 RUN --mount=type=cache,target=/var/cache <<EOF
