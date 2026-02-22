@@ -18,10 +18,20 @@ FPS=${SUNSHINE_CLIENT_FPS:-60}
 LOG=/tmp/screen-mode.log
 echo "[$(date)] $OUTPUT: requested ${WIDTH}x${HEIGHT}@${FPS}Hz" >> "$LOG"
 
+# Always ensure displays are at correct positions (NVIDIA driver may center them)
+xrandr --output DP-0 --pos 0x0 2>/dev/null || true
+DP0_HEIGHT=$(xrandr --current | grep "^DP-0" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1 | cut -dx -f2 | cut -d+ -f1)
+DP0_HEIGHT=${DP0_HEIGHT:-1080}
+xrandr --output DP-2 --pos "0x${DP0_HEIGHT}" 2>/dev/null || true
+
 # Check if already at this resolution
 CURRENT=$(xrandr --current | grep "^${OUTPUT}" | grep -oP '\d+x\d+\+' | head -1 | tr -d '+')
 if [ "$CURRENT" = "${WIDTH}x${HEIGHT}" ]; then
-    echo "[$(date)] $OUTPUT: already at ${WIDTH}x${HEIGHT}, skipping" >> "$LOG"
+    echo "[$(date)] $OUTPUT: already at ${WIDTH}x${HEIGHT}, repositioning windows" >> "$LOG"
+    SCRIPT_DIR=$(dirname "$0")
+    if [ -x "$SCRIPT_DIR/reposition-windows.sh" ]; then
+        "$SCRIPT_DIR/reposition-windows.sh" &
+    fi
     exit 0
 fi
 

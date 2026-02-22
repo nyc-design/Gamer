@@ -1,11 +1,24 @@
 use anyhow::{bail, Result};
 use glow::HasContext;
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_int, c_void};
+use std::ffi::CStr;
+use std::os::raw::{c_int, c_ulong, c_void};
 use std::ptr;
 use std::sync::Arc;
 use x11::glx;
 use x11::xlib;
+
+// GLX texture_from_pixmap constants
+pub const GLX_BIND_TO_TEXTURE_RGB_EXT: c_int = 0x20D0;
+pub const GLX_BIND_TO_TEXTURE_RGBA_EXT: c_int = 0x20D1;
+pub const GLX_BIND_TO_TEXTURE_TARGETS_EXT: c_int = 0x20D3;
+pub const GLX_Y_INVERTED_EXT: c_int = 0x20D4;
+pub const GLX_TEXTURE_FORMAT_EXT: c_int = 0x20D5;
+pub const GLX_TEXTURE_TARGET_EXT: c_int = 0x20D6;
+pub const GLX_TEXTURE_FORMAT_RGB_EXT: c_int = 0x20D9;
+pub const GLX_TEXTURE_FORMAT_RGBA_EXT: c_int = 0x20DA;
+pub const GLX_TEXTURE_2D_EXT: c_int = 0x20DC;
+pub const GLX_TEXTURE_2D_BIT_EXT: c_int = 0x0002;
+pub const GLX_FRONT_LEFT_EXT: c_int = 0x20DE;
 
 /// GLX extension function pointers for texture_from_pixmap
 pub struct GlxExtFns {
@@ -14,28 +27,16 @@ pub struct GlxExtFns {
 }
 
 /// Holds the GLX context, X display, and glow context.
-/// Two FBConfigs: one for XComposite pixmap capture, one for output windows.
 pub struct GlState {
     pub glow_ctx: Arc<glow::Context>,
     pub display: *mut xlib::Display,
     pub glx_context: glx::GLXContext,
-    /// FBConfig for XComposite texture_from_pixmap (may be 32-bit ARGB)
-    pub fb_config: glx::GLXFBConfig,
-    /// FBConfig for output windows (matches screen depth, guaranteed visible)
+    /// FBConfig for output windows (matches screen depth)
     pub output_fb_config: glx::GLXFBConfig,
+    /// GLX extension functions for texture_from_pixmap
     pub glx_ext: GlxExtFns,
     _helper_window: xlib::Window,
 }
-
-// GLX_EXT_texture_from_pixmap constants
-pub const GLX_BIND_TO_TEXTURE_RGBA_EXT: c_int = 0x20D1;
-pub const GLX_TEXTURE_TARGET_EXT: c_int = 0x20D6;
-pub const GLX_TEXTURE_2D_EXT: c_int = 0x20DC;
-pub const GLX_TEXTURE_FORMAT_EXT: c_int = 0x20D5;
-pub const GLX_TEXTURE_FORMAT_RGBA_EXT: c_int = 0x20DA;
-pub const GLX_FRONT_EXT: c_int = 0x20DE;
-pub const GLX_BIND_TO_TEXTURE_TARGETS_EXT: c_int = 0x20D3;
-pub const GLX_TEXTURE_2D_BIT_EXT: c_int = 0x0002;
 
 impl GlState {
     pub fn new() -> Result<Self> {
@@ -50,30 +51,9 @@ impl GlState {
             let root = xlib::XRootWindow(display, screen);
             let screen_depth = xlib::XDefaultDepth(display, screen);
 
-            // FBConfig for XComposite texture_from_pixmap (capture)
-            let capture_attribs: Vec<c_int> = vec![
-                glx::GLX_X_RENDERABLE, 1,
-                glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT | glx::GLX_PIXMAP_BIT,
-                glx::GLX_RENDER_TYPE, glx::GLX_RGBA_BIT,
-                GLX_BIND_TO_TEXTURE_RGBA_EXT, 1,
-                GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-                glx::GLX_RED_SIZE, 8,
-                glx::GLX_GREEN_SIZE, 8,
-                glx::GLX_BLUE_SIZE, 8,
-                glx::GLX_ALPHA_SIZE, 8,
-                glx::GLX_DOUBLEBUFFER, 1,
-                0,
-            ];
+            log::info!("Screen depth: {}", screen_depth);
 
-            let mut num_configs: c_int = 0;
-            let configs = glx::glXChooseFBConfig(display, screen, capture_attribs.as_ptr(), &mut num_configs);
-            if configs.is_null() || num_configs == 0 {
-                bail!("No suitable GLX FBConfig found for texture_from_pixmap");
-            }
-            let fb_config = *configs;
-            xlib::XFree(configs as *mut c_void);
-
-            // FBConfig for output windows — match screen depth, no pixmap/texture requirements
+            // FBConfig for output windows — match screen depth
             let output_attribs: Vec<c_int> = vec![
                 glx::GLX_X_RENDERABLE, 1,
                 glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT,
@@ -108,12 +88,10 @@ impl GlState {
             }
             xlib::XFree(output_configs as *mut c_void);
 
-            log::info!("Screen depth: {}", screen_depth);
-
-            // Use the capture FBConfig visual for the helper window
-            let visual = glx::glXGetVisualFromFBConfig(display, fb_config);
+            // Use the output FBConfig visual for the helper window
+            let visual = glx::glXGetVisualFromFBConfig(display, output_fb_config);
             if visual.is_null() {
-                bail!("Failed to get visual from capture FBConfig");
+                bail!("Failed to get visual from output FBConfig");
             }
 
             // Create small invisible helper window for GLX context binding
@@ -137,7 +115,7 @@ impl GlState {
 
             // Create GLX context
             let glx_context = glx::glXCreateNewContext(
-                display, fb_config, glx::GLX_RGBA_TYPE, ptr::null_mut(), 1,
+                display, output_fb_config, glx::GLX_RGBA_TYPE, ptr::null_mut(), 1,
             );
             if glx_context.is_null() {
                 bail!("Failed to create GLX context");
@@ -147,22 +125,6 @@ impl GlState {
             if glx::glXMakeCurrent(display, helper_window, glx_context) == 0 {
                 bail!("Failed to make GLX context current");
             }
-
-            // Load GLX extension function pointers
-            let bind_name = CString::new("glXBindTexImageEXT").unwrap();
-            let release_name = CString::new("glXReleaseTexImageEXT").unwrap();
-
-            let bind_fn = glx::glXGetProcAddress(bind_name.as_ptr() as *const u8);
-            let release_fn = glx::glXGetProcAddress(release_name.as_ptr() as *const u8);
-
-            if bind_fn.is_none() || release_fn.is_none() {
-                bail!("GLX_EXT_texture_from_pixmap not supported");
-            }
-
-            let glx_ext = GlxExtFns {
-                bind_tex_image: std::mem::transmute(bind_fn.unwrap()),
-                release_tex_image: std::mem::transmute(release_fn.unwrap()),
-            };
 
             // Create glow context from GLX function loader
             let glow_ctx = glow::Context::from_loader_function_cstr(|name: &CStr| {
@@ -176,15 +138,93 @@ impl GlState {
             let version = glow_ctx.get_parameter_string(glow::VERSION);
             log::info!("OpenGL version: {}", version);
 
+            // Load GLX texture_from_pixmap extension functions
+            let glx_ext = Self::load_glx_ext_fns()?;
+
             Ok(Self {
                 glow_ctx: Arc::new(glow_ctx),
                 display,
                 glx_context,
-                fb_config,
                 output_fb_config,
                 glx_ext,
                 _helper_window: helper_window,
             })
+        }
+    }
+
+    /// Load glXBindTexImageEXT and glXReleaseTexImageEXT function pointers
+    unsafe fn load_glx_ext_fns() -> Result<GlxExtFns> {
+        let bind_name = b"glXBindTexImageEXT\0";
+        let release_name = b"glXReleaseTexImageEXT\0";
+
+        let bind_ptr = glx::glXGetProcAddress(bind_name.as_ptr());
+        let release_ptr = glx::glXGetProcAddress(release_name.as_ptr());
+
+        let bind_fn = bind_ptr.ok_or_else(|| anyhow::anyhow!("glXBindTexImageEXT not available"))?;
+        let release_fn = release_ptr.ok_or_else(|| anyhow::anyhow!("glXReleaseTexImageEXT not available"))?;
+
+        log::info!("GLX texture_from_pixmap extension loaded");
+
+        Ok(GlxExtFns {
+            bind_tex_image: std::mem::transmute(bind_fn),
+            release_tex_image: std::mem::transmute(release_fn),
+        })
+    }
+
+    /// Find an FBConfig that matches the given visual ID and supports texture_from_pixmap.
+    /// This is the key to making GLX texture_from_pixmap work on NVIDIA —
+    /// the FBConfig MUST match the source window's visual exactly.
+    pub fn find_fbconfig_for_visual(&self, visual_id: c_ulong) -> Result<glx::GLXFBConfig> {
+        unsafe {
+            let screen = xlib::XDefaultScreen(self.display);
+            let mut num_configs: c_int = 0;
+            let configs = glx::glXGetFBConfigs(self.display, screen, &mut num_configs);
+            if configs.is_null() || num_configs == 0 {
+                bail!("No FBConfigs available");
+            }
+
+            let mut matched: Option<glx::GLXFBConfig> = None;
+
+            for i in 0..num_configs {
+                let cfg = *configs.offset(i as isize);
+
+                // Check visual ID
+                let mut cfg_visual_id: c_int = 0;
+                glx::glXGetFBConfigAttrib(self.display, cfg, glx::GLX_VISUAL_ID, &mut cfg_visual_id);
+                if cfg_visual_id as c_ulong != visual_id {
+                    continue;
+                }
+
+                // Check texture_from_pixmap support (RGB or RGBA)
+                let mut bind_rgb: c_int = 0;
+                let mut bind_rgba: c_int = 0;
+                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_RGB_EXT, &mut bind_rgb);
+                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_RGBA_EXT, &mut bind_rgba);
+
+                if bind_rgb == 0 && bind_rgba == 0 {
+                    continue;
+                }
+
+                // Check it supports 2D texture target
+                let mut tex_targets: c_int = 0;
+                glx::glXGetFBConfigAttrib(self.display, cfg, GLX_BIND_TO_TEXTURE_TARGETS_EXT, &mut tex_targets);
+                if tex_targets & GLX_TEXTURE_2D_BIT_EXT == 0 {
+                    continue;
+                }
+
+                log::info!(
+                    "Found FBConfig for visual 0x{:x}: bind_rgb={}, bind_rgba={}, tex_targets=0x{:x}",
+                    visual_id, bind_rgb, bind_rgba, tex_targets
+                );
+                matched = Some(cfg);
+                break;
+            }
+
+            xlib::XFree(configs as *mut c_void);
+
+            matched.ok_or_else(|| anyhow::anyhow!(
+                "No FBConfig found matching visual 0x{:x} with texture_from_pixmap support", visual_id
+            ))
         }
     }
 

@@ -42,7 +42,7 @@ echo "[$(date)] reposition: DP-0=${TOP_WIDTH}x${TOP_HEIGHT}+${TOP_X}+${TOP_Y} DP
 # Find emulator windows by title (supports Azahar, melonDS, Dolphin, etc.)
 PRIMARY=""
 SECONDARY=""
-for wid in $(xdotool search --name "Azahar\|melonDS\|Dolphin" 2>/dev/null); do
+for wid in $(xdotool search --name "Azahar|melonDS|Dolphin" 2>/dev/null); do
     name=$(xdotool getwindowname "$wid" 2>/dev/null)
     # Skip shader output windows
     echo "$name" | grep -q "^Shader: " && continue
@@ -85,16 +85,25 @@ if [ -n "$SECONDARY" ]; then
 fi
 
 # Position shader output windows on their respective displays (same positions)
+# Shader windows must be ABOVE emulator windows since NVFBC captures the composited display
 if [ -n "$SHADER_PRIMARY" ]; then
     echo "[$(date)] reposition: shader-primary $SHADER_PRIMARY -> ${TOP_X},${TOP_Y} ${TOP_WIDTH}x${TOP_HEIGHT}" >> "$LOG"
     xdotool windowmove "$SHADER_PRIMARY" "$TOP_X" "$TOP_Y"
     xdotool windowsize "$SHADER_PRIMARY" "$TOP_WIDTH" "$TOP_HEIGHT"
+    xdotool windowraise "$SHADER_PRIMARY"
 fi
 
 if [ -n "$SHADER_SECONDARY" ]; then
     echo "[$(date)] reposition: shader-secondary $SHADER_SECONDARY -> ${BOT_X},${BOT_Y} ${BOT_WIDTH}x${BOT_HEIGHT}" >> "$LOG"
     xdotool windowmove "$SHADER_SECONDARY" "$BOT_X" "$BOT_Y"
     xdotool windowsize "$SHADER_SECONDARY" "$BOT_WIDTH" "$BOT_HEIGHT"
+    xdotool windowraise "$SHADER_SECONDARY"
+fi
+
+# Apply dot cursor to bottom screen window for touch-friendly UX
+SCRIPT_DIR=$(dirname "$0")
+if [ -n "$SECONDARY" ] && [ -f "$SCRIPT_DIR/set-dot-cursor.py" ]; then
+    python3 "$SCRIPT_DIR/set-dot-cursor.py" >> "$LOG" 2>&1 &
 fi
 
 echo "[$(date)] reposition: done" >> "$LOG"

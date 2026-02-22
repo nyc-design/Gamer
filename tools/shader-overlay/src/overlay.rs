@@ -85,8 +85,9 @@ impl OverlayWindow {
                 bail!("Failed to create GLX window for output");
             }
 
-            // Map the window
+            // Map the window and raise above source (NVFBC captures composited display)
             xlib::XMapWindow(display, window);
+            xlib::XRaiseWindow(display, window);
             xlib::XFlush(display);
 
             log::info!("Created output window 0x{:x} '{}' at ({},{}) {}x{}", window, title, x, y, width, height);
@@ -136,6 +137,7 @@ impl OverlayWindow {
                 (xlib::CWX | xlib::CWY | xlib::CWWidth | xlib::CWHeight) as u32,
                 &mut changes,
             );
+            xlib::XRaiseWindow(self.display, self.window);
             self.width = width;
             self.height = height;
         }
