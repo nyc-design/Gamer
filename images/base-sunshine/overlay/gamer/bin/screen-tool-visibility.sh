@@ -34,6 +34,20 @@ CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 CAPTURE_OUTPUT_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_FILE:-/home/gamer/.cache/screen-tool.capture-output}"
 
+find_window_exact() {
+    local exact_name="$1"
+    local wid
+    for wid in $(xdotool search --name "$exact_name" 2>/dev/null); do
+        local got
+        got=$(xdotool getwindowname "$wid" 2>/dev/null || true)
+        if [ "$got" = "$exact_name" ]; then
+            echo "$wid"
+            return 0
+        fi
+    done
+    return 1
+}
+
 is_bottom_stream_connected() {
     # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
     # 48089 = control/RTSP, 48010 = video stream for bottom instance.
@@ -171,8 +185,8 @@ while true; do
     done
 
     # Find screen-tool window
-    SCREEN_TOOL_WID=$(xdotool search --name "^${SCREEN_TOOL_NAME}$" 2>/dev/null | head -1)
-    TOGGLE_WID=$(xdotool search --name "^${TOGGLE_NAME}$" 2>/dev/null | head -1)
+    SCREEN_TOOL_WID="$(find_window_exact "$SCREEN_TOOL_NAME" || true)"
+    TOGGLE_WID="$(find_window_exact "$TOGGLE_NAME" || true)"
 
     if [ -z "$SCREEN_TOOL_WID" ]; then
         if [ -n "$TOGGLE_WID" ]; then
