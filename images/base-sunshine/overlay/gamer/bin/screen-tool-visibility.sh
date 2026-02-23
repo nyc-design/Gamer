@@ -93,14 +93,14 @@ is_bottom_stream_connected() {
 # Wait for X server
 /gamer/bin/wait-x.sh
 
+# Default behavior on startup: keep ScreenTool hidden until explicitly toggled
+# on. Do this before waiting so initial connects don't briefly render ScreenTool.
+echo "force_hide" > "$MODE_FILE"
+
 # Wait for screen-tool to start
-sleep 8
+sleep 2
 
 echo "[screen-tool-visibility] Monitoring for '$PATTERN', managing '$SCREEN_TOOL_NAME'"
-
-# Default behavior on startup: keep ScreenTool hidden until explicitly toggled
-# on. This avoids stealing focus and transient startup latency spikes.
-echo "force_hide" > "$MODE_FILE"
 
 is_secondary_active_on_bottom() {
     local wid="$1"
@@ -301,6 +301,8 @@ while true; do
 
     if [ "$MODE" = "force_show" ]; then
         if [ "$HIDDEN" = "true" ]; then
+            # Reposition before mapping to avoid "show on top then jump to bottom".
+            pin_screen_tool_to_target "$SCREEN_TOOL_WID"
             xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
             HIDDEN=false
         fi
