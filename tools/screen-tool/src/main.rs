@@ -122,6 +122,7 @@ fn main() -> Result<()> {
     // Track which output NVFBC is currently capturing
     let mut current_output_idx = selected_idx;
     let mut last_output_refresh = Instant::now();
+    let mut last_desired_output_refresh = Instant::now();
     let mut current_capture_size = if !args.toggle_only && !gui.available_outputs.is_empty() {
         (
             gui.available_outputs[current_output_idx].width,
@@ -167,6 +168,25 @@ fn main() -> Result<()> {
             let cap = capture
                 .as_mut()
                 .expect("capture should exist in non-toggle-only mode");
+
+            // Optional external hint for which output should be cropped.
+            // Used by visibility helper so when the tool is on DP-0, crop defaults
+            // to DP-2 (and vice-versa) to avoid self-referential capture.
+            if last_desired_output_refresh.elapsed() >= Duration::from_millis(500) {
+                let desired_file = std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE")
+                    .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.capture-output".to_string());
+                if let Ok(raw) = std::fs::read_to_string(desired_file) {
+                    let desired = raw.trim();
+                    if !desired.is_empty() {
+                        if let Some(idx) = gui.available_outputs.iter().position(|o| o.name == desired) {
+                            if gui.selected_output_idx != idx {
+                                gui.selected_output_idx = idx;
+                            }
+                        }
+                    }
+                }
+                last_desired_output_refresh = Instant::now();
+            }
 
             // Output switching from GUI
             if gui.selected_output_idx != current_output_idx {

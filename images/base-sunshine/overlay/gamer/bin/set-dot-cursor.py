@@ -94,11 +94,11 @@ def find_bottom_windows(target="auto"):
     if target == "secondary":
         patterns = [secondary_pattern]
     elif target == "screentool":
-        patterns = ["^ScreenTool"]
+        patterns = ["^ScreenTool$"]
     elif target == "both":
-        patterns = [secondary_pattern, "^ScreenTool"]
+        patterns = [secondary_pattern, "^ScreenTool$"]
     else:
-        patterns = [secondary_pattern, "^ScreenTool"]
+        patterns = [secondary_pattern, "^ScreenTool$"]
 
     found = []
     seen = set()

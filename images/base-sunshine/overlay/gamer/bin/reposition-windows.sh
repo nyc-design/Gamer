@@ -44,11 +44,11 @@ echo "[$(date)] reposition: DP-0=${TOP_WIDTH}x${TOP_HEIGHT}+${TOP_X}+${TOP_Y} DP
 PRIMARY=""
 SECONDARY=""
 SCREEN_TOOL=""
-for wid in $(xdotool search --name "Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam|ScreenTool" 2>/dev/null); do
+for wid in $(xdotool search --name "Azahar|melonDS|Dolphin|PPSSPP|Ryujinx|Steam|ScreenTool$|ScreenTool[^A-Za-z0-9]" 2>/dev/null); do
     name=$(xdotool getwindowname "$wid" 2>/dev/null)
     # Skip shader output windows
     echo "$name" | grep -q "^Shader: " && continue
-    if echo "$name" | grep -q "^ScreenTool"; then
+    if echo "$name" | grep -q "^ScreenTool$"; then
         SCREEN_TOOL=$wid
     elif echo "$name" | grep -Eiq "$SECONDARY_PATTERN"; then
         SECONDARY=$wid

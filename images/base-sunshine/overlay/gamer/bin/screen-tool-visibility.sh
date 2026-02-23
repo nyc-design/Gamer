@@ -32,6 +32,7 @@ INACTIVE_DEBOUNCE_POLLS="${SCREEN_TOOL_VIS_INACTIVE_POLLS:-2}"
 CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
+CAPTURE_OUTPUT_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_FILE:-/home/gamer/.cache/screen-tool.capture-output}"
 
 is_bottom_stream_connected() {
     # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
@@ -93,8 +94,12 @@ pin_screen_tool_to_target() {
 
     if is_bottom_stream_connected; then
         target_display="DP-2"
+        # When tool is on bottom, default crop source should be top.
+        printf 'DP-0\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
     else
         target_display="DP-0"
+        # When tool is on top, default crop source should be bottom (avoid recursion).
+        printf 'DP-2\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
     fi
 
     target_info=$(xrandr --current 2>/dev/null | awk -v d="$target_display" '$1==d {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)

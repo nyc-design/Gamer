@@ -370,7 +370,7 @@ impl ScreenToolGui {
             .clamp(0.8, 3.0);
         Self {
             toggle_only: false,
-            active_tab: ToolTab::Crop,
+            active_tab: ToolTab::Performance,
             available_outputs: outputs,
             selected_output_idx: 0,
             zoom_level: 1.0,
