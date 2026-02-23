@@ -61,10 +61,6 @@ is_bottom_stream_connected() {
         if ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
             return 0
         fi
-        # UDP path: require an actual remote peer (not wildcard bind).
-        if ss -Huan 2>/dev/null | awk '$4 ~ /:48089$/ && $5 !~ /^\*:/ && $5 !~ /^0\.0\.0\.0:/ && $5 !~ /^\[::\]:/ { found=1 } END { exit(found ? 0 : 1) }'; then
-            return 0
-        fi
     fi
 
     # Fallback for minimal containers without `ss`
@@ -85,12 +81,26 @@ is_bottom_stream_connected() {
       NR>1 {
         split($2,a,":");
         lp=toupper(a[2]);
-        ra=toupper($3);
-        if (lp >= "BBD9" && ra != "00000000:0000" && ra != "00000000000000000000000000000000:0000") { found=1 }
+        if ($4=="01" && lp >= "BBD9") { found=1 }
       }
       END { exit(found ? 0 : 1) }
-    ' /proc/net/udp /proc/net/udp6 2>/dev/null; then
+    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
         return 0
+    fi
+
+    # Final fallback: Sunshine bottom keep-alives in log.
+    # Works for UDP-only clients and containers without `ss`.
+    if [ -f /gamer/log/sunshine-bottom.log ]; then
+        local line ts now epoch
+        line=$(tail -n 200 /gamer/log/sunshine-bottom.log 2>/dev/null | grep -E 'Connection -- keep-alive' | tail -n1 || true)
+        ts=$(echo "$line" | sed -n 's/^\[\([0-9-]\+ [0-9:]\+\)\..*/\1/p')
+        if [ -n "$ts" ]; then
+            now=$(date +%s)
+            epoch=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+            if [ $((now - epoch)) -le 5 ]; then
+                return 0
+            fi
+        fi
     fi
 
     return 1
