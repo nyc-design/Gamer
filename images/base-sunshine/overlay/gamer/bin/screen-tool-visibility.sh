@@ -80,6 +80,12 @@ sleep 8
 
 echo "[screen-tool-visibility] Monitoring for '$PATTERN', managing '$SCREEN_TOOL_NAME'"
 
+# Default behavior: keep ScreenTool hidden until explicitly toggled on.
+# This avoids stealing the top stream on connect.
+if [ ! -f "$MODE_FILE" ]; then
+    echo "force_hide" > "$MODE_FILE"
+fi
+
 is_secondary_active_on_bottom() {
     local wid="$1"
     local bot_info bot_w bot_h bot_x bot_y
@@ -258,6 +264,17 @@ while true; do
     TOGGLE_WID="$(find_window_exact "$TOGGLE_NAME" || true)"
 
     if [ -z "$SCREEN_TOOL_WID" ]; then
+        if [ -n "$TOGGLE_WID" ]; then
+            pin_toggle_button_to_target "$TOGGLE_WID"
+        fi
+        continue
+    fi
+
+    if [ "$MODE" = "force_hide" ]; then
+        if [ "$HIDDEN" = "false" ]; then
+            xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
+            HIDDEN=true
+        fi
         if [ -n "$TOGGLE_WID" ]; then
             pin_toggle_button_to_target "$TOGGLE_WID"
         fi

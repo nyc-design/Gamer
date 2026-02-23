@@ -13,18 +13,13 @@ if [ -f "$MODE_FILE" ]; then
   MODE="$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
 fi
 
-if [ "$REQUESTED_MODE" = "auto" ] || [ "$REQUESTED_MODE" = "force_show" ]; then
+if [ "$REQUESTED_MODE" = "auto" ] || [ "$REQUESTED_MODE" = "force_show" ] || [ "$REQUESTED_MODE" = "force_hide" ]; then
   NEXT_MODE="$REQUESTED_MODE"
 elif [ "$MODE" = "force_show" ]; then
-  NEXT_MODE="auto"
+  NEXT_MODE="force_hide"
 else
   NEXT_MODE="force_show"
 fi
 
-if [ "$NEXT_MODE" = "auto" ]; then
-  echo "auto" > "$MODE_FILE"
-  echo "[toggle-screen-tool] mode=auto"
-else
-  echo "force_show" > "$MODE_FILE"
-  echo "[toggle-screen-tool] mode=force_show"
-fi
+echo "$NEXT_MODE" > "$MODE_FILE"
+echo "[toggle-screen-tool] mode=$NEXT_MODE"

@@ -38,6 +38,13 @@
     <application class="*">
       <decor>no</decor>
     </application>
+    <!-- Keep tiny ScreenTool toggle above fullscreen emulator windows -->
+    <application title="ScreenToolToggle">
+      <layer>above</layer>
+      <skip_taskbar>yes</skip_taskbar>
+      <skip_pager>yes</skip_pager>
+      <decor>no</decor>
+    </application>
   </applications>
 
   <keyboard>
