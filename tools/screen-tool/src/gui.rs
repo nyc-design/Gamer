@@ -863,10 +863,11 @@ impl ScreenToolGui {
                         .unwrap_or(0.0)
                         .clamp(0.0, 100.0);
 
-                    let panel_w = (620.0 * scale).clamp(520.0, (ui.available_width() - 28.0).max(520.0));
-                    let panel_h = (ui.available_height() - 18.0).max(240.0);
+                    let bottom_reserved = 110.0 * scale;
+                    let panel_w = (ui.available_width() - 20.0).max(380.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
+                        ui.add_space(6.0 * scale);
                         egui::Frame::window(ui.style())
                             .inner_margin(egui::Margin::same((16.0 * scale) as i8))
                             .show(ui, |ui| {
@@ -897,10 +898,10 @@ impl ScreenToolGui {
                                             ui.label(egui::RichText::new(name).size(name_size));
                                             ui.add_space(6.0 * scale);
                                             let bar = egui::ProgressBar::new(pct / 100.0)
-                                                .desired_width(panel_w * 0.42)
+                                                .desired_width(panel_w * 0.50)
                                                 .fill(color)
                                                 .show_percentage();
-                                            ui.add_sized([panel_w * 0.42, bar_h], bar);
+                                            ui.add_sized([panel_w * 0.50, bar_h], bar);
                                             ui.add_space(6.0 * scale);
                                             ui.label(
                                                 egui::RichText::new(text)
@@ -1007,11 +1008,11 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let panel_w =
-                        (980.0 * scale).clamp(720.0, (ui.available_width() - 28.0).max(720.0));
-                    let panel_h = (ui.available_height() - 18.0).max(280.0);
+                    let bottom_reserved = 110.0 * scale;
+                    let panel_w = (ui.available_width() - 20.0).max(540.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(320.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
+                        ui.add_space(6.0 * scale);
                         egui::Frame::window(ui.style())
                             .inner_margin(egui::Margin::same((14.0 * scale) as i8))
                             .show(ui, |ui| {
@@ -1059,7 +1060,7 @@ impl ScreenToolGui {
                                         cols[1].heading("Presets");
 
                                         let (dirs, files) = list_shader_entries(&self.shader_current_dir);
-                                        let list_h = panel_h * 0.40;
+                                        let list_h = (panel_h * 0.55).max(160.0);
                                         egui::ScrollArea::vertical()
                                             .id_salt("shader_dirs_scroll")
                                             .max_height(list_h)
@@ -1154,9 +1155,31 @@ impl ScreenToolGui {
                                                     }
                                                 }
                                             }
+                                            if ui.button("Clear Shaders").clicked() {
+                                                let clear_primary = write_shader_file("primary", "");
+                                                let clear_secondary = write_shader_file("secondary", "");
+                                                if clear_primary.is_ok() && clear_secondary.is_ok() {
+                                                    self.shader_status = Some("Cleared shaders (top+bottom)".to_string());
+                                                } else {
+                                                    self.shader_status = Some("Failed to clear one or more shader targets".to_string());
+                                                }
+                                                self.shader_status_until =
+                                                    Some(Instant::now() + Duration::from_secs(4));
+                                            }
                                         });
                                     } else {
                                         ui.label("Select a shader preset file to enable apply buttons.");
+                                        if ui.button("Clear Shaders").clicked() {
+                                            let clear_primary = write_shader_file("primary", "");
+                                            let clear_secondary = write_shader_file("secondary", "");
+                                            if clear_primary.is_ok() && clear_secondary.is_ok() {
+                                                self.shader_status = Some("Cleared shaders (top+bottom)".to_string());
+                                            } else {
+                                                self.shader_status = Some("Failed to clear one or more shader targets".to_string());
+                                            }
+                                            self.shader_status_until =
+                                                Some(Instant::now() + Duration::from_secs(4));
+                                        }
                                     }
 
                                     if let Some(until) = self.shader_status_until {
@@ -1207,63 +1230,53 @@ impl ScreenToolGui {
         }
 
         // Always-visible, touch-friendly zoom controls for high-res displays.
-        let btn_w = 60.0 * scale;
-        let btn_h = 48.0 * scale;
-        let reset_h = 34.0 * scale;
-        let pad = 24.0;
-        egui::Area::new(egui::Id::new("quick_zoom_controls"))
-            .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
-            .order(egui::Order::Foreground)
-            .interactable(true)
-            .show(ctx, |ui| {
-                egui::Frame::window(ui.style())
-                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
-                    .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            if ui
-                                .add_sized(
-                                    [btn_w, btn_h],
-                                    egui::Button::new(egui::RichText::new("+").size(22.0 * scale)),
-                                )
-                                .clicked()
-                            {
-                                if self.active_tab == ToolTab::Crop {
+        if self.active_tab == ToolTab::Crop {
+            let btn_w = 60.0 * scale;
+            let btn_h = 48.0 * scale;
+            let reset_h = 34.0 * scale;
+            let pad = 24.0;
+            egui::Area::new(egui::Id::new("quick_zoom_controls"))
+                .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    egui::Frame::window(ui.style())
+                        .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                if ui
+                                    .add_sized(
+                                        [btn_w, btn_h],
+                                        egui::Button::new(egui::RichText::new("+").size(22.0 * scale)),
+                                    )
+                                    .clicked()
+                                {
                                     self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
-                                } else if self.active_tab == ToolTab::Performance {
-                                    self.ui_scale_user = (self.ui_scale_user + 0.1).clamp(0.8, 3.0);
                                 }
-                            }
-                            ui.add_space(8.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [btn_w, btn_h],
-                                    egui::Button::new(egui::RichText::new("−").size(22.0 * scale)),
-                                )
-                                .clicked()
-                            {
-                                if self.active_tab == ToolTab::Crop {
+                                ui.add_space(8.0 * scale);
+                                if ui
+                                    .add_sized(
+                                        [btn_w, btn_h],
+                                        egui::Button::new(egui::RichText::new("−").size(22.0 * scale)),
+                                    )
+                                    .clicked()
+                                {
                                     self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
-                                } else if self.active_tab == ToolTab::Performance {
-                                    self.ui_scale_user = (self.ui_scale_user - 0.1).clamp(0.8, 3.0);
                                 }
-                            }
-                            ui.add_space(8.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [btn_w, reset_h],
-                                    egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)),
-                                )
-                                .clicked()
-                            {
-                                if self.active_tab == ToolTab::Crop {
+                                ui.add_space(8.0 * scale);
+                                if ui
+                                    .add_sized(
+                                        [btn_w, reset_h],
+                                        egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)),
+                                    )
+                                    .clicked()
+                                {
                                     self.reset_view();
-                                } else {
-                                    self.ui_scale_user = 1.0;
                                 }
-                            }
+                            });
                         });
-                    });
-            });
+                });
+        }
 
         // Left-side vertical feature tabs (icon buttons) on top of all content.
         let tab_btn = 60.0 * scale;

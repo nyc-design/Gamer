@@ -32,6 +32,12 @@ CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 
+is_bottom_stream_connected() {
+    # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
+    # 48089 = control/RTSP, 48010 = video stream for bottom instance.
+    ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089|:48010)( |$)' >/dev/null 2>&1
+}
+
 # Wait for X server
 /gamer/bin/wait-x.sh
 
@@ -79,29 +85,35 @@ is_secondary_active_on_bottom() {
     [ "$win_w" -ge "$min_w" ] && [ "$win_h" -ge "$min_h" ] && [ "$dx" -le 140 ] && [ "$dy" -le 140 ]
 }
 
-pin_screen_tool_to_bottom() {
+pin_screen_tool_to_target() {
     local wid="$1"
-    local bot_info bot_w bot_h bot_x bot_y
+    local target_display target_info target_w target_h target_x target_y
     local cur_x cur_y cur_w cur_h
 
-    bot_info=$(xrandr --current 2>/dev/null | awk '/^DP-2 / {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
-    bot_w=$(echo "$bot_info" | cut -dx -f1)
-    bot_h=$(echo "$bot_info" | cut -dx -f2 | cut -d+ -f1)
-    bot_x=$(echo "$bot_info" | cut -d+ -f2)
-    bot_y=$(echo "$bot_info" | cut -d+ -f3)
+    if is_bottom_stream_connected; then
+        target_display="DP-2"
+    else
+        target_display="DP-0"
+    fi
 
-    [ -n "$bot_w" ] && [ -n "$bot_h" ] && [ -n "$bot_x" ] && [ -n "$bot_y" ] || return 0
+    target_info=$(xrandr --current 2>/dev/null | awk -v d="$target_display" '$1==d {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
+    target_w=$(echo "$target_info" | cut -dx -f1)
+    target_h=$(echo "$target_info" | cut -dx -f2 | cut -d+ -f1)
+    target_x=$(echo "$target_info" | cut -d+ -f2)
+    target_y=$(echo "$target_info" | cut -d+ -f3)
+
+    [ -n "$target_w" ] && [ -n "$target_h" ] && [ -n "$target_x" ] && [ -n "$target_y" ] || return 0
 
     eval "$(xdotool getwindowgeometry --shell "$wid" 2>/dev/null | sed 's/^X=/cur_x=/;s/^Y=/cur_y=/;s/^WIDTH=/cur_w=/;s/^HEIGHT=/cur_h=/')"
 
-    local target_geom="${bot_x},${bot_y},${bot_w},${bot_h}"
+    local target_geom="${target_x},${target_y},${target_w},${target_h}"
     if [ "$LAST_PINNED_GEOM" != "$target_geom" ] || \
-       [ "${cur_x:-}" != "$bot_x" ] || [ "${cur_y:-}" != "$bot_y" ] || \
-       [ "${cur_w:-}" != "$bot_w" ] || [ "${cur_h:-}" != "$bot_h" ]; then
-        xdotool windowmove "$wid" "$bot_x" "$bot_y" 2>/dev/null
-        xdotool windowsize "$wid" "$bot_w" "$bot_h" 2>/dev/null
+       [ "${cur_x:-}" != "$target_x" ] || [ "${cur_y:-}" != "$target_y" ] || \
+       [ "${cur_w:-}" != "$target_w" ] || [ "${cur_h:-}" != "$target_h" ]; then
+        xdotool windowmove "$wid" "$target_x" "$target_y" 2>/dev/null
+        xdotool windowsize "$wid" "$target_w" "$target_h" 2>/dev/null
         LAST_PINNED_GEOM="$target_geom"
-        echo "[screen-tool-visibility] Pinned screen-tool to DP-2 ${bot_w}x${bot_h}+${bot_x}+${bot_y}"
+        echo "[screen-tool-visibility] Pinned screen-tool to ${target_display} ${target_w}x${target_h}+${target_x}+${target_y}"
         if [ -x /gamer/bin/set-dot-cursor.py ]; then
             SECONDARY_PATTERN="$PATTERN" python3 /gamer/bin/set-dot-cursor.py --target both >/dev/null 2>&1 || true
         fi
@@ -139,7 +151,7 @@ while true; do
             HIDDEN=false
         fi
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
-        pin_screen_tool_to_bottom "$SCREEN_TOOL_WID"
+        pin_screen_tool_to_target "$SCREEN_TOOL_WID"
         continue
     fi
 
@@ -173,7 +185,7 @@ while true; do
     # Keep screen-tool anchored to DP-2 when visible so top-screen mode changes
     # cannot strand it on the primary display.
     if [ "$HIDDEN" = "false" ]; then
-        pin_screen_tool_to_bottom "$SCREEN_TOOL_WID"
+        pin_screen_tool_to_target "$SCREEN_TOOL_WID"
     fi
 
     # Periodically refresh dot cursor on both windows to survive cursor resets
