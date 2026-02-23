@@ -820,7 +820,7 @@ impl ScreenToolGui {
                     ui.label("Ctrl+1..3: Save crop slots");
                     ui.label("1..3: Recall crop slots");
                     ui.label("F5: Save screenshot");
-                    ui.label("Ctrl+Alt+F10: Toggle tool overlay");
+                    ui.label("Ctrl+Alt+F8: Toggle tool overlay");
                 });
         }
 

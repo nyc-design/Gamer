@@ -53,8 +53,8 @@
     <keybind key="A-F9">
       <action name="ToggleDecorations"/>
     </keybind>
-    <!-- Ctrl+Alt+F10 toggles screen-tool visibility mode (auto/force_show) -->
-    <keybind key="C-A-F10">
+    <!-- Ctrl+Alt+F8 toggles screen-tool visibility mode (auto/force_show) -->
+    <keybind key="C-A-F8">
       <action name="Execute">
         <command>/gamer/bin/toggle-screen-tool.sh</command>
       </action>
