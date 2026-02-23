@@ -114,6 +114,32 @@ is_secondary_active_on_bottom() {
     [ "$win_w" -ge "$min_w" ] && [ "$win_h" -ge "$min_h" ] && [ "$dx" -le 140 ] && [ "$dy" -le 140 ]
 }
 
+is_window_on_dp2() {
+    local wid="$1"
+    local bot_info bot_w bot_h bot_x bot_y
+    local abs_x abs_y win_w win_h
+
+    bot_info=$(xrandr --current 2>/dev/null | awk '/^DP-2 / {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
+    bot_w=$(echo "$bot_info" | cut -dx -f1)
+    bot_h=$(echo "$bot_info" | cut -dx -f2 | cut -d+ -f1)
+    bot_x=$(echo "$bot_info" | cut -d+ -f2)
+    bot_y=$(echo "$bot_info" | cut -d+ -f3)
+    [ -n "$bot_w" ] && [ -n "$bot_h" ] && [ -n "$bot_x" ] && [ -n "$bot_y" ] || return 1
+
+    abs_x=$(xwininfo -id "$wid" 2>/dev/null | awk -F: '/Absolute upper-left X/ {gsub(/^[ \t]+/, "", $2); print $2}')
+    abs_y=$(xwininfo -id "$wid" 2>/dev/null | awk -F: '/Absolute upper-left Y/ {gsub(/^[ \t]+/, "", $2); print $2}')
+    win_w=$(xwininfo -id "$wid" 2>/dev/null | awk -F: '/Width/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
+    win_h=$(xwininfo -id "$wid" 2>/dev/null | awk -F: '/Height/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
+    [ -n "$abs_x" ] && [ -n "$abs_y" ] && [ -n "$win_w" ] && [ -n "$win_h" ] || return 1
+
+    local min_w min_h dx dy
+    min_w=$((bot_w * 60 / 100))
+    min_h=$((bot_h * 60 / 100))
+    dx=$((abs_x - bot_x)); [ "$dx" -lt 0 ] && dx=$(( -dx ))
+    dy=$((abs_y - bot_y)); [ "$dy" -lt 0 ] && dy=$(( -dy ))
+    [ "$win_w" -ge "$min_w" ] && [ "$win_h" -ge "$min_h" ] && [ "$dx" -le 140 ] && [ "$dy" -le 140 ]
+}
+
 pin_screen_tool_to_target() {
     local wid="$1"
     local target_display target_info target_w target_h target_x target_y
@@ -235,7 +261,7 @@ while true; do
     fi
 
     # Debounce: require 2 consecutive active polls before hiding.
-    if [ "$ACTIVE_STREAK" -ge "$ACTIVE_DEBOUNCE_POLLS" ] && [ "$HIDDEN" = "false" ]; then
+    if [ "$ACTIVE_STREAK" -ge "$ACTIVE_DEBOUNCE_POLLS" ] && [ "$HIDDEN" = "false" ] && is_window_on_dp2 "$SCREEN_TOOL_WID"; then
         echo "[screen-tool-visibility] Secondary active, hiding screen-tool"
         xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
         HIDDEN=true
