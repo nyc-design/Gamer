@@ -51,7 +51,20 @@ find_window_exact() {
 is_bottom_stream_connected() {
     # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
     # 48089 = control/RTSP, 48010 = video stream for bottom instance.
-    ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089|:48010)( |$)' >/dev/null 2>&1
+    if command -v ss >/dev/null 2>&1; then
+        ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089|:48010)( |$)' >/dev/null 2>&1
+        return $?
+    fi
+
+    # Fallback for minimal containers without `ss`
+    awk '
+      $4=="01" {
+        split($2,a,":");
+        p=toupper(a[2]);
+        if (p=="BBD9" || p=="BB8A") { found=1 }
+      }
+      END { exit(found ? 0 : 1) }
+    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null
 }
 
 # Wait for X server
