@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/tmp/screen-tool.mode}"
+MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 SCREEN_TOOL_NAME="ScreenTool"
 SECONDARY_PATTERN="${SECONDARY_PATTERN:-Secondary Window|Bottom Screen|Subscreen|Screen 2}"
 REQUESTED_MODE="${1:-}"

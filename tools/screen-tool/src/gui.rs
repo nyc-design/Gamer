@@ -136,7 +136,7 @@ fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
 
 fn toggle_tool_mode_file() -> anyhow::Result<String> {
     let mode_file =
-        std::env::var("SCREEN_TOOL_MODE_FILE").unwrap_or_else(|_| "/tmp/screen-tool.mode".into());
+        std::env::var("SCREEN_TOOL_MODE_FILE").unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
     let current = std::fs::read_to_string(&mode_file)
         .unwrap_or_else(|_| "auto".into())
         .trim()
