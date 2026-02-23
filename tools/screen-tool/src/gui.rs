@@ -134,6 +134,22 @@ fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn toggle_tool_mode_file() -> anyhow::Result<String> {
+    let mode_file =
+        std::env::var("SCREEN_TOOL_MODE_FILE").unwrap_or_else(|_| "/tmp/screen-tool.mode".into());
+    let current = std::fs::read_to_string(&mode_file)
+        .unwrap_or_else(|_| "auto".into())
+        .trim()
+        .to_string();
+    let next = if current == "force_show" {
+        "auto"
+    } else {
+        "force_show"
+    };
+    std::fs::write(&mode_file, format!("{next}\n"))?;
+    Ok(next.to_string())
+}
+
 /// Raw GL resources for rendering a textured quad.
 struct QuadRenderer {
     program: glow::NativeProgram,
@@ -639,6 +655,18 @@ impl ScreenToolGui {
             if i.key_pressed(egui::Key::F5) {
                 self.screenshot_requested = true;
             }
+            if i.key_pressed(egui::Key::F8) {
+                match toggle_tool_mode_file() {
+                    Ok(mode) => {
+                        self.shader_status = Some(format!("Overlay mode: {}", mode));
+                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(3));
+                    }
+                    Err(e) => {
+                        self.shader_status = Some(format!("Toggle failed: {}", e));
+                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(3));
+                    }
+                }
+            }
             // Arrow key panning
             let pan_step = 0.05 / self.zoom_level;
             if i.key_pressed(egui::Key::ArrowLeft) {
@@ -835,16 +863,19 @@ impl ScreenToolGui {
                         .unwrap_or(0.0)
                         .clamp(0.0, 100.0);
 
-                    let panel_w = (620.0 * scale).clamp(520.0, ui.available_width() - 28.0);
+                    let panel_w = (620.0 * scale).clamp(520.0, (ui.available_width() - 28.0).max(520.0));
                     let panel_h = (ui.available_height() - 18.0).max(240.0);
-                    ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
-                    egui::Frame::window(ui.style())
-                        .inner_margin(egui::Margin::same((16.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.set_width(panel_w);
-                            egui::ScrollArea::vertical()
-                                .max_height(panel_h)
-                                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
+                        egui::Frame::window(ui.style())
+                            .inner_margin(egui::Margin::same((16.0 * scale) as i8))
+                            .show(ui, |ui| {
+                                ui.set_min_width(panel_w);
+                                ui.set_max_width(panel_w);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("perf_scroll")
+                                    .max_height(panel_h)
+                                    .show(ui, |ui| {
                                     ui.vertical_centered(|ui| {
                                         ui.heading(
                                             egui::RichText::new("Performance Monitor")
@@ -966,8 +997,9 @@ impl ScreenToolGui {
                                             );
                                             ui.end_row();
                                         });
-                                });
-                        });
+                                    });
+                            });
+                    });
                 });
         }
 
@@ -975,16 +1007,20 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let panel_w = (980.0 * scale).clamp(720.0, ui.available_width() - 28.0);
+                    let panel_w =
+                        (980.0 * scale).clamp(720.0, (ui.available_width() - 28.0).max(720.0));
                     let panel_h = (ui.available_height() - 18.0).max(280.0);
-                    ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
-                    egui::Frame::window(ui.style())
-                        .inner_margin(egui::Margin::same((14.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.set_width(panel_w);
-                            egui::ScrollArea::vertical()
-                                .max_height(panel_h)
-                                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        ui.add_space(((ui.available_height() - panel_h) * 0.5).max(0.0));
+                        egui::Frame::window(ui.style())
+                            .inner_margin(egui::Margin::same((14.0 * scale) as i8))
+                            .show(ui, |ui| {
+                                ui.set_min_width(panel_w);
+                                ui.set_max_width(panel_w);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("shader_outer_scroll")
+                                    .max_height(panel_h)
+                                    .show(ui, |ui| {
                                     ui.vertical_centered(|ui| {
                                         ui.heading(
                                             egui::RichText::new("Shader Presets")
@@ -1025,6 +1061,7 @@ impl ScreenToolGui {
                                         let (dirs, files) = list_shader_entries(&self.shader_current_dir);
                                         let list_h = panel_h * 0.40;
                                         egui::ScrollArea::vertical()
+                                            .id_salt("shader_dirs_scroll")
                                             .max_height(list_h)
                                             .show(&mut cols[0], |ui| {
                                                 for d in dirs {
@@ -1042,6 +1079,7 @@ impl ScreenToolGui {
                                                 }
                                             });
                                         egui::ScrollArea::vertical()
+                                            .id_salt("shader_files_scroll")
                                             .max_height(list_h)
                                             .show(&mut cols[1], |ui| {
                                                 for file in files {
@@ -1131,8 +1169,9 @@ impl ScreenToolGui {
                                         ui.add_space(8.0 * scale);
                                         ui.label(status);
                                     }
-                                });
-                        });
+                                    });
+                            });
+                    });
                 });
         }
 
@@ -1227,17 +1266,17 @@ impl ScreenToolGui {
             });
 
         // Left-side vertical feature tabs (icon buttons) on top of all content.
-        let tab_btn = 56.0 * scale;
+        let tab_btn = 60.0 * scale;
         let tab_pad = 24.0;
         egui::Area::new(egui::Id::new("feature_tab_controls"))
-            .anchor(egui::Align2::LEFT_CENTER, egui::vec2(tab_pad, 0.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -tab_pad))
             .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
                 egui::Frame::window(ui.style())
                     .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                     .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
+                        ui.horizontal_centered(|ui| {
                             if ui
                                 .add_sized(
                                     [tab_btn, tab_btn],
@@ -1249,7 +1288,7 @@ impl ScreenToolGui {
                             {
                                 self.active_tab = ToolTab::Crop;
                             }
-                            ui.add_space(8.0 * scale);
+                            ui.add_space(10.0 * scale);
                             if ui
                                 .add_sized(
                                     [tab_btn, tab_btn],
@@ -1261,7 +1300,7 @@ impl ScreenToolGui {
                             {
                                 self.active_tab = ToolTab::Performance;
                             }
-                            ui.add_space(8.0 * scale);
+                            ui.add_space(10.0 * scale);
                             if ui
                                 .add_sized(
                                     [tab_btn, tab_btn],
