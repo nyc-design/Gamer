@@ -79,6 +79,14 @@ is_bottom_stream_connected() {
         return 0
     fi
 
+    # Resolution-change fallback: when a bottom client is connected, DP-2 is
+    # usually switched away from the default 1920x1080 by setup-screen-mode.sh.
+    local dp2_mode
+    dp2_mode=$(xrandr --current 2>/dev/null | awk '/^DP-2 / {match($0, /[0-9]+x[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
+    if [ -n "$dp2_mode" ] && [ "$dp2_mode" != "1920x1080" ]; then
+        return 0
+    fi
+
     return 1
 }
 
