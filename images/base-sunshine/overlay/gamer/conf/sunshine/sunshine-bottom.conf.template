@@ -17,4 +17,4 @@ pkey = ${GAMER_DATA_DIR}/sunshine-bottom/pkey.pem
 cert = ${GAMER_DATA_DIR}/sunshine-bottom/cert.pem
 log_path = ${GAMER_LOG_DIR}/sunshine-bottom.log
 file_apps = ${GAMER_CONF_DIR}/sunshine/apps-bottom.json
-global_prep_cmd = [{"do":"/gamer/bin/setup-screen-mode.sh ${SUNSHINE_BOTTOM_DISPLAY}","undo":""}]
+global_prep_cmd = [{"do":"/gamer/bin/sunshine-stream-hook.sh start ${SUNSHINE_BOTTOM_DISPLAY}","undo":"/gamer/bin/sunshine-stream-hook.sh stop ${SUNSHINE_BOTTOM_DISPLAY}"}]

@@ -38,6 +38,7 @@ CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 CAPTURE_OUTPUT_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_FILE:-/home/gamer/.cache/screen-tool.capture-output}"
+STATE_DIR="${SCREEN_TOOL_STATE_DIR:-/home/gamer/.cache}"
 
 find_window_exact() {
     local exact_name="$1"
@@ -54,6 +55,11 @@ find_window_exact() {
 }
 
 is_bottom_stream_connected() {
+    # Primary source of truth: Sunshine hook toggles this file on stream start/stop.
+    if [ -f "${STATE_DIR}/stream-active-DP-2" ]; then
+        return 0
+    fi
+
     # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
     # 48089 is unique to the bottom Sunshine instance.
     if command -v ss >/dev/null 2>&1; then
@@ -88,26 +94,14 @@ is_bottom_stream_connected() {
         return 0
     fi
 
-    # Final fallback: Sunshine bottom keep-alives in log.
-    # Works for UDP-only clients and containers without `ss`.
-    if [ -f /gamer/log/sunshine-bottom.log ]; then
-        local line ts now epoch
-        line=$(tail -n 200 /gamer/log/sunshine-bottom.log 2>/dev/null | grep -E 'Connection -- keep-alive' | tail -n1 || true)
-        ts=$(echo "$line" | sed -n 's/^\[\([0-9-]\+ [0-9:]\+\)\..*/\1/p')
-        if [ -n "$ts" ]; then
-            now=$(date +%s)
-            epoch=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
-            if [ $((now - epoch)) -le 5 ]; then
-                return 0
-            fi
-        fi
-    fi
-
     return 1
 }
 
 # Wait for X server
 /gamer/bin/wait-x.sh
+
+# Clear stale state markers from previous runs.
+rm -f "${STATE_DIR}/stream-active-DP-0" "${STATE_DIR}/stream-active-DP-2" 2>/dev/null || true
 
 # Default behavior on startup: keep ScreenTool hidden until explicitly toggled
 # on. Do this before waiting so initial connects don't briefly render ScreenTool.
