@@ -218,6 +218,7 @@ pin_toggle_button_to_target() {
     y=$((target_y + (target_h / 2) - (btn / 2)))
     xdotool windowsize "$wid" "$btn" "$btn" 2>/dev/null || true
     xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
+    xprop -id "$wid" -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE "_NET_WM_WINDOW_TYPE_DOCK" >/dev/null 2>&1 || true
     xprop -id "$wid" -f _NET_WM_STATE 32a -set _NET_WM_STATE "_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY" >/dev/null 2>&1 || true
     xdotool windowraise "$wid" 2>/dev/null || true
 }
