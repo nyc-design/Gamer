@@ -134,20 +134,26 @@ fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn set_tool_mode_file(mode: &str) -> anyhow::Result<String> {
+    let mode_file = std::env::var("SCREEN_TOOL_MODE_FILE")
+        .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
+    std::fs::write(&mode_file, format!("{mode}\n"))?;
+    Ok(mode.to_string())
+}
+
 fn toggle_tool_mode_file() -> anyhow::Result<String> {
-    let mode_file =
-        std::env::var("SCREEN_TOOL_MODE_FILE").unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
+    let mode_file = std::env::var("SCREEN_TOOL_MODE_FILE")
+        .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
     let current = std::fs::read_to_string(&mode_file)
         .unwrap_or_else(|_| "auto".into())
         .trim()
         .to_string();
     let next = if current == "force_show" {
-        "auto"
+        "force_hide"
     } else {
         "force_show"
     };
-    std::fs::write(&mode_file, format!("{next}\n"))?;
-    Ok(next.to_string())
+    set_tool_mode_file(next)
 }
 
 /// Raw GL resources for rendering a textured quad.
@@ -658,6 +664,24 @@ impl ScreenToolGui {
             return;
         }
 
+        // In-window emergency hide control so users can always dismiss the
+        // overlay even if the external toggle is obscured by WM stacking.
+        egui::Area::new("overlay_hide_btn".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(12.0, 12.0))
+            .show(ctx, |ui| {
+                ui.set_min_size(egui::vec2(54.0, 36.0));
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("Hide").strong())
+                            .fill(egui::Color32::from_rgb(52, 24, 28)),
+                    )
+                    .clicked()
+                {
+                    let _ = set_tool_mode_file("force_hide");
+                }
+            });
+
         // Track FPS
         self.frame_count += 1;
         let elapsed = self.last_fps_time.elapsed().as_secs_f32();
@@ -912,19 +936,19 @@ impl ScreenToolGui {
                                     .id_salt("perf_scroll")
                                     .max_height(panel_h)
                                     .show(ui, |ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.heading(
-                                            egui::RichText::new("Performance Monitor")
-                                                .size(28.0 * scale),
-                                        );
-                                    });
-                                    ui.add_space(8.0 * scale);
+                                        ui.vertical_centered(|ui| {
+                                            ui.heading(
+                                                egui::RichText::new("Performance Monitor")
+                                                    .size(28.0 * scale),
+                                            );
+                                        });
+                                        ui.add_space(8.0 * scale);
 
-                                    let bar_h = 16.0 * scale;
-                                    let name_size = 16.0 * scale;
-                                    let value_size = 20.0 * scale;
+                                        let bar_h = 16.0 * scale;
+                                        let name_size = 16.0 * scale;
+                                        let value_size = 20.0 * scale;
 
-                                    let draw_metric = |ui: &mut egui::Ui,
+                                        let draw_metric = |ui: &mut egui::Ui,
                                                        name: &str,
                                                        pct: f32,
                                                        text: String,
@@ -946,93 +970,96 @@ impl ScreenToolGui {
                                         });
                                     };
 
-                                    draw_metric(
-                                        ui,
-                                        "CPU",
-                                        cpu,
-                                        format!("{:.1}%", cpu),
-                                        egui::Color32::from_rgb(242, 135, 68),
-                                    );
-                                    draw_metric(
-                                        ui,
-                                        "RAM",
-                                        ram,
-                                        format!(
-                                            "{:.1}/{:.1} GiB",
-                                            self.system_stats.ram_used_gib,
-                                            self.system_stats.ram_total_gib
-                                        ),
-                                        egui::Color32::from_rgb(108, 176, 255),
-                                    );
-                                    draw_metric(
-                                        ui,
-                                        "GPU",
-                                        gpu,
-                                        self.system_stats
-                                            .gpu_usage_pct
-                                            .map(|v| format!("{:.0}%", v))
-                                            .unwrap_or_else(|| "N/A".to_string()),
-                                        egui::Color32::from_rgb(109, 212, 128),
-                                    );
+                                        draw_metric(
+                                            ui,
+                                            "CPU",
+                                            cpu,
+                                            format!("{:.1}%", cpu),
+                                            egui::Color32::from_rgb(242, 135, 68),
+                                        );
+                                        draw_metric(
+                                            ui,
+                                            "RAM",
+                                            ram,
+                                            format!(
+                                                "{:.1}/{:.1} GiB",
+                                                self.system_stats.ram_used_gib,
+                                                self.system_stats.ram_total_gib
+                                            ),
+                                            egui::Color32::from_rgb(108, 176, 255),
+                                        );
+                                        draw_metric(
+                                            ui,
+                                            "GPU",
+                                            gpu,
+                                            self.system_stats
+                                                .gpu_usage_pct
+                                                .map(|v| format!("{:.0}%", v))
+                                                .unwrap_or_else(|| "N/A".to_string()),
+                                            egui::Color32::from_rgb(109, 212, 128),
+                                        );
 
-                                    ui.separator();
-                                    egui::Grid::new("perf_grid_bottom")
-                                        .num_columns(2)
-                                        .spacing([18.0 * scale, 8.0 * scale])
-                                        .show(ui, |ui| {
-                                            ui.label(
-                                                egui::RichText::new("Top-screen FPS")
-                                                    .size(name_size),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{:.0}",
-                                                    self.capture_fps
-                                                ))
-                                                .size(value_size)
-                                                .strong(),
-                                            );
-                                            ui.end_row();
-                                            ui.label(
-                                                egui::RichText::new("Render FPS").size(name_size),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(format!("{:.0}", self.fps))
+                                        ui.separator();
+                                        egui::Grid::new("perf_grid_bottom")
+                                            .num_columns(2)
+                                            .spacing([18.0 * scale, 8.0 * scale])
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Top-screen FPS")
+                                                        .size(name_size),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "{:.0}",
+                                                        self.capture_fps
+                                                    ))
                                                     .size(value_size)
                                                     .strong(),
-                                            );
-                                            ui.end_row();
-                                            ui.label(
-                                                egui::RichText::new("GPU memory").size(name_size),
-                                            );
-                                            let gpu_mem_text = match (
-                                                self.system_stats.gpu_mem_used_mib,
-                                                self.system_stats.gpu_mem_total_mib,
-                                            ) {
-                                                (Some(used), Some(total)) => {
-                                                    format!("{} / {} MiB", used, total)
-                                                }
-                                                _ => "N/A".to_string(),
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(gpu_mem_text)
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Render FPS")
+                                                        .size(name_size),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(format!("{:.0}", self.fps))
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("GPU memory")
+                                                        .size(name_size),
+                                                );
+                                                let gpu_mem_text = match (
+                                                    self.system_stats.gpu_mem_used_mib,
+                                                    self.system_stats.gpu_mem_total_mib,
+                                                ) {
+                                                    (Some(used), Some(total)) => {
+                                                        format!("{} / {} MiB", used, total)
+                                                    }
+                                                    _ => "N/A".to_string(),
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(gpu_mem_text)
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Capture size")
+                                                        .size(name_size),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "{} x {}",
+                                                        self.capture_size.0, self.capture_size.1
+                                                    ))
                                                     .size(value_size)
                                                     .strong(),
-                                            );
-                                            ui.end_row();
-                                            ui.label(
-                                                egui::RichText::new("Capture size").size(name_size),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} x {}",
-                                                    self.capture_size.0, self.capture_size.1
-                                                ))
-                                                .size(value_size)
-                                                .strong(),
-                                            );
-                                            ui.end_row();
-                                        });
+                                                );
+                                                ui.end_row();
+                                            });
                                     });
                             });
                     });
@@ -1282,7 +1309,9 @@ impl ScreenToolGui {
                                 if ui
                                     .add_sized(
                                         [btn_w, btn_h],
-                                        egui::Button::new(egui::RichText::new("+").size(22.0 * scale)),
+                                        egui::Button::new(
+                                            egui::RichText::new("+").size(22.0 * scale),
+                                        ),
                                     )
                                     .clicked()
                                 {
@@ -1292,7 +1321,9 @@ impl ScreenToolGui {
                                 if ui
                                     .add_sized(
                                         [btn_w, btn_h],
-                                        egui::Button::new(egui::RichText::new("−").size(22.0 * scale)),
+                                        egui::Button::new(
+                                            egui::RichText::new("−").size(22.0 * scale),
+                                        ),
                                     )
                                     .clicked()
                                 {
@@ -1302,7 +1333,9 @@ impl ScreenToolGui {
                                 if ui
                                     .add_sized(
                                         [btn_w, reset_h],
-                                        egui::Button::new(egui::RichText::new("1x").size(16.0 * scale)),
+                                        egui::Button::new(
+                                            egui::RichText::new("1x").size(16.0 * scale),
+                                        ),
                                     )
                                     .clicked()
                                 {

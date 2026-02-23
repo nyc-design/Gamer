@@ -57,19 +57,39 @@ is_bottom_stream_connected() {
     # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
     # 48089 is unique to the bottom Sunshine instance.
     if command -v ss >/dev/null 2>&1; then
-        ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1
-        return $?
+        # TCP control channel (common path)
+        if ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
+            return 0
+        fi
+        # UDP/QUIC path on some clients/builds
+        if ss -Huan 2>/dev/null | awk '{print $4, $5}' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
+            return 0
+        fi
     fi
 
     # Fallback for minimal containers without `ss`
-    awk '
+    if awk '
       $4=="01" {
         split($2,a,":");
         p=toupper(a[2]);
         if (p=="BBD9") { found=1 }
       }
       END { exit(found ? 0 : 1) }
-    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        return 0
+    fi
+
+    # Last fallback: active bottom-stream keep-alive updates sunshine-bottom.log
+    # frequently while a client is connected.
+    if [ -f /gamer/log/sunshine-bottom.log ]; then
+        local now ts
+        now=$(date +%s)
+        ts=$(stat -c %Y /gamer/log/sunshine-bottom.log 2>/dev/null || echo 0)
+        if [ $((now - ts)) -le 5 ]; then
+            return 0
+        fi
+    fi
+    return 1
 }
 
 # Wait for X server
