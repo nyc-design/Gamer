@@ -166,8 +166,8 @@ while true; do
     done
 
     # Find screen-tool window
-    SCREEN_TOOL_WID=$(xdotool search --name "$SCREEN_TOOL_NAME" 2>/dev/null | head -1)
-    TOGGLE_WID=$(xdotool search --name "$TOGGLE_NAME" 2>/dev/null | head -1)
+    SCREEN_TOOL_WID=$(xdotool search --name "^${SCREEN_TOOL_NAME}$" 2>/dev/null | head -1)
+    TOGGLE_WID=$(xdotool search --name "^${TOGGLE_NAME}$" 2>/dev/null | head -1)
 
     if [ -z "$SCREEN_TOOL_WID" ]; then
         if [ -n "$TOGGLE_WID" ]; then
