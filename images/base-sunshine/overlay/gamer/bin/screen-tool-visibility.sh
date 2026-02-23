@@ -68,14 +68,28 @@ is_bottom_stream_connected() {
     fi
 
     # Fallback for minimal containers without `ss`
+    # Detect any connected socket on "bottom instance range" local ports.
+    # Bottom control starts at 48089 (hex BBD9); top starts lower (47989 / BB75).
     if awk '
-      $4=="01" {
+      NR>1 {
         split($2,a,":");
-        p=toupper(a[2]);
-        if (p=="BBD9") { found=1 }
+        lp=toupper(a[2]);
+        st=$4;
+        if (st=="01" && lp >= "BBD9") { found=1 }
       }
       END { exit(found ? 0 : 1) }
     ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        return 0
+    fi
+    if awk '
+      NR>1 {
+        split($2,a,":");
+        lp=toupper(a[2]);
+        ra=toupper($3);
+        if (lp >= "BBD9" && ra != "00000000:0000" && ra != "00000000000000000000000000000000:0000") { found=1 }
+      }
+      END { exit(found ? 0 : 1) }
+    ' /proc/net/udp /proc/net/udp6 2>/dev/null; then
         return 0
     fi
 
