@@ -23,3 +23,14 @@ fi
 
 echo "$NEXT_MODE" > "$MODE_FILE"
 echo "[toggle-screen-tool] mode=$NEXT_MODE"
+
+# Apply immediately (visibility daemon still enforces ongoing policy).
+WID="$(xdotool search --name '^ScreenTool$' 2>/dev/null | head -n1 || true)"
+if [ -n "$WID" ]; then
+  if [ "$NEXT_MODE" = "force_show" ]; then
+    xdotool windowmap "$WID" 2>/dev/null || true
+    xdotool windowraise "$WID" 2>/dev/null || true
+  elif [ "$NEXT_MODE" = "force_hide" ]; then
+    xdotool windowunmap "$WID" 2>/dev/null || true
+  fi
+fi

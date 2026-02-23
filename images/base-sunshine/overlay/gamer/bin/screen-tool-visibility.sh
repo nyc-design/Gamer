@@ -61,10 +61,6 @@ is_bottom_stream_connected() {
         if ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
             return 0
         fi
-        # UDP/QUIC path on some clients/builds
-        if ss -Huan 2>/dev/null | awk '{print $4, $5}' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
-            return 0
-        fi
     fi
 
     # Fallback for minimal containers without `ss`
@@ -226,6 +222,7 @@ pin_toggle_button_to_target() {
     local x y
     x=$((target_x + target_w - btn - margin))
     y=$((target_y + (target_h / 2) - (btn / 2)))
+    xdotool windowmap "$wid" 2>/dev/null || true
     xdotool windowsize "$wid" "$btn" "$btn" 2>/dev/null || true
     xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
     xprop -id "$wid" -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE "_NET_WM_WINDOW_TYPE_DOCK" >/dev/null 2>&1 || true

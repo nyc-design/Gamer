@@ -134,13 +134,6 @@ fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn set_tool_mode_file(mode: &str) -> anyhow::Result<String> {
-    let mode_file = std::env::var("SCREEN_TOOL_MODE_FILE")
-        .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
-    std::fs::write(&mode_file, format!("{mode}\n"))?;
-    Ok(mode.to_string())
-}
-
 fn toggle_tool_mode_file() -> anyhow::Result<String> {
     let mode_file = std::env::var("SCREEN_TOOL_MODE_FILE")
         .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
@@ -153,7 +146,8 @@ fn toggle_tool_mode_file() -> anyhow::Result<String> {
     } else {
         "force_show"
     };
-    set_tool_mode_file(next)
+    std::fs::write(&mode_file, format!("{next}\n"))?;
+    Ok(next.to_string())
 }
 
 /// Raw GL resources for rendering a textured quad.
@@ -663,24 +657,6 @@ impl ScreenToolGui {
                 });
             return;
         }
-
-        // In-window emergency hide control so users can always dismiss the
-        // overlay even if the external toggle is obscured by WM stacking.
-        egui::Area::new("overlay_hide_btn".into())
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(12.0, 12.0))
-            .show(ctx, |ui| {
-                ui.set_min_size(egui::vec2(54.0, 36.0));
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("Hide").strong())
-                            .fill(egui::Color32::from_rgb(52, 24, 28)),
-                    )
-                    .clicked()
-                {
-                    let _ = set_tool_mode_file("force_hide");
-                }
-            });
 
         // Track FPS
         self.frame_count += 1;

@@ -48,42 +48,129 @@ impl AppWindow {
             let screen = xlib::XDefaultScreen(display);
             let root = xlib::XRootWindow(display, screen);
             let visual = glx::glXGetVisualFromFBConfig(display, gl.output_fb_config);
-            if visual.is_null() { bail!("No visual for output window"); }
+            if visual.is_null() {
+                bail!("No visual for output window");
+            }
 
             let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
             swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
-            swa.event_mask = xlib::StructureNotifyMask | xlib::ExposureMask
-                | xlib::ButtonPressMask | xlib::ButtonReleaseMask | xlib::PointerMotionMask
-                | xlib::KeyPressMask | xlib::KeyReleaseMask
-                | xlib::FocusChangeMask | xlib::EnterWindowMask | xlib::LeaveWindowMask;
+            swa.event_mask = xlib::StructureNotifyMask
+                | xlib::ExposureMask
+                | xlib::ButtonPressMask
+                | xlib::ButtonReleaseMask
+                | xlib::PointerMotionMask
+                | xlib::KeyPressMask
+                | xlib::KeyReleaseMask
+                | xlib::FocusChangeMask
+                | xlib::EnterWindowMask
+                | xlib::LeaveWindowMask;
 
             let window = xlib::XCreateWindow(
-                display, root, x, y, width, height, 0,
-                (*visual).depth, xlib::InputOutput as u32, (*visual).visual,
-                xlib::CWColormap | xlib::CWEventMask, &mut swa,
+                display,
+                root,
+                x,
+                y,
+                width,
+                height,
+                0,
+                (*visual).depth,
+                xlib::InputOutput as u32,
+                (*visual).visual,
+                xlib::CWColormap | xlib::CWEventMask,
+                &mut swa,
             );
             xlib::XFree(visual as *mut c_void);
-            if window == 0 { bail!("Failed to create window"); }
+            if window == 0 {
+                bail!("Failed to create window");
+            }
 
             // Set window title (both legacy and _NET_WM_NAME)
             let title_c = std::ffi::CString::new(title).unwrap();
             xlib::XStoreName(display, window, title_c.as_ptr());
             let atom_name = xlib::XInternAtom(display, b"_NET_WM_NAME\0".as_ptr() as *const _, 0);
             let atom_utf8 = xlib::XInternAtom(display, b"UTF8_STRING\0".as_ptr() as *const _, 0);
-            xlib::XChangeProperty(display, window, atom_name, atom_utf8, 8, xlib::PropModeReplace, title.as_ptr(), title.len() as i32);
+            xlib::XChangeProperty(
+                display,
+                window,
+                atom_name,
+                atom_utf8,
+                8,
+                xlib::PropModeReplace,
+                title.as_ptr(),
+                title.len() as i32,
+            );
 
-            // Set window type to normal
-            let atom_type = xlib::XInternAtom(display, b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const _, 0);
-            let atom_normal = xlib::XInternAtom(display, b"_NET_WM_WINDOW_TYPE_NORMAL\0".as_ptr() as *const _, 0);
-            xlib::XChangeProperty(display, window, atom_type, xlib::XA_ATOM, 32, xlib::PropModeReplace, &atom_normal as *const c_ulong as *const u8, 1);
+            // Set window type (toggle helper should behave like a tiny dock so it
+            // stays above fullscreen emulator surfaces).
+            let atom_type =
+                xlib::XInternAtom(display, b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const _, 0);
+            let atom_normal = xlib::XInternAtom(
+                display,
+                b"_NET_WM_WINDOW_TYPE_NORMAL\0".as_ptr() as *const _,
+                0,
+            );
+            let atom_dock = xlib::XInternAtom(
+                display,
+                b"_NET_WM_WINDOW_TYPE_DOCK\0".as_ptr() as *const _,
+                0,
+            );
+            let atom_kind = if title == "ScreenToolToggle" {
+                atom_dock
+            } else {
+                atom_normal
+            };
+            xlib::XChangeProperty(
+                display,
+                window,
+                atom_type,
+                xlib::XA_ATOM,
+                32,
+                xlib::PropModeReplace,
+                &atom_kind as *const c_ulong as *const u8,
+                1,
+            );
+
+            if title == "ScreenToolToggle" {
+                let atom_state =
+                    xlib::XInternAtom(display, b"_NET_WM_STATE\0".as_ptr() as *const _, 0);
+                let atom_above =
+                    xlib::XInternAtom(display, b"_NET_WM_STATE_ABOVE\0".as_ptr() as *const _, 0);
+                let atom_sticky =
+                    xlib::XInternAtom(display, b"_NET_WM_STATE_STICKY\0".as_ptr() as *const _, 0);
+                let atom_skip_taskbar = xlib::XInternAtom(
+                    display,
+                    b"_NET_WM_STATE_SKIP_TASKBAR\0".as_ptr() as *const _,
+                    0,
+                );
+                let atom_skip_pager = xlib::XInternAtom(
+                    display,
+                    b"_NET_WM_STATE_SKIP_PAGER\0".as_ptr() as *const _,
+                    0,
+                );
+                let mut states = [atom_above, atom_sticky, atom_skip_taskbar, atom_skip_pager];
+                xlib::XChangeProperty(
+                    display,
+                    window,
+                    atom_state,
+                    xlib::XA_ATOM,
+                    32,
+                    xlib::PropModeReplace,
+                    states.as_mut_ptr() as *const u8,
+                    states.len() as i32,
+                );
+            }
 
             // Register for WM_DELETE_WINDOW
-            let wm_delete_window = xlib::XInternAtom(display, b"WM_DELETE_WINDOW\0".as_ptr() as *const _, 0);
+            let wm_delete_window =
+                xlib::XInternAtom(display, b"WM_DELETE_WINDOW\0".as_ptr() as *const _, 0);
             let mut protocols = [wm_delete_window];
             xlib::XSetWMProtocols(display, window, protocols.as_mut_ptr(), 1);
 
-            let glx_window = glx::glXCreateWindow(display, gl.output_fb_config, window, ptr::null());
-            if glx_window == 0 { bail!("Failed to create GLX window"); }
+            let glx_window =
+                glx::glXCreateWindow(display, gl.output_fb_config, window, ptr::null());
+            if glx_window == 0 {
+                bail!("Failed to create GLX window");
+            }
             glx::glXMakeCurrent(display, glx_window, gl.glx_context);
 
             // Map window and wait for MapNotify
@@ -92,7 +179,9 @@ impl AppWindow {
             let mut ev: xlib::XEvent = std::mem::zeroed();
             loop {
                 xlib::XMaskEvent(display, xlib::StructureNotifyMask, &mut ev);
-                if ev.type_ == xlib::MapNotify && ev.map.window == window { break; }
+                if ev.type_ == xlib::MapNotify && ev.map.window == window {
+                    break;
+                }
             }
 
             let egui_ctx = egui::Context::default();
@@ -100,17 +189,36 @@ impl AppWindow {
                 .map_err(|e| anyhow::anyhow!("egui Painter init failed: {}", e))?;
 
             let raw_input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width as f32, height as f32))),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(width as f32, height as f32),
+                )),
                 ..Default::default()
             };
 
-            log::info!("AppWindow 0x{:x} '{}' at ({},{}) {}x{}", window, title, x, y, width, height);
+            log::info!(
+                "AppWindow 0x{:x} '{}' at ({},{}) {}x{}",
+                window,
+                title,
+                x,
+                y,
+                width,
+                height
+            );
 
             Ok(Self {
-                display, window, glx_window, width, height,
+                display,
+                window,
+                glx_window,
+                width,
+                height,
                 glx_context: gl.glx_context,
-                egui_ctx, egui_painter, raw_input, modifiers: egui::Modifiers::NONE,
-                start_time: Instant::now(), pending_output: None,
+                egui_ctx,
+                egui_painter,
+                raw_input,
+                modifiers: egui::Modifiers::NONE,
+                start_time: Instant::now(),
+                pending_output: None,
                 wm_delete_window,
             })
         }
@@ -139,7 +247,13 @@ impl AppWindow {
                             let new_w = e.width as u32;
                             let new_h = e.height as u32;
                             if new_w != self.width || new_h != self.height {
-                                log::info!("Window resized: {}x{} -> {}x{}", self.width, self.height, new_w, new_h);
+                                log::info!(
+                                    "Window resized: {}x{} -> {}x{}",
+                                    self.width,
+                                    self.height,
+                                    new_w,
+                                    new_h
+                                );
                                 self.width = new_w;
                                 self.height = new_h;
                                 self.raw_input.screen_rect = Some(egui::Rect::from_min_size(
@@ -147,7 +261,11 @@ impl AppWindow {
                                     egui::vec2(new_w as f32, new_h as f32),
                                 ));
                                 // Re-bind GLX context to force framebuffer resize on NVIDIA
-                                glx::glXMakeCurrent(self.display, self.glx_window, self.glx_context);
+                                glx::glXMakeCurrent(
+                                    self.display,
+                                    self.glx_window,
+                                    self.glx_context,
+                                );
                             }
                         }
                     }
@@ -209,9 +327,11 @@ impl AppWindow {
                     xlib::MotionNotify => {
                         let e = event.motion;
                         if e.window == self.window {
-                            self.raw_input.events.push(egui::Event::PointerMoved(
-                                egui::pos2(e.x as f32, e.y as f32),
-                            ));
+                            self.raw_input
+                                .events
+                                .push(egui::Event::PointerMoved(egui::pos2(
+                                    e.x as f32, e.y as f32,
+                                )));
                         }
                     }
                     xlib::KeyPress | xlib::KeyRelease => {
@@ -245,14 +365,19 @@ impl AppWindow {
                             let mut buf = [0u8; 8];
                             let mut keysym_out: c_ulong = 0;
                             let len = xlib::XLookupString(
-                                &mut event.key as *mut _, buf.as_mut_ptr() as *mut _, 8,
-                                &mut keysym_out, ptr::null_mut(),
+                                &mut event.key as *mut _,
+                                buf.as_mut_ptr() as *mut _,
+                                8,
+                                &mut keysym_out,
+                                ptr::null_mut(),
                             );
                             if len > 0 {
                                 if let Ok(s) = std::str::from_utf8(&buf[..len as usize]) {
                                     let ch = s.chars().next().unwrap_or('\0');
                                     if !ch.is_control() {
-                                        self.raw_input.events.push(egui::Event::Text(s.to_string()));
+                                        self.raw_input
+                                            .events
+                                            .push(egui::Event::Text(s.to_string()));
                                     }
                                 }
                             }
@@ -266,9 +391,11 @@ impl AppWindow {
                     }
                     xlib::EnterNotify => {
                         let e = event.crossing;
-                        self.raw_input.events.push(egui::Event::PointerMoved(
-                            egui::pos2(e.x as f32, e.y as f32),
-                        ));
+                        self.raw_input
+                            .events
+                            .push(egui::Event::PointerMoved(egui::pos2(
+                                e.x as f32, e.y as f32,
+                            )));
                     }
                     xlib::LeaveNotify => {
                         self.raw_input.events.push(egui::Event::PointerGone);
@@ -294,7 +421,9 @@ impl AppWindow {
     pub fn end_frame(&mut self, gl: &GlState) {
         let full_output = self.pending_output.take().expect("begin_frame not called");
 
-        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        let clipped_primitives = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
         self.egui_painter.paint_and_update_textures(
             [self.width, self.height],
             full_output.pixels_per_point,
@@ -318,7 +447,6 @@ impl AppWindow {
             }
         }
     }
-
 }
 
 impl Drop for AppWindow {
