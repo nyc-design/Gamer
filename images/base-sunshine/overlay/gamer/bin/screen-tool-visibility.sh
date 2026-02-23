@@ -287,6 +287,9 @@ while true; do
     fi
 
     if [ "$MODE" = "force_hide" ]; then
+        # Keep geometry pinned even while hidden so the next show does not
+        # briefly appear on the previous display.
+        pin_screen_tool_to_target "$SCREEN_TOOL_WID"
         if [ "$HIDDEN" = "false" ]; then
             xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null
             HIDDEN=true
