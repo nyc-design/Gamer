@@ -61,6 +61,10 @@ is_bottom_stream_connected() {
         if ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
             return 0
         fi
+        # UDP path: require an actual remote peer (not wildcard bind).
+        if ss -Huan 2>/dev/null | awk '$4 ~ /:48089$/ && $5 !~ /^\*:/ && $5 !~ /^0\.0\.0\.0:/ && $5 !~ /^\[::\]:/ { found=1 } END { exit(found ? 0 : 1) }'; then
+            return 0
+        fi
     fi
 
     # Fallback for minimal containers without `ss`
@@ -86,11 +90,9 @@ sleep 8
 
 echo "[screen-tool-visibility] Monitoring for '$PATTERN', managing '$SCREEN_TOOL_NAME'"
 
-# Default behavior: keep ScreenTool hidden until explicitly toggled on.
-# This avoids stealing the top stream on connect.
-if [ ! -f "$MODE_FILE" ]; then
-    echo "force_hide" > "$MODE_FILE"
-fi
+# Default behavior on startup: keep ScreenTool hidden until explicitly toggled
+# on. This avoids stealing focus and transient startup latency spikes.
+echo "force_hide" > "$MODE_FILE"
 
 is_secondary_active_on_bottom() {
     local wid="$1"

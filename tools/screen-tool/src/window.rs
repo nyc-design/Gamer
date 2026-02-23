@@ -51,6 +51,7 @@ impl AppWindow {
             if visual.is_null() {
                 bail!("No visual for output window");
             }
+            let is_toggle = title == "ScreenToolToggle";
 
             let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
             swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
@@ -64,6 +65,11 @@ impl AppWindow {
                 | xlib::FocusChangeMask
                 | xlib::EnterWindowMask
                 | xlib::LeaveWindowMask;
+            swa.override_redirect = if is_toggle { 1 } else { 0 };
+            let mut valuemask = xlib::CWColormap | xlib::CWEventMask;
+            if is_toggle {
+                valuemask |= xlib::CWOverrideRedirect;
+            }
 
             let window = xlib::XCreateWindow(
                 display,
@@ -76,7 +82,7 @@ impl AppWindow {
                 (*visual).depth,
                 xlib::InputOutput as u32,
                 (*visual).visual,
-                xlib::CWColormap | xlib::CWEventMask,
+                valuemask,
                 &mut swa,
             );
             xlib::XFree(visual as *mut c_void);
@@ -114,11 +120,7 @@ impl AppWindow {
                 b"_NET_WM_WINDOW_TYPE_DOCK\0".as_ptr() as *const _,
                 0,
             );
-            let atom_kind = if title == "ScreenToolToggle" {
-                atom_dock
-            } else {
-                atom_normal
-            };
+            let atom_kind = if is_toggle { atom_dock } else { atom_normal };
             xlib::XChangeProperty(
                 display,
                 window,
@@ -130,7 +132,7 @@ impl AppWindow {
                 1,
             );
 
-            if title == "ScreenToolToggle" {
+            if is_toggle {
                 let atom_state =
                     xlib::XInternAtom(display, b"_NET_WM_STATE\0".as_ptr() as *const _, 0);
                 let atom_above =
