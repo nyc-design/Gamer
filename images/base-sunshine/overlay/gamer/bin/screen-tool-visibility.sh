@@ -175,14 +175,19 @@ while true; do
     fi
 
     # Find secondary window.
-    # We only count it as active when it's viewable and occupying bottom display.
+    # IMPORTANT: only hide screen-tool when BOTH are true:
+    #   1) bottom stream is actually connected
+    #   2) secondary window is active on bottom display
+    # This prevents top-only sessions from immediately hiding the tool.
     SECONDARY_VISIBLE=false
-    for wid in $(xdotool search --name "$PATTERN" 2>/dev/null); do
-        if is_secondary_active_on_bottom "$wid"; then
-            SECONDARY_VISIBLE=true
-            break
-        fi
-    done
+    if is_bottom_stream_connected; then
+        for wid in $(xdotool search --name "$PATTERN" 2>/dev/null); do
+            if is_secondary_active_on_bottom "$wid"; then
+                SECONDARY_VISIBLE=true
+                break
+            fi
+        done
+    fi
 
     # Find screen-tool window
     SCREEN_TOOL_WID="$(find_window_exact "$SCREEN_TOOL_NAME" || true)"
