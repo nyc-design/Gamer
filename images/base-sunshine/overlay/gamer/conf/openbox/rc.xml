@@ -59,6 +59,11 @@
         <command>/gamer/bin/toggle-screen-tool.sh</command>
       </action>
     </keybind>
+    <keybind key="C-S-k">
+      <action name="Execute">
+        <command>/gamer/bin/toggle-screen-tool.sh</command>
+      </action>
+    </keybind>
   </keyboard>
 
   <mouse>
