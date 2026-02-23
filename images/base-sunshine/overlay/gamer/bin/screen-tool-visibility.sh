@@ -21,6 +21,7 @@ if [ -z "$PATTERN" ]; then
     PATTERN="Secondary Window"
 fi
 SCREEN_TOOL_NAME="ScreenTool"
+TOGGLE_NAME="ScreenToolToggle"
 HIDDEN=false
 ACTIVE_STREAK=0
 INACTIVE_STREAK=0
@@ -120,6 +121,32 @@ pin_screen_tool_to_target() {
     fi
 }
 
+pin_toggle_button_to_target() {
+    local wid="$1"
+    local target_display target_info target_w target_h target_x target_y
+    local btn=52
+    local margin=12
+
+    if is_bottom_stream_connected; then
+        target_display="DP-2"
+    else
+        target_display="DP-0"
+    fi
+    target_info=$(xrandr --current 2>/dev/null | awk -v d="$target_display" '$1==d {match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH)}' | head -1)
+    target_w=$(echo "$target_info" | cut -dx -f1)
+    target_h=$(echo "$target_info" | cut -dx -f2 | cut -d+ -f1)
+    target_x=$(echo "$target_info" | cut -d+ -f2)
+    target_y=$(echo "$target_info" | cut -d+ -f3)
+    [ -n "$target_w" ] && [ -n "$target_h" ] && [ -n "$target_x" ] && [ -n "$target_y" ] || return 0
+
+    local x y
+    x=$((target_x + target_w - btn - margin))
+    y=$((target_y + (target_h / 2) - (btn / 2)))
+    xdotool windowsize "$wid" "$btn" "$btn" 2>/dev/null || true
+    xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
+    xdotool windowraise "$wid" 2>/dev/null || true
+}
+
 while true; do
     sleep "$POLL_INTERVAL"
 
@@ -140,8 +167,12 @@ while true; do
 
     # Find screen-tool window
     SCREEN_TOOL_WID=$(xdotool search --name "$SCREEN_TOOL_NAME" 2>/dev/null | head -1)
+    TOGGLE_WID=$(xdotool search --name "$TOGGLE_NAME" 2>/dev/null | head -1)
 
     if [ -z "$SCREEN_TOOL_WID" ]; then
+        if [ -n "$TOGGLE_WID" ]; then
+            pin_toggle_button_to_target "$TOGGLE_WID"
+        fi
         continue
     fi
 
@@ -152,6 +183,9 @@ while true; do
         fi
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         pin_screen_tool_to_target "$SCREEN_TOOL_WID"
+        if [ -n "$TOGGLE_WID" ]; then
+            pin_toggle_button_to_target "$TOGGLE_WID"
+        fi
         continue
     fi
 
@@ -186,6 +220,9 @@ while true; do
     # cannot strand it on the primary display.
     if [ "$HIDDEN" = "false" ]; then
         pin_screen_tool_to_target "$SCREEN_TOOL_WID"
+    fi
+    if [ -n "$TOGGLE_WID" ]; then
+        pin_toggle_button_to_target "$TOGGLE_WID"
     fi
 
     # Periodically refresh dot cursor on both windows to survive cursor resets

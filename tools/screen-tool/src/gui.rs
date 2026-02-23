@@ -297,6 +297,7 @@ void main() {
 }
 
 pub struct ScreenToolGui {
+    pub toggle_only: bool,
     // Main feature tabs
     active_tab: ToolTab,
 
@@ -368,6 +369,7 @@ impl ScreenToolGui {
             .unwrap_or(1.0)
             .clamp(0.8, 3.0);
         Self {
+            toggle_only: false,
             active_tab: ToolTab::Crop,
             available_outputs: outputs,
             selected_output_idx: 0,
@@ -405,7 +407,7 @@ impl ScreenToolGui {
     }
 
     pub fn wants_capture(&self) -> bool {
-        self.active_tab == ToolTab::Crop
+        !self.toggle_only && self.active_tab == ToolTab::Crop
     }
 
     pub fn update_system_stats(&mut self, stats: SystemStatsSnapshot) {
@@ -542,6 +544,17 @@ impl ScreenToolGui {
     /// Render the NVFBC texture as a fullscreen quad using raw GL.
     /// Call this BEFORE egui rendering so the toolbar overlays on top.
     pub fn render_capture(&mut self, gl: &Arc<glow::Context>, viewport_w: u32, viewport_h: u32) {
+        if self.toggle_only {
+            unsafe {
+                gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.disable(glow::BLEND);
+                gl.clear_color(0.07, 0.09, 0.13, 0.95);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+            return;
+        }
+
         if self.active_tab != ToolTab::Crop {
             unsafe {
                 gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
@@ -622,6 +635,28 @@ impl ScreenToolGui {
             .clamp(0.95, 3.2);
         let ui_scale = (auto_scale * self.ui_scale_user).clamp(0.85, 4.0);
         self.ensure_style(ctx, ui_scale);
+
+        if self.toggle_only {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space((ui.available_height() * 0.2).max(2.0));
+                        let side = ui.available_width().min(ui.available_height()).max(24.0);
+                        if ui
+                            .add_sized(
+                                [side, side],
+                                egui::Button::new(egui::RichText::new("◎").size(0.62 * side))
+                                    .fill(egui::Color32::from_rgb(48, 67, 120)),
+                            )
+                            .clicked()
+                        {
+                            let _ = toggle_tool_mode_file();
+                        }
+                    });
+                });
+            return;
+        }
 
         // Track FPS
         self.frame_count += 1;
