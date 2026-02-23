@@ -38,7 +38,6 @@ CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 CAPTURE_OUTPUT_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_FILE:-/home/gamer/.cache/screen-tool.capture-output}"
-STATE_DIR="${SCREEN_TOOL_STATE_DIR:-/home/gamer/.cache}"
 
 find_window_exact() {
     local exact_name="$1"
@@ -55,39 +54,31 @@ find_window_exact() {
 }
 
 is_bottom_stream_connected() {
-    # Primary source of truth: Sunshine hook toggles this file on stream start/stop.
-    if [ -f "${STATE_DIR}/stream-active-DP-2" ]; then
+    # Primary source of truth: Sunshine runtime state from bottom instance.
+    local si current state
+    si=$(curl -s --max-time 0.25 http://127.0.0.1:48089/serverinfo 2>/dev/null || true)
+    current=$(echo "$si" | sed -n 's:.*<currentgame>\([0-9]\+\)</currentgame>.*:\1:p')
+    state=$(echo "$si" | sed -n 's:.*<state>\([^<]*\)</state>.*:\1:p')
+    if [ -n "$current" ] && [ "$current" != "0" ]; then
         return 0
     fi
+    case "$state" in
+      *BUSY*|*STREAM*|*IN_GAME*) return 0 ;;
+    esac
 
-    # Detect active Moonlight/VoidLink client to bottom Sunshine instance.
-    # 48089 is unique to the bottom Sunshine instance.
+    # Fallback: connected sockets on bottom service port.
     if command -v ss >/dev/null 2>&1; then
-        # TCP control channel (common path)
         if ss -Htan 2>/dev/null | awk '{print $1, $4, $5}' | grep -E '^ESTAB ' | grep -E '(:48089)( |$)' >/dev/null 2>&1; then
             return 0
         fi
     fi
 
     # Fallback for minimal containers without `ss`
-    # Detect any connected socket on "bottom instance range" local ports.
-    # Bottom control starts at 48089 (hex BBD9); top starts lower (47989 / BB75).
     if awk '
       NR>1 {
         split($2,a,":");
         lp=toupper(a[2]);
-        st=$4;
-        if (st=="01" && lp >= "BBD9") { found=1 }
-      }
-      END { exit(found ? 0 : 1) }
-    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
-        return 0
-    fi
-    if awk '
-      NR>1 {
-        split($2,a,":");
-        lp=toupper(a[2]);
-        if ($4=="01" && lp >= "BBD9") { found=1 }
+        if ($4=="01" && lp=="BBD9") { found=1 }
       }
       END { exit(found ? 0 : 1) }
     ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
@@ -99,9 +90,6 @@ is_bottom_stream_connected() {
 
 # Wait for X server
 /gamer/bin/wait-x.sh
-
-# Clear stale state markers from previous runs.
-rm -f "${STATE_DIR}/stream-active-DP-0" "${STATE_DIR}/stream-active-DP-2" 2>/dev/null || true
 
 # Default behavior on startup: keep ScreenTool hidden until explicitly toggled
 # on. Do this before waiting so initial connects don't briefly render ScreenTool.
