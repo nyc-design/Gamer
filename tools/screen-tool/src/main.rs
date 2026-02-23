@@ -131,6 +131,7 @@ fn main() -> Result<()> {
     } else {
         (0, 0)
     };
+    let mut last_desired_output: Option<String> = None;
 
     let target_frame_time =
         Duration::from_micros((1_000_000u64 / args.max_fps.max(1) as u64).max(1));
@@ -173,15 +174,23 @@ fn main() -> Result<()> {
             // Used by visibility helper so when the tool is on DP-0, crop defaults
             // to DP-2 (and vice-versa) to avoid self-referential capture.
             if last_desired_output_refresh.elapsed() >= Duration::from_millis(500) {
-                let desired_file = std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE")
-                    .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.capture-output".to_string());
+                let desired_file =
+                    std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE").unwrap_or_else(|_| {
+                        "/home/gamer/.cache/screen-tool.capture-output".to_string()
+                    });
                 if let Ok(raw) = std::fs::read_to_string(desired_file) {
                     let desired = raw.trim();
-                    if !desired.is_empty() {
-                        if let Some(idx) = gui.available_outputs.iter().position(|o| o.name == desired) {
+                    if !desired.is_empty()
+                        && last_desired_output.as_deref() != Some(desired)
+                        && !gui.available_outputs.is_empty()
+                    {
+                        if let Some(idx) =
+                            gui.available_outputs.iter().position(|o| o.name == desired)
+                        {
                             if gui.selected_output_idx != idx {
                                 gui.selected_output_idx = idx;
                             }
+                            last_desired_output = Some(desired.to_string());
                         }
                     }
                 }
@@ -199,6 +208,7 @@ fn main() -> Result<()> {
                 match cap.switch_output_by_id(new_output.id) {
                     Ok(()) => {
                         current_output_idx = gui.selected_output_idx;
+                        current_capture_size = (new_output.width, new_output.height);
                         gui.reset_view();
                     }
                     Err(e) => {
@@ -250,7 +260,10 @@ fn main() -> Result<()> {
                             now_size.1
                         );
                         if let Err(e) = cap.switch_output_by_id(out.id) {
-                            log::warn!("Failed to refresh capture session after mode change: {}", e);
+                            log::warn!(
+                                "Failed to refresh capture session after mode change: {}",
+                                e
+                            );
                         } else {
                             current_capture_size = now_size;
                             gui.reset_view();
