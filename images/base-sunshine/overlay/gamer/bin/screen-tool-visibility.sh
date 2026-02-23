@@ -79,16 +79,6 @@ is_bottom_stream_connected() {
         return 0
     fi
 
-    # Last fallback: active bottom-stream keep-alive updates sunshine-bottom.log
-    # frequently while a client is connected.
-    if [ -f /gamer/log/sunshine-bottom.log ]; then
-        local now ts
-        now=$(date +%s)
-        ts=$(stat -c %Y /gamer/log/sunshine-bottom.log 2>/dev/null || echo 0)
-        if [ $((now - ts)) -le 5 ]; then
-            return 0
-        fi
-    fi
     return 1
 }
 
