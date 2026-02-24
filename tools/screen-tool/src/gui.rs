@@ -260,24 +260,28 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
     }
 
     // Ensure emulator gets focus first for reliable shortcut handling.
-    // Some apps (including Azahar in certain states) ignore --window key events
-    // unless they are active.
-    let _ = std::process::Command::new("xdotool")
+    // Azahar can ignore key events when sent to non-active windows.
+    let activated = std::process::Command::new("xdotool")
         .args(["windowactivate", "--sync", &wids[0]])
-        .output();
-
-    let mut sent = 0usize;
-    for wid in &wids {
-        let send = std::process::Command::new("xdotool")
-            .args(["key", "--window", wid, "--clearmodifiers", keyseq])
-            .output()?;
-        if send.status.success() {
-            sent += 1;
-        }
+        .output()?;
+    if !activated.status.success() {
+        anyhow::bail!("Failed to activate emulator window");
     }
 
-    if sent == 0 {
-        anyhow::bail!("Failed to send key '{}' to matched windows", keyseq);
+    // Send to active window first (most reliable path for Qt apps).
+    let active_send = std::process::Command::new("xdotool")
+        .args(["key", "--clearmodifiers", keyseq])
+        .output()?;
+    if active_send.status.success() {
+        return Ok(());
+    }
+
+    // Fallback: target explicit window id.
+    let send = std::process::Command::new("xdotool")
+        .args(["key", "--window", &wids[0], "--clearmodifiers", keyseq])
+        .output()?;
+    if !send.status.success() {
+        anyhow::bail!("Failed to send key '{}' to emulator window", keyseq);
     }
     Ok(())
 }

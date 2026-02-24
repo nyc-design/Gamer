@@ -18,7 +18,17 @@
 ###############################################################################
 
 # libfaketime — only activate if FAKETIME is set
+#
+# IMPORTANT:
+# Azahar/Qt can stall at boot if CLOCK_MONOTONIC is faked. Keep monotonic real.
+# We still seed a timestamp file for UI visibility/future use, but keep direct
+# FAKETIME mode for runtime compatibility with the current libfaketime build.
 if [ -n "${FAKETIME:-}" ]; then
+    export FAKETIME_TIMESTAMP_FILE="${FAKETIME_TIMESTAMP_FILE:-/home/gamer/.cache/faketime.timestamp}"
+    mkdir -p "$(dirname "${FAKETIME_TIMESTAMP_FILE}")"
+
+    # Seed/refresh the timestamp file from env value.
+    printf '%s\n' "${FAKETIME}" > "${FAKETIME_TIMESTAMP_FILE}"
     echo "[setup-preload] Enabling libfaketime: ${FAKETIME}"
     if [ -n "${LD_PRELOAD:-}" ]; then
         export LD_PRELOAD="${LD_PRELOAD}:/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"
@@ -26,6 +36,7 @@ if [ -n "${FAKETIME:-}" ]; then
         export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
     fi
     export FAKETIME_NO_CACHE=1
+    export FAKETIME_DONT_FAKE_MONOTONIC=1
 fi
 
 # shader-inject — LD_PRELOAD for NVFBC-compatible shader injection
