@@ -122,6 +122,28 @@ fn list_shader_entries(dir: &str) -> (Vec<String>, Vec<String>) {
     (dirs, files)
 }
 
+fn ellipsize_middle(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    if max_chars <= 3 {
+        return "...".to_string();
+    }
+    let keep = max_chars - 3;
+    let left = keep / 2;
+    let right = keep - left;
+    let start: String = input.chars().take(left).collect();
+    let end: String = input
+        .chars()
+        .rev()
+        .take(right)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{start}...{end}")
+}
+
 fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     let file = match target {
         "primary" => std::env::var("SHADER_PRESET_FILE")
@@ -389,8 +411,6 @@ pub struct ScreenToolGui {
     shader_list_dir: String,
     shader_dirs: Vec<String>,
     shader_files: Vec<String>,
-    shader_dirs_scroll_y: f32,
-    shader_files_scroll_y: f32,
     shader_selected: Option<String>,
     shader_status: Option<String>,
     shader_status_until: Option<Instant>,
@@ -445,8 +465,6 @@ impl ScreenToolGui {
             shader_list_dir: String::new(),
             shader_dirs: Vec::new(),
             shader_files: Vec::new(),
-            shader_dirs_scroll_y: 0.0,
-            shader_files_scroll_y: 0.0,
             shader_selected: None,
             shader_status: None,
             shader_status_until: None,
@@ -969,7 +987,7 @@ impl ScreenToolGui {
                     let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
-                    let gauge_h = (panel_h * 0.52).max(220.0);
+                    let gauge_h = (panel_h * 0.45).max(190.0);
 
                     ui.vertical_centered(|ui| {
                         egui::Frame::window(ui.style())
@@ -983,12 +1001,12 @@ impl ScreenToolGui {
                                     ui.vertical_centered(|ui| {
                                         ui.heading(
                                             egui::RichText::new("Performance Monitor")
-                                                .size((26.0 * scale).max(26.0))
+                                                .size((26.0 * scale).clamp(24.0, 34.0))
                                                 .color(egui::Color32::from_rgb(181, 214, 255)),
                                         );
                                         ui.label(
-                                            egui::RichText::new("System telemetry")
-                                                .size((14.0 * scale).max(14.0))
+                                            egui::RichText::new("Live system telemetry")
+                                                .size((15.0 * scale).clamp(14.0, 20.0))
                                                 .color(egui::Color32::from_rgb(145, 163, 196)),
                                         );
                                     });
@@ -1011,40 +1029,75 @@ impl ScreenToolGui {
                                                         egui::Sense::hover(),
                                                     );
                                                     let painter = ui.painter_at(rect);
-                                                    let center = egui::pos2(rect.center().x, rect.bottom() - 14.0 * scale);
-                                                    let radius = (rect.width() * 0.36).min(rect.height() * 0.58);
-                                                    let start = std::f32::consts::PI;
-                                                    let end = 0.0_f32;
-                                                    let total_steps = 48;
-                                                    let active_steps = ((pct / 100.0) * total_steps as f32).round() as usize;
+                                                    let center = egui::pos2(
+                                                        rect.center().x,
+                                                        rect.top() + rect.height() * 0.62,
+                                                    );
+                                                    let radius =
+                                                        (rect.width() * 0.33).min(rect.height() * 0.42);
+                                                    let start = 210.0_f32.to_radians();
+                                                    let end = -30.0_f32.to_radians();
+                                                    let sweep = end - start;
+                                                    let t = (pct / 100.0).clamp(0.0, 1.0);
 
-                                                    for i in 0..total_steps {
-                                                        let t0 = i as f32 / total_steps as f32;
-                                                        let t1 = (i + 1) as f32 / total_steps as f32;
-                                                        let a0 = start + (end - start) * t0;
-                                                        let a1 = start + (end - start) * t1;
-                                                        let p0 = egui::pos2(center.x + radius * a0.cos(), center.y + radius * a0.sin());
-                                                        let p1 = egui::pos2(center.x + radius * a1.cos(), center.y + radius * a1.sin());
-                                                        let c = if i < active_steps {
-                                                            color
-                                                        } else {
-                                                            egui::Color32::from_rgba_premultiplied(90, 98, 120, 110)
-                                                        };
-                                                        painter.line_segment([p0, p1], egui::Stroke::new(4.0 * scale, c));
-                                                    }
+                                                    let arc_points = |a0: f32, a1: f32, r: f32| {
+                                                        let steps = 56;
+                                                        let mut pts = Vec::with_capacity(steps + 1);
+                                                        for i in 0..=steps {
+                                                            let p = i as f32 / steps as f32;
+                                                            let a = a0 + (a1 - a0) * p;
+                                                            pts.push(egui::pos2(
+                                                                center.x + r * a.cos(),
+                                                                center.y + r * a.sin(),
+                                                            ));
+                                                        }
+                                                        pts
+                                                    };
+
+                                                    painter.add(egui::Shape::line(
+                                                        arc_points(start, end, radius),
+                                                        egui::Stroke::new(
+                                                            9.0 * scale,
+                                                            egui::Color32::from_rgba_premultiplied(
+                                                                88, 98, 126, 110,
+                                                            ),
+                                                        ),
+                                                    ));
+                                                    painter.add(egui::Shape::line(
+                                                        arc_points(start, start + sweep * t, radius),
+                                                        egui::Stroke::new(10.5 * scale, color),
+                                                    ));
+
+                                                    let needle_a = start + sweep * t;
+                                                    let needle_tip = egui::pos2(
+                                                        center.x + (radius - 6.0 * scale) * needle_a.cos(),
+                                                        center.y + (radius - 6.0 * scale) * needle_a.sin(),
+                                                    );
+                                                    painter.line_segment(
+                                                        [center, needle_tip],
+                                                        egui::Stroke::new(
+                                                            (2.6 * scale).max(2.0),
+                                                            egui::Color32::WHITE,
+                                                        ),
+                                                    );
+                                                    painter.circle_filled(
+                                                        center,
+                                                        (4.0 * scale).max(3.0),
+                                                        egui::Color32::WHITE,
+                                                    );
 
                                                     painter.text(
                                                         egui::pos2(rect.center().x, rect.top() + 10.0 * scale),
                                                         egui::Align2::CENTER_TOP,
                                                         title,
-                                                        egui::FontId::proportional((14.0 * scale).max(15.0)),
+                                                        egui::FontId::proportional((16.0 * scale).clamp(15.0, 22.0)),
                                                         egui::Color32::from_rgb(171, 189, 220),
                                                     );
                                                     painter.text(
-                                                        egui::pos2(rect.center().x, rect.center().y + 12.0 * scale),
+                                                        egui::pos2(rect.center().x, rect.top() + rect.height() * 0.78),
                                                         egui::Align2::CENTER_CENTER,
                                                         value,
-                                                        egui::FontId::proportional((28.0 * scale).max(26.0)),
+                                                        egui::FontId::proportional((28.0 * scale).clamp(24.0, 36.0)),
                                                         egui::Color32::WHITE,
                                                     );
                                                 });
@@ -1194,8 +1247,6 @@ impl ScreenToolGui {
                                                             let parent = parent.to_string_lossy().to_string();
                                                             if parent.starts_with(&self.shader_root_dir) {
                                                                 self.shader_current_dir = parent;
-                                                                self.shader_dirs_scroll_y = 0.0;
-                                                                self.shader_files_scroll_y = 0.0;
                                                             }
                                                         }
                                                     }
@@ -1204,23 +1255,24 @@ impl ScreenToolGui {
                                         });
 
                                     ui.add_space(8.0 * scale);
-                                    let list_h = (panel_h - 240.0 * scale).max(200.0);
+                                    let header_reserved = (180.0 * scale).clamp(145.0, 320.0);
+                                    let footer_reserved = (245.0 * scale).clamp(190.0, 400.0);
+                                    let list_h = (panel_h - header_reserved - footer_reserved).max(180.0);
                                     self.refresh_shader_listing_if_needed();
                                     let dirs = self.shader_dirs.clone();
                                     let files = self.shader_files.clone();
-                                    let item_text_size = (15.0 * scale).max(16.0);
-                                    let row_h = (34.0 * scale).max(34.0);
+                                    let item_text_size = (16.0 * scale).clamp(16.0, 24.0);
+                                    let row_h = (40.0 * scale).clamp(38.0, 56.0);
 
                                     ui.columns(2, |cols| {
                                         egui::Frame::group(cols[0].style())
                                             .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
                                             .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                                             .show(&mut cols[0], |ui| {
-                                                ui.label(egui::RichText::new("Folders").size((14.0 * scale).max(15.0)).strong());
+                                                ui.label(egui::RichText::new("Folders").size((16.0 * scale).clamp(15.0, 22.0)).strong());
                                                 ui.add_space(4.0 * scale);
                                                 let dirs_out = egui::ScrollArea::vertical()
-                                                    .id_salt("shader_dirs_scroll")
-                                                    .scroll_offset(egui::vec2(0.0, self.shader_dirs_scroll_y))
+                                                    .id_salt(format!("shader_dirs_scroll:{}", self.shader_current_dir))
                                                     .max_height(list_h)
                                                     .show(ui, |ui| {
                                                         for d in &dirs {
@@ -1242,23 +1294,20 @@ impl ScreenToolGui {
                                                             {
                                                                 self.shader_current_dir = d.clone();
                                                                 self.shader_selected = None;
-                                                                self.shader_dirs_scroll_y = 0.0;
-                                                                self.shader_files_scroll_y = 0.0;
                                                             }
                                                         }
                                                     });
-                                                self.shader_dirs_scroll_y = dirs_out.state.offset.y;
+                                                let _ = dirs_out;
                                             });
 
                                         egui::Frame::group(cols[1].style())
                                             .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
                                             .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                                             .show(&mut cols[1], |ui| {
-                                                ui.label(egui::RichText::new("Presets").size((14.0 * scale).max(15.0)).strong());
+                                                ui.label(egui::RichText::new("Presets").size((16.0 * scale).clamp(15.0, 22.0)).strong());
                                                 ui.add_space(4.0 * scale);
-                                                let files_out = egui::ScrollArea::vertical()
-                                                    .id_salt("shader_files_scroll")
-                                                    .scroll_offset(egui::vec2(0.0, self.shader_files_scroll_y))
+                                                egui::ScrollArea::vertical()
+                                                    .id_salt(format!("shader_files_scroll:{}", self.shader_current_dir))
                                                     .max_height(list_h)
                                                     .show(ui, |ui| {
                                                         for file in &files {
@@ -1286,7 +1335,6 @@ impl ScreenToolGui {
                                                             }
                                                         }
                                                     });
-                                                self.shader_files_scroll_y = files_out.state.offset.y;
                                             });
                                     });
 
@@ -1300,7 +1348,17 @@ impl ScreenToolGui {
                                                     .fill(egui::Color32::from_rgba_premultiplied(33, 41, 68, 230))
                                                     .inner_margin(egui::Margin::same((10.0 * scale) as i8))
                                                     .show(ui, |ui| {
-                                                        ui.set_min_height((98.0 * scale).max(88.0));
+                                                        ui.set_min_height((104.0 * scale).clamp(90.0, 160.0));
+                                                        let selected_name = std::path::Path::new(&selected)
+                                                            .file_name()
+                                                            .and_then(|s| s.to_str())
+                                                            .unwrap_or(&selected)
+                                                            .to_string();
+                                                        let selected_dir = std::path::Path::new(&selected)
+                                                            .parent()
+                                                            .and_then(|s| s.to_str())
+                                                            .unwrap_or("")
+                                                            .to_string();
                                                         ui.vertical_centered(|ui| {
                                                             ui.label(
                                                                 egui::RichText::new("Selected preset")
@@ -1308,9 +1366,13 @@ impl ScreenToolGui {
                                                                     .color(egui::Color32::from_rgb(178, 199, 232)),
                                                             );
                                                             ui.add_space(4.0 * scale);
-                                                            ui.monospace(
-                                                                egui::RichText::new(&selected)
-                                                                    .size((16.0 * scale).max(17.0)),
+                                                            ui.monospace(egui::RichText::new(ellipsize_middle(&selected_name, 54))
+                                                                .size((17.0 * scale).clamp(16.0, 24.0))
+                                                                .strong());
+                                                            ui.label(
+                                                                egui::RichText::new(ellipsize_middle(&selected_dir, 78))
+                                                                    .size((13.0 * scale).clamp(13.0, 18.0))
+                                                                    .color(egui::Color32::from_rgb(149, 168, 201)),
                                                             );
                                                         });
                                                     });
