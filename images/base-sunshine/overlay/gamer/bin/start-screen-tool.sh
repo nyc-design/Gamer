@@ -20,8 +20,8 @@ fi
 # Wait for X server
 /gamer/bin/wait-x.sh
 
-# Wait for emulator and Sunshine to be ready
-sleep 5
+# Wait briefly for X clients to settle (keep short for fast first-toggle UX)
+sleep 1
 
 # Get DP-2 position from xrandr (bottom display)
 BOT_INFO=$(xrandr --current 2>/dev/null | grep "^DP-2" | grep -oP '\d+x\d+\+\d+\+\d+' | head -1)

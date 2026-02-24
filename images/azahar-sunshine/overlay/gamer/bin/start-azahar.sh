@@ -24,13 +24,11 @@ echo "[azahar] Starting Azahar 3DS emulator..."
 # Wait a bit for Sunshine to be ready
 sleep 2
 
-# Shared LD_PRELOAD setup (libfaketime + shader-inject)
-source /gamer/bin/setup-preload.sh
-
 # Copy default config on first run
 if [ ! -f /home/gamer/config/azahar-emu/qt-config.ini ]; then
     echo "[azahar] First run — copying default config"
-    cp -r /gamer/conf/azahar/* /home/gamer/config/azahar-emu/ 2>/dev/null || true
+    mkdir -p /home/gamer/config/azahar-emu
+    install -m 0644 /gamer/conf/azahar/qt-config.ini /home/gamer/config/azahar-emu/qt-config.ini 2>/dev/null || true
 fi
 
 # Override layout_option at runtime if set
@@ -76,6 +74,31 @@ fi
 
 echo "[azahar] ROM: ${ROM_PATH}"
 
+# Shared LD_PRELOAD setup (libfaketime + shader-inject + gamemodeauto)
+# Apply after all startup filesystem/config operations so LD_PRELOAD only
+# affects the emulator process path.
+source /gamer/bin/setup-preload.sh
+
+# Build emulator launcher environment.
+# Keep GameMode preload scoped to the emulator process only (not this shell),
+# so startup scripts/tools are unaffected.
+EMULATOR_LD_PRELOAD="${LD_PRELOAD:-}"
+if [ "${GAMEMODE:-auto}" != "off" ] && ldconfig -p 2>/dev/null | grep -q "libgamemodeauto.so.0"; then
+    # Ensure a session bus exists so libgamemodeauto doesn't try to recurse
+    # through dbus-launch in minimal container environments.
+    if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session.sock"
+    fi
+    if [ ! -S /tmp/dbus-session.sock ]; then
+        dbus-daemon --session --address="${DBUS_SESSION_BUS_ADDRESS}" --fork --nopidfile >/dev/null 2>&1 || true
+    fi
+    if [ -n "$EMULATOR_LD_PRELOAD" ]; then
+        EMULATOR_LD_PRELOAD="libgamemodeauto.so.0:${EMULATOR_LD_PRELOAD}"
+    else
+        EMULATOR_LD_PRELOAD="libgamemodeauto.so.0"
+    fi
+fi
+
 # Read active layout
 ACTIVE_LAYOUT=$(grep -oP 'layout_option=\K\d+' /home/gamer/config/azahar-emu/qt-config.ini 2>/dev/null || echo "0")
 echo "[azahar] Layout: ${ACTIVE_LAYOUT} (4=SeparateWindows)"
@@ -86,7 +109,11 @@ if [ "$ACTIVE_LAYOUT" != "4" ] && [ "${AZAHAR_FULLSCREEN:-0}" = "1" ]; then
     AZAHAR_ARGS+=("-f")
 fi
 AZAHAR_ARGS+=("${ROM_PATH}")
-LAUNCHER=(/gamer/bin/run-with-gamemode.sh /Applications/azahar/AppRun)
+if [ -n "$EMULATOR_LD_PRELOAD" ]; then
+    LAUNCHER=(env LD_PRELOAD="$EMULATOR_LD_PRELOAD" /Applications/azahar/AppRun)
+else
+    LAUNCHER=(/Applications/azahar/AppRun)
+fi
 
 # In dual-screen mode, launch Azahar in background and position windows
 if [ "$ACTIVE_LAYOUT" = "4" ] && [ "${DUAL_SCREEN:-1}" = "1" ]; then

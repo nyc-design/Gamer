@@ -87,5 +87,4 @@ if [ -x "$SCRIPT_DIR/reposition-windows.sh" ]; then
     "$SCRIPT_DIR/reposition-windows.sh" &
 fi
 
-# Note: Bottom screen input mapping is now handled natively by Sunshine
-# prerelease builds. Keep input-remap proxy disabled unless debugging.
+# Note: Bottom screen input mapping is handled natively by Sunshine.

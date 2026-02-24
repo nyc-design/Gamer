@@ -28,7 +28,7 @@ Proven working deployment of Azahar 3DS emulator with dual-screen streaming and 
 │  ├── pulseaudio                                               │
 │  ├── Sunshine top  (NVFBC capture DP-0, port 47989)           │
 │  ├── Sunshine bottom (NVFBC capture DP-2, port 48089)         │
-│  ├── input-remap-proxy.py (bottom screen coord remapping)     │
+│  ├── Native Sunshine input handling (touch/mouse/keyboard)    │
 │  ├── Azahar 3DS emulator (layout_option=4 = separated windows)│
 │  │   ├── Main window → DP-0 (top screen)                     │
 │  │   └── Secondary Window → DP-2 (bottom screen)             │
