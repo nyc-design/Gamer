@@ -186,9 +186,13 @@ refresh_bottom_connected_immediate() {
         BOTTOM_ON_STREAK="$BOTTOM_DEBOUNCE_POLLS"
         BOTTOM_OFF_STREAK=0
     else
-        BOTTOM_CONNECTED=false
-        BOTTOM_OFF_STREAK="$BOTTOM_DEBOUNCE_POLLS"
-        BOTTOM_ON_STREAK=0
+        # Be conservative on false negatives: if we already believe bottom is
+        # connected, keep that state until debounce loop confirms disconnect.
+        if [ "$BOTTOM_CONNECTED" != "true" ]; then
+            BOTTOM_CONNECTED=false
+            BOTTOM_OFF_STREAK="$BOTTOM_DEBOUNCE_POLLS"
+            BOTTOM_ON_STREAK=0
+        fi
     fi
 }
 
@@ -348,8 +352,8 @@ while true; do
             pin_screen_tool_to_target "$SCREEN_TOOL_WID"
             HIDDEN=false
         fi
-        xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         pin_screen_tool_to_target "$SCREEN_TOOL_WID"
+        xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
         if [ -n "$TOGGLE_WID" ]; then
             pin_toggle_button_to_target "$TOGGLE_WID"
         fi
