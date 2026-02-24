@@ -987,7 +987,7 @@ impl ScreenToolGui {
                     let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
-                    let gauge_h = (panel_h * 0.40).max(170.0);
+                    let gauge_h = (panel_h * 0.24).max(120.0);
 
                     ui.vertical_centered(|ui| {
                         egui::Frame::window(ui.style())
@@ -1031,7 +1031,7 @@ impl ScreenToolGui {
                                                     let painter = ui.painter_at(rect);
                                                     let center = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.58);
                                                     let radius =
-                                                        (rect.width() * 0.33).min(rect.height() * 0.28);
+                                                        (rect.width() * 0.28).min(rect.height() * 0.26);
                                                     // top semicircle (left -> right)
                                                     let start = -std::f32::consts::PI;
                                                     let end = 0.0_f32;
@@ -1130,7 +1130,7 @@ impl ScreenToolGui {
                                         );
                                     });
 
-                                    ui.add_space(8.0 * scale);
+                                    ui.add_space(6.0 * scale);
                                     egui::Frame::group(ui.style())
                                         .fill(egui::Color32::from_rgba_premultiplied(18, 25, 45, 220))
                                         .inner_margin(egui::Margin::same((12.0 * scale) as i8))
@@ -1144,8 +1144,8 @@ impl ScreenToolGui {
                                                 (Some(used), Some(total)) => format!("{used} / {total} MiB"),
                                                 _ => "N/A".to_string(),
                                             };
-                                            let card_w = ((panel_w - 80.0 * scale) / 4.0).max(170.0);
-                                            let card_h = (panel_h * 0.24).max(98.0);
+                                            let card_w = ((panel_w - 96.0 * scale) / 5.0).max(130.0);
+                                            let card_h = (panel_h * 0.17).max(82.0);
                                             let metric_card = |ui: &mut egui::Ui, title: &str, value: String| {
                                                 egui::Frame::group(ui.style())
                                                     .fill(egui::Color32::from_rgba_premultiplied(26, 33, 56, 220))
@@ -1188,9 +1188,7 @@ impl ScreenToolGui {
                                                 );
                                                 ui.add_space(8.0 * scale);
                                                 metric_card(ui, "GPU Memory", gpu_mem_text.clone());
-                                            });
-                                            ui.add_space(8.0 * scale);
-                                            ui.horizontal_centered(|ui| {
+                                                ui.add_space(8.0 * scale);
                                                 metric_card(
                                                     ui,
                                                     "RAM Used",
