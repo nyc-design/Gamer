@@ -987,7 +987,7 @@ impl ScreenToolGui {
                     let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
-                    let gauge_h = (panel_h * 0.24).max(120.0);
+                    let gauge_h = (panel_h * 0.14).max(70.0);
 
                     ui.vertical_centered(|ui| {
                         egui::Frame::window(ui.style())
@@ -1031,7 +1031,7 @@ impl ScreenToolGui {
                                                     let painter = ui.painter_at(rect);
                                                     let center = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.58);
                                                     let radius =
-                                                        (rect.width() * 0.28).min(rect.height() * 0.26);
+                                                        (rect.width() * 0.24).min(rect.height() * 0.20);
                                                     // top semicircle (left -> right)
                                                     let start = -std::f32::consts::PI;
                                                     let end = 0.0_f32;
@@ -1145,7 +1145,7 @@ impl ScreenToolGui {
                                                 _ => "N/A".to_string(),
                                             };
                                             let card_w = ((panel_w - 96.0 * scale) / 5.0).max(130.0);
-                                            let card_h = (panel_h * 0.17).max(82.0);
+                                            let card_h = (panel_h * 0.14).max(66.0);
                                             let metric_card = |ui: &mut egui::Ui, title: &str, value: String| {
                                                 egui::Frame::group(ui.style())
                                                     .fill(egui::Color32::from_rgba_premultiplied(26, 33, 56, 220))
