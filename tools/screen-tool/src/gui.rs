@@ -238,31 +238,64 @@ fn load_hotkeys_from_file(path: &str) -> Vec<(String, String)> {
     out
 }
 
-fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
-    let target_pattern =
-        std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
+fn find_emulator_primary_window_id(target_pattern: &str) -> anyhow::Result<String> {
     let search = std::process::Command::new("xdotool")
-        .args(["search", "--onlyvisible", "--name", &target_pattern])
+        .args(["search", "--onlyvisible", "--name", target_pattern])
         .output()?;
     if !search.status.success() {
         anyhow::bail!("xdotool search failed");
     }
 
     let stdout = String::from_utf8_lossy(&search.stdout);
-    let wids: Vec<String> = stdout
+    let ids: Vec<String> = stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    if wids.is_empty() {
+    if ids.is_empty() {
         anyhow::bail!("No emulator window matching '{}'", target_pattern);
     }
+
+    let mut preferred: Vec<(u64, String)> = Vec::new();
+    let mut fallback: Vec<(u64, String)> = Vec::new();
+
+    for wid in ids {
+        let title = std::process::Command::new("xdotool")
+            .args(["getwindowname", &wid])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let num = wid.parse::<u64>().unwrap_or(u64::MAX);
+
+        // In dual-window emulators, prefer the primary game window over
+        // "Secondary Window" so hotkeys/focus consistently target the first window.
+        if title.to_ascii_lowercase().contains("secondary window") {
+            fallback.push((num, wid));
+        } else {
+            preferred.push((num, wid));
+        }
+    }
+
+    if !preferred.is_empty() {
+        preferred.sort_by_key(|(n, _)| *n);
+        return Ok(preferred[0].1.clone());
+    }
+    fallback.sort_by_key(|(n, _)| *n);
+    Ok(fallback[0].1.clone())
+}
+
+fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
+    let target_pattern =
+        std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
+    let primary_wid = find_emulator_primary_window_id(&target_pattern)?;
 
     // Ensure emulator gets focus first for reliable shortcut handling.
     // Azahar can ignore key events when sent to non-active windows.
     let activated = std::process::Command::new("xdotool")
-        .args(["windowactivate", "--sync", &wids[0]])
+        .args(["windowactivate", "--sync", &primary_wid])
         .output()?;
     if !activated.status.success() {
         anyhow::bail!("Failed to activate emulator window");
@@ -278,7 +311,7 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
 
     // Fallback: target explicit window id.
     let send = std::process::Command::new("xdotool")
-        .args(["key", "--window", &wids[0], "--clearmodifiers", keyseq])
+        .args(["key", "--window", &primary_wid, "--clearmodifiers", keyseq])
         .output()?;
     if !send.status.success() {
         anyhow::bail!("Failed to send key '{}' to emulator window", keyseq);
@@ -289,18 +322,9 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
 fn focus_emulator_window() -> anyhow::Result<()> {
     let target_pattern =
         std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
-    let search = std::process::Command::new("xdotool")
-        .args(["search", "--onlyvisible", "--name", &target_pattern])
-        .output()?;
-    if !search.status.success() {
-        anyhow::bail!("xdotool search failed");
-    }
-    let stdout = String::from_utf8_lossy(&search.stdout);
-    let Some(first_id) = stdout.lines().map(str::trim).find(|l| !l.is_empty()) else {
-        anyhow::bail!("No emulator window matching '{}'", target_pattern);
-    };
+    let first_id = find_emulator_primary_window_id(&target_pattern)?;
     let activate = std::process::Command::new("xdotool")
-        .args(["windowactivate", "--sync", first_id])
+        .args(["windowactivate", "--sync", &first_id])
         .output()?;
     if !activate.status.success() {
         anyhow::bail!("Failed to focus emulator window");
@@ -318,6 +342,36 @@ fn read_faketime_string(path: &str) -> Option<String> {
         .ok()
         .and_then(|v| v.lines().next().map(|s| s.trim().to_string()))
         .filter(|v| !v.is_empty())
+}
+
+fn read_faketime_from_mtime(path: &str) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .to_string();
+    let out = std::process::Command::new("date")
+        .args(["-d", &format!("@{secs}"), "+%Y-%m-%d %H:%M:%S"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let parsed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if parsed.is_empty() { None } else { Some(parsed) }
+}
+
+fn write_faketime_follow_file(path: &str, formatted: &str) -> anyhow::Result<()> {
+    std::fs::write(path, format!("{formatted}\n"))?;
+    let touch = std::process::Command::new("touch")
+        .args(["-d", formatted, path])
+        .output()?;
+    if !touch.status.success() {
+        anyhow::bail!("touch -d failed for '{}'", path);
+    }
+    Ok(())
 }
 
 fn parse_faketime_parts(s: &str) -> Option<(i32, u32, u32, u32, u32, u32)> {
@@ -661,7 +715,9 @@ impl ScreenToolGui {
             faketime_status: None,
             faketime_status_until: None,
         };
-        if let Some(s) = read_faketime_string(&faketime_file) {
+        if let Some(s) =
+            read_faketime_string(&faketime_file).or_else(|| read_faketime_from_mtime(&faketime_file))
+        {
             if let Some((y, m, d, hh, mm, ss)) = parse_faketime_parts(&s) {
                 gui.faketime_year = y;
                 gui.faketime_month = m.clamp(1, 12);
@@ -1923,7 +1979,9 @@ impl ScreenToolGui {
                             ui.add_space(10.0 * scale);
                             ui.horizontal_centered(|ui| {
                                 if ui.button("Reload").clicked() {
-                                    if let Some(s) = read_faketime_string(&self.faketime_file) {
+                                    if let Some(s) = read_faketime_string(&self.faketime_file)
+                                        .or_else(|| read_faketime_from_mtime(&self.faketime_file))
+                                    {
                                         if let Some((y, m, d, hh, mm, ss)) =
                                             parse_faketime_parts(&s)
                                         {
@@ -1942,10 +2000,8 @@ impl ScreenToolGui {
                                     }
                                 }
                                 if ui.button("Apply").clicked() {
-                                    match std::fs::write(
-                                        &self.faketime_file,
-                                        format!("{formatted}\n"),
-                                    ) {
+                                    match write_faketime_follow_file(&self.faketime_file, &formatted)
+                                    {
                                         Ok(()) => {
                                             self.faketime_status =
                                                 Some(format!("Set faketime → {formatted}"));

@@ -21,20 +21,26 @@
 #
 # IMPORTANT:
 # Azahar/Qt can stall at boot if CLOCK_MONOTONIC is faked. Keep monotonic real.
-# We still seed a timestamp file for UI visibility/future use, but keep direct
-# FAKETIME mode for runtime compatibility with the current libfaketime build.
+# Use libfaketime follow-file mode so ScreenTool can adjust time live.
 if [ -n "${FAKETIME:-}" ]; then
     export FAKETIME_TIMESTAMP_FILE="${FAKETIME_TIMESTAMP_FILE:-/home/gamer/.cache/faketime.timestamp}"
     mkdir -p "$(dirname "${FAKETIME_TIMESTAMP_FILE}")"
 
-    # Seed/refresh the timestamp file from env value.
+    # Seed/refresh follow file from env value.
     printf '%s\n' "${FAKETIME}" > "${FAKETIME_TIMESTAMP_FILE}"
-    echo "[setup-preload] Enabling libfaketime: ${FAKETIME}"
+    touch -d "${FAKETIME}" "${FAKETIME_TIMESTAMP_FILE}" 2>/dev/null || true
+
+    # Follow-file mode (documented libfaketime path).
+    export FAKETIME='%'
+    export FAKETIME_FOLLOW_FILE="${FAKETIME_TIMESTAMP_FILE}"
+
+    echo "[setup-preload] Enabling libfaketime (follow-file): ${FAKETIME_FOLLOW_FILE}"
     if [ -n "${LD_PRELOAD:-}" ]; then
         export LD_PRELOAD="${LD_PRELOAD}:/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"
     else
         export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
     fi
+    export FAKETIME_DONT_RESET=1
     export FAKETIME_NO_CACHE=1
     export FAKETIME_DONT_FAKE_MONOTONIC=1
 fi
