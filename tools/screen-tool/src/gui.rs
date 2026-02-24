@@ -159,7 +159,7 @@ fn query_output_refresh_hz(output_name: &str) -> Option<f32> {
         // Prefer currently selected mode token (has '*', e.g. "60.00*+")
         for tok in trimmed.split_whitespace() {
             if tok.contains('*') {
-                let cleaned = tok.trim_end_matches('*').trim_end_matches('+');
+                let cleaned = tok.trim_end_matches(|c| c == '*' || c == '+');
                 if let Ok(v) = cleaned.parse::<f32>() {
                     if (20.0..=360.0).contains(&v) {
                         return Some(v);
@@ -389,6 +389,8 @@ pub struct ScreenToolGui {
     shader_list_dir: String,
     shader_dirs: Vec<String>,
     shader_files: Vec<String>,
+    shader_dirs_scroll_y: f32,
+    shader_files_scroll_y: f32,
     shader_selected: Option<String>,
     shader_status: Option<String>,
     shader_status_until: Option<Instant>,
@@ -443,6 +445,8 @@ impl ScreenToolGui {
             shader_list_dir: String::new(),
             shader_dirs: Vec::new(),
             shader_files: Vec::new(),
+            shader_dirs_scroll_y: 0.0,
+            shader_files_scroll_y: 0.0,
             shader_selected: None,
             shader_status: None,
             shader_status_until: None,
@@ -965,13 +969,13 @@ impl ScreenToolGui {
                     let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
-                    let gauge_h = (panel_h * 0.46).max(210.0);
+                    let gauge_h = (panel_h * 0.52).max(220.0);
 
-                    ui.add_space(4.0 * scale);
-                    egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgba_premultiplied(12, 18, 36, 238))
-                        .inner_margin(egui::Margin::same((16.0 * scale) as i8))
-                        .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        egui::Frame::window(ui.style())
+                            .fill(egui::Color32::from_rgba_premultiplied(12, 18, 36, 238))
+                            .inner_margin(egui::Margin::same((16.0 * scale) as i8))
+                            .show(ui, |ui| {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(panel_w, panel_h),
                                 egui::Layout::top_down(egui::Align::Center),
@@ -1040,7 +1044,7 @@ impl ScreenToolGui {
                                                         egui::pos2(rect.center().x, rect.center().y + 12.0 * scale),
                                                         egui::Align2::CENTER_CENTER,
                                                         value,
-                                                        egui::FontId::proportional((26.0 * scale).max(24.0)),
+                                                        egui::FontId::proportional((28.0 * scale).max(26.0)),
                                                         egui::Color32::WHITE,
                                                     );
                                                 });
@@ -1080,8 +1084,8 @@ impl ScreenToolGui {
                                         .fill(egui::Color32::from_rgba_premultiplied(18, 25, 45, 220))
                                         .inner_margin(egui::Margin::same((12.0 * scale) as i8))
                                         .show(ui, |ui| {
-                                            let name_size = (14.0 * scale).max(15.0);
-                                            let value_size = (18.0 * scale).max(18.0);
+                                            let name_size = (15.0 * scale).max(16.0);
+                                            let value_size = (20.0 * scale).max(20.0);
                                             let gpu_mem_text = match (
                                                 self.system_stats.gpu_mem_used_mib,
                                                 self.system_stats.gpu_mem_total_mib,
@@ -1126,8 +1130,9 @@ impl ScreenToolGui {
                                                 });
                                         });
                                 },
-                            );
+                            )
                         });
+                    });
                 });
         }
 
@@ -1189,6 +1194,8 @@ impl ScreenToolGui {
                                                             let parent = parent.to_string_lossy().to_string();
                                                             if parent.starts_with(&self.shader_root_dir) {
                                                                 self.shader_current_dir = parent;
+                                                                self.shader_dirs_scroll_y = 0.0;
+                                                                self.shader_files_scroll_y = 0.0;
                                                             }
                                                         }
                                                     }
@@ -1211,8 +1218,9 @@ impl ScreenToolGui {
                                             .show(&mut cols[0], |ui| {
                                                 ui.label(egui::RichText::new("Folders").size((14.0 * scale).max(15.0)).strong());
                                                 ui.add_space(4.0 * scale);
-                                                egui::ScrollArea::vertical()
+                                                let dirs_out = egui::ScrollArea::vertical()
                                                     .id_salt("shader_dirs_scroll")
+                                                    .scroll_offset(egui::vec2(0.0, self.shader_dirs_scroll_y))
                                                     .max_height(list_h)
                                                     .show(ui, |ui| {
                                                         for d in &dirs {
@@ -1226,8 +1234,7 @@ impl ScreenToolGui {
                                                             if ui
                                                                 .add_sized(
                                                                     [ui.available_width(), row_h],
-                                                                    egui::SelectableLabel::new(
-                                                                        false,
+                                                                    egui::Button::new(
                                                                         egui::RichText::new(label).size(item_text_size),
                                                                     ),
                                                                 )
@@ -1235,9 +1242,12 @@ impl ScreenToolGui {
                                                             {
                                                                 self.shader_current_dir = d.clone();
                                                                 self.shader_selected = None;
+                                                                self.shader_dirs_scroll_y = 0.0;
+                                                                self.shader_files_scroll_y = 0.0;
                                                             }
                                                         }
                                                     });
+                                                self.shader_dirs_scroll_y = dirs_out.state.offset.y;
                                             });
 
                                         egui::Frame::group(cols[1].style())
@@ -1246,8 +1256,9 @@ impl ScreenToolGui {
                                             .show(&mut cols[1], |ui| {
                                                 ui.label(egui::RichText::new("Presets").size((14.0 * scale).max(15.0)).strong());
                                                 ui.add_space(4.0 * scale);
-                                                egui::ScrollArea::vertical()
+                                                let files_out = egui::ScrollArea::vertical()
                                                     .id_salt("shader_files_scroll")
+                                                    .scroll_offset(egui::vec2(0.0, self.shader_files_scroll_y))
                                                     .max_height(list_h)
                                                     .show(ui, |ui| {
                                                         for file in &files {
@@ -1264,10 +1275,10 @@ impl ScreenToolGui {
                                                             if ui
                                                                 .add_sized(
                                                                     [ui.available_width(), row_h],
-                                                                    egui::SelectableLabel::new(
-                                                                        selected,
+                                                                    egui::Button::new(
                                                                         egui::RichText::new(label).size(item_text_size),
-                                                                    ),
+                                                                    )
+                                                                    .selected(selected),
                                                                 )
                                                                 .clicked()
                                                             {
@@ -1275,6 +1286,7 @@ impl ScreenToolGui {
                                                             }
                                                         }
                                                     });
+                                                self.shader_files_scroll_y = files_out.state.offset.y;
                                             });
                                     });
 
@@ -1288,17 +1300,17 @@ impl ScreenToolGui {
                                                     .fill(egui::Color32::from_rgba_premultiplied(33, 41, 68, 230))
                                                     .inner_margin(egui::Margin::same((10.0 * scale) as i8))
                                                     .show(ui, |ui| {
-                                                        ui.set_min_height((62.0 * scale).max(56.0));
+                                                        ui.set_min_height((98.0 * scale).max(88.0));
                                                         ui.vertical_centered(|ui| {
                                                             ui.label(
                                                                 egui::RichText::new("Selected preset")
-                                                                    .size((14.0 * scale).max(15.0))
+                                                                    .size((16.0 * scale).max(17.0))
                                                                     .color(egui::Color32::from_rgb(178, 199, 232)),
                                                             );
-                                                            ui.add_space(2.0 * scale);
+                                                            ui.add_space(4.0 * scale);
                                                             ui.monospace(
                                                                 egui::RichText::new(&selected)
-                                                                    .size((14.0 * scale).max(15.0)),
+                                                                    .size((16.0 * scale).max(17.0)),
                                                             );
                                                         });
                                                     });
