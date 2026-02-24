@@ -117,7 +117,11 @@ fn main() -> Result<()> {
     if !args.toggle_only && !gui.available_outputs.is_empty() {
         gui.selected_output_idx = selected_idx;
     }
-    let system_sampler = SystemStatsSampler::start();
+    let system_sampler = if args.toggle_only {
+        None
+    } else {
+        Some(SystemStatsSampler::start())
+    };
 
     // Track which output NVFBC is currently capturing
     let mut current_output_idx = selected_idx;
@@ -304,7 +308,11 @@ fn main() -> Result<()> {
         }
 
         window.begin_frame(|ctx| {
-            gui.update_system_stats(system_sampler.snapshot());
+            let stats = system_sampler
+                .as_ref()
+                .map(|s| s.snapshot())
+                .unwrap_or_default();
+            gui.update_system_stats(stats);
             let mut capture_ref = capture.as_mut();
             gui.show(ctx, &mut capture_ref);
         });
