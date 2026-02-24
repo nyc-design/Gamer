@@ -38,6 +38,7 @@ CURSOR_REFRESH_POLLS="${SCREEN_TOOL_CURSOR_REFRESH_POLLS:-4}"
 CURSOR_TICK=0
 MODE_FILE="${SCREEN_TOOL_MODE_FILE:-/home/gamer/.cache/screen-tool.mode}"
 CAPTURE_OUTPUT_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_FILE:-/home/gamer/.cache/screen-tool.capture-output}"
+CAPTURE_OUTPUT_MANUAL_UNTIL_FILE="${SCREEN_TOOL_CAPTURE_OUTPUT_MANUAL_UNTIL_FILE:-/home/gamer/.cache/screen-tool.capture-output.manual-until}"
 
 find_window_exact() {
     local exact_name="$1"
@@ -195,17 +196,25 @@ pin_screen_tool_to_target() {
     local wid="$1"
     local target_display target_info target_w target_h target_x target_y
     local cur_x cur_y cur_w cur_h
+    local now manual_until manual_active
+
+    now=$(date +%s)
+    manual_until=$(cat "$CAPTURE_OUTPUT_MANUAL_UNTIL_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+    manual_active=false
+    if [ -n "$manual_until" ] && [ "$manual_until" -ge "$now" ] 2>/dev/null; then
+        manual_active=true
+    fi
 
     if [ "$BOTTOM_CONNECTED" = "true" ]; then
         target_display="DP-2"
         # When tool is on bottom, default crop source should be top.
-        if [ "$LAST_TARGET_DISPLAY" != "DP-2" ] || [ "$(cat "$CAPTURE_OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]')" != "DP-0" ]; then
+        if [ "$manual_active" != "true" ] && { [ "$LAST_TARGET_DISPLAY" != "DP-2" ] || [ "$(cat "$CAPTURE_OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]')" != "DP-0" ]; }; then
             printf 'DP-0\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
         fi
     else
         target_display="DP-0"
         # When tool is on top, default crop source should be bottom (avoid recursion).
-        if [ "$LAST_TARGET_DISPLAY" != "DP-0" ] || [ "$(cat "$CAPTURE_OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]')" != "DP-2" ]; then
+        if [ "$manual_active" != "true" ] && { [ "$LAST_TARGET_DISPLAY" != "DP-0" ] || [ "$(cat "$CAPTURE_OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]')" != "DP-2" ]; }; then
             printf 'DP-2\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
         fi
     fi

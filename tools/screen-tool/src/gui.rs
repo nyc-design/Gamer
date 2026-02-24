@@ -1134,6 +1134,7 @@ impl ScreenToolGui {
                                         );
                                     });
 
+                                    ui.add_space((18.0 * scale).max(12.0));
                                     let name_size = (14.0 * scale).max(14.0);
                                     let value_size = (17.0 * scale).max(16.0);
                                     let gpu_mem_text = match (
@@ -1145,75 +1146,56 @@ impl ScreenToolGui {
                                     };
                                     let pill_w = ((panel_w - 72.0 * scale) / 5.0).max(116.0);
                                     let pill_h = (panel_h * 0.11).max(54.0);
-                                    // Keep metrics as second row below the gauge row.
-                                    let metric_y = (panel_h - 92.0 * scale).clamp(220.0, panel_h - 60.0);
-                                    egui::Area::new(egui::Id::new("perf_metrics_row"))
-                                        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, metric_y))
-                                        .order(egui::Order::Foreground)
-                                        .interactable(false)
-                                        .show(ctx, |ui| {
-                                            let metric_pill =
-                                                |ui: &mut egui::Ui, title: &str, value: String| {
-                                                    egui::Frame::group(ui.style())
-                                                        .fill(egui::Color32::from_rgba_premultiplied(
-                                                            26, 33, 56, 220,
-                                                        ))
-                                                        .inner_margin(egui::Margin::same(
-                                                            (6.0 * scale) as i8,
-                                                        ))
-                                                        .show(ui, |ui| {
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(pill_w, pill_h),
-                                                                egui::Layout::top_down(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    ui.vertical_centered(|ui| {
-                                                                        ui.label(
-                                                                            egui::RichText::new(title)
-                                                                                .size(name_size)
-                                                                                .color(egui::Color32::from_rgb(
-                                                                                    169, 189, 222,
-                                                                                )),
-                                                                        );
-                                                                        ui.label(
-                                                                            egui::RichText::new(value)
-                                                                                .size(value_size)
-                                                                                .strong()
-                                                                                .color(
-                                                                                    egui::Color32::WHITE,
-                                                                                ),
-                                                                        );
-                                                                    });
-                                                                },
+                                    let metric_pill = |ui: &mut egui::Ui, title: &str, value: String| {
+                                        egui::Frame::group(ui.style())
+                                            .fill(egui::Color32::from_rgba_premultiplied(26, 33, 56, 220))
+                                            .inner_margin(egui::Margin::same((6.0 * scale) as i8))
+                                            .show(ui, |ui| {
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(pill_w, pill_h),
+                                                    egui::Layout::top_down(egui::Align::Center),
+                                                    |ui| {
+                                                        ui.vertical_centered(|ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(title)
+                                                                    .size(name_size)
+                                                                    .color(egui::Color32::from_rgb(169, 189, 222)),
+                                                            );
+                                                            ui.label(
+                                                                egui::RichText::new(value)
+                                                                    .size(value_size)
+                                                                    .strong()
+                                                                    .color(egui::Color32::WHITE),
                                                             );
                                                         });
-                                                };
-                                            ui.horizontal_centered(|ui| {
-                                                metric_pill(ui, "Display", selected_output_name.clone());
-                                                ui.add_space(6.0 * scale);
-                                                metric_pill(ui, "Resolution", selected_output_mode.clone());
-                                                ui.add_space(6.0 * scale);
-                                                metric_pill(
-                                                    ui,
-                                                    "Display FPS",
-                                                    selected_output_hz
-                                                        .map(|v| format!("{v:.2}"))
-                                                        .unwrap_or_else(|| "N/A".to_string()),
-                                                );
-                                                ui.add_space(6.0 * scale);
-                                                metric_pill(ui, "GPU Mem", gpu_mem_text);
-                                                ui.add_space(6.0 * scale);
-                                                metric_pill(
-                                                    ui,
-                                                    "RAM Used",
-                                                    format!(
-                                                        "{:.1}/{:.1} GiB",
-                                                        self.system_stats.ram_used_gib, self.system_stats.ram_total_gib
-                                                    ),
+                                                    },
                                                 );
                                             });
-                                        });
+                                    };
+                                    ui.horizontal_centered(|ui| {
+                                        metric_pill(ui, "Display", selected_output_name.clone());
+                                        ui.add_space(6.0 * scale);
+                                        metric_pill(ui, "Resolution", selected_output_mode.clone());
+                                        ui.add_space(6.0 * scale);
+                                        metric_pill(
+                                            ui,
+                                            "Display FPS",
+                                            selected_output_hz
+                                                .map(|v| format!("{v:.2}"))
+                                                .unwrap_or_else(|| "N/A".to_string()),
+                                        );
+                                        ui.add_space(6.0 * scale);
+                                        metric_pill(ui, "GPU Mem", gpu_mem_text);
+                                        ui.add_space(6.0 * scale);
+                                        metric_pill(
+                                            ui,
+                                            "RAM Used",
+                                            format!(
+                                                "{:.1}/{:.1} GiB",
+                                                self.system_stats.ram_used_gib, self.system_stats.ram_total_gib
+                                            ),
+                                        );
+                                    });
                                 },
                             )
                         });

@@ -317,8 +317,22 @@ fn main() -> Result<()> {
         {
             let desired_file = std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE")
                 .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.capture-output".to_string());
+            let manual_until_file = std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_MANUAL_UNTIL_FILE")
+                .unwrap_or_else(|_| {
+                    "/home/gamer/.cache/screen-tool.capture-output.manual-until".to_string()
+                });
             let selected_name = gui.available_outputs[gui.selected_output_idx].name.clone();
             let _ = std::fs::write(&desired_file, format!("{selected_name}\n"));
+            let _ = std::fs::write(
+                &manual_until_file,
+                format!(
+                    "{}\n",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() + 8)
+                        .unwrap_or(0)
+                ),
+            );
             manual_output_override_until = Instant::now() + Duration::from_secs(3);
         }
 
