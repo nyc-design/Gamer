@@ -377,6 +377,9 @@ pub struct ScreenToolGui {
     shader_presets: Vec<String>,
     shader_root_dir: String,
     shader_current_dir: String,
+    shader_list_dir: String,
+    shader_dirs: Vec<String>,
+    shader_files: Vec<String>,
     shader_selected: Option<String>,
     shader_status: Option<String>,
     shader_status_until: Option<Instant>,
@@ -428,6 +431,9 @@ impl ScreenToolGui {
             shader_presets: discover_shader_presets(),
             shader_root_dir: initial_shader_root(),
             shader_current_dir: initial_shader_root(),
+            shader_list_dir: String::new(),
+            shader_dirs: Vec::new(),
+            shader_files: Vec::new(),
             shader_selected: None,
             shader_status: None,
             shader_status_until: None,
@@ -475,6 +481,15 @@ impl ScreenToolGui {
         visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(65, 74, 110, 220);
         visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(77, 94, 142, 240);
         ctx.set_visuals(visuals);
+    }
+
+    fn refresh_shader_listing_if_needed(&mut self) {
+        if self.shader_list_dir != self.shader_current_dir {
+            let (dirs, files) = list_shader_entries(&self.shader_current_dir);
+            self.shader_dirs = dirs;
+            self.shader_files = files;
+            self.shader_list_dir = self.shader_current_dir.clone();
+        }
     }
 
     pub fn reset_view(&mut self) {
@@ -1185,6 +1200,7 @@ impl ScreenToolGui {
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.button("Refresh").clicked() {
                                                         self.shader_presets = discover_shader_presets();
+                                                        self.shader_list_dir.clear();
                                                     }
                                                     if ui.button("Up").clicked() {
                                                         if let Some(parent) = std::path::Path::new(&self.shader_current_dir).parent() {
@@ -1200,14 +1216,18 @@ impl ScreenToolGui {
 
                                     ui.add_space(8.0 * scale);
                                     let list_h = (panel_h - 240.0 * scale).max(200.0);
-                                    let (dirs, files) = list_shader_entries(&self.shader_current_dir);
+                                    self.refresh_shader_listing_if_needed();
+                                    let dirs = self.shader_dirs.clone();
+                                    let files = self.shader_files.clone();
+                                    let item_text_size = (15.0 * scale).max(16.0);
+                                    let row_h = (34.0 * scale).max(34.0);
 
                                     ui.columns(2, |cols| {
                                         egui::Frame::group(cols[0].style())
                                             .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
                                             .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                                             .show(&mut cols[0], |ui| {
-                                                ui.label(egui::RichText::new("Folders").size(14.0 * scale).strong());
+                                                ui.label(egui::RichText::new("Folders").size((14.0 * scale).max(15.0)).strong());
                                                 ui.add_space(4.0 * scale);
                                                 egui::ScrollArea::vertical()
                                                     .id_salt("shader_dirs_scroll")
@@ -1221,7 +1241,15 @@ impl ScreenToolGui {
                                                                     .and_then(|s| s.to_str())
                                                                     .unwrap_or(d)
                                                             );
-                                                            if ui.button(label).clicked() {
+                                                            if ui
+                                                                .add_sized(
+                                                                    [ui.available_width(), row_h],
+                                                                    egui::Button::new(
+                                                                        egui::RichText::new(label).size(item_text_size),
+                                                                    ),
+                                                                )
+                                                                .clicked()
+                                                            {
                                                                 self.shader_current_dir = d.clone();
                                                                 self.shader_selected = None;
                                                             }
@@ -1233,7 +1261,7 @@ impl ScreenToolGui {
                                             .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
                                             .inner_margin(egui::Margin::same((8.0 * scale) as i8))
                                             .show(&mut cols[1], |ui| {
-                                                ui.label(egui::RichText::new("Presets").size(14.0 * scale).strong());
+                                                ui.label(egui::RichText::new("Presets").size((14.0 * scale).max(15.0)).strong());
                                                 ui.add_space(4.0 * scale);
                                                 egui::ScrollArea::vertical()
                                                     .id_salt("shader_files_scroll")
@@ -1250,7 +1278,16 @@ impl ScreenToolGui {
                                                                 .and_then(|s| s.to_str())
                                                                 .unwrap_or(file)
                                                                 .to_string();
-                                                            if ui.selectable_label(selected, label).clicked() {
+                                                            if ui
+                                                                .add_sized(
+                                                                    [ui.available_width(), row_h],
+                                                                    egui::Button::new(
+                                                                        egui::RichText::new(label).size(item_text_size),
+                                                                    )
+                                                                    .selected(selected),
+                                                                )
+                                                                .clicked()
+                                                            {
                                                                 self.shader_selected = Some(file.clone());
                                                             }
                                                         }
