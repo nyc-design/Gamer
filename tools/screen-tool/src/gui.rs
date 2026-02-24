@@ -1146,7 +1146,7 @@ impl ScreenToolGui {
                                     let pill_w = ((panel_w - 72.0 * scale) / 5.0).max(116.0);
                                     let pill_h = (panel_h * 0.11).max(54.0);
                                     // Keep metrics as second row below the gauge row.
-                                    let metric_y = (255.0 * scale).clamp(210.0, panel_h - 80.0);
+                                    let metric_y = (305.0 * scale).clamp(250.0, panel_h - 70.0);
                                     egui::Area::new(egui::Id::new("perf_metrics_row"))
                                         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, metric_y))
                                         .order(egui::Order::Foreground)
