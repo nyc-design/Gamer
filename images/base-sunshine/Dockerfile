@@ -69,6 +69,7 @@ apt-get install -y \
     bc \
     sudo \
     wmctrl \
+    gamemode \
     unzip \
     locales \
     libxcomposite-dev \
@@ -161,6 +162,9 @@ ENV SHADER_SOURCE_SIZE_BOTTOM=""
 # SCREEN_TOOL_WINDOW: window title to capture (auto-detects emulator if empty)
 ENV SCREEN_TOOL_ENABLED=1
 ENV SCREEN_TOOL_WINDOW=""
+
+# GameMode (optional): set GAMEMODE=off to disable gamemoderun wrapping.
+ENV GAMEMODE=auto
 
 # NVIDIA driver env (set by host/orchestrator)
 ENV NVIDIA_ENABLE=true

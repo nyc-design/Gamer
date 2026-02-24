@@ -86,13 +86,14 @@ if [ "$ACTIVE_LAYOUT" != "4" ] && [ "${AZAHAR_FULLSCREEN:-0}" = "1" ]; then
     AZAHAR_ARGS+=("-f")
 fi
 AZAHAR_ARGS+=("${ROM_PATH}")
+LAUNCHER=(/gamer/bin/run-with-gamemode.sh /Applications/azahar/AppRun)
 
 # In dual-screen mode, launch Azahar in background and position windows
 if [ "$ACTIVE_LAYOUT" = "4" ] && [ "${DUAL_SCREEN:-1}" = "1" ]; then
     echo "[azahar] Dual-screen mode: launching and positioning windows..."
 
     # Launch Azahar in background
-    /Applications/azahar/AppRun "${AZAHAR_ARGS[@]}" &
+    "${LAUNCHER[@]}" "${AZAHAR_ARGS[@]}" &
     AZAHAR_PID=$!
 
     # Wait for the Secondary Window to appear (identifies both windows exist)
@@ -164,5 +165,5 @@ if [ "$ACTIVE_LAYOUT" = "4" ] && [ "${DUAL_SCREEN:-1}" = "1" ]; then
 else
     # Single-screen mode: just run Azahar directly
     echo "[azahar] Single-screen mode"
-    exec /Applications/azahar/AppRun "${AZAHAR_ARGS[@]}"
+    exec "${LAUNCHER[@]}" "${AZAHAR_ARGS[@]}"
 fi

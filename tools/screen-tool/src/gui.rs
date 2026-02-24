@@ -134,6 +134,34 @@ fn write_shader_file(target: &str, preset_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn query_output_refresh_hz(output_name: &str) -> Option<f32> {
+    let out = std::process::Command::new("xrandr")
+        .arg("--current")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with(output_name) {
+            continue;
+        }
+        // Example:
+        // DP-0 connected primary 3024x1964+0+0 ... 60.00*+ 59.94
+        for tok in line.split_whitespace() {
+            let cleaned = tok.trim_end_matches('*').trim_end_matches('+');
+            if let Ok(v) = cleaned.parse::<f32>() {
+                if (20.0..=360.0).contains(&v) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn toggle_tool_mode_file() -> anyhow::Result<String> {
     let mode_file = std::env::var("SCREEN_TOOL_MODE_FILE")
         .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.mode".into());
@@ -647,7 +675,11 @@ impl ScreenToolGui {
                             .add_sized(
                                 [side, side],
                                 egui::Button::new(egui::RichText::new("◎").size(0.62 * side))
-                                    .fill(egui::Color32::from_rgb(48, 67, 120)),
+                                    .fill(egui::Color32::from_rgba_premultiplied(255, 255, 255, 26))
+                                    .stroke(egui::Stroke::new(
+                                        1.2,
+                                        egui::Color32::from_rgba_premultiplied(255, 255, 255, 90),
+                                    )),
                             )
                             .clicked()
                         {
@@ -898,26 +930,76 @@ impl ScreenToolGui {
                         .unwrap_or(0.0)
                         .clamp(0.0, 100.0);
 
-                    let bottom_reserved = 110.0 * scale;
+                    // Keep only a small reserve for the bottom tray; the panel should
+                    // otherwise fill available vertical space.
+                    let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
+                    let selected_output = self
+                        .available_outputs
+                        .get(self.selected_output_idx)
+                        .cloned();
+                    let selected_output_name = selected_output
+                        .as_ref()
+                        .map(|o| o.name.clone())
+                        .unwrap_or_else(|| "N/A".to_string());
+                    let selected_output_mode = selected_output
+                        .as_ref()
+                        .map(|o| format!("{} x {}", o.width, o.height))
+                        .unwrap_or_else(|| "N/A".to_string());
+                    let selected_output_hz = selected_output
+                        .as_ref()
+                        .and_then(|o| query_output_refresh_hz(&o.name));
+                    let top_out = self.available_outputs.iter().find(|o| o.name == "DP-0");
+                    let bot_out = self.available_outputs.iter().find(|o| o.name == "DP-2");
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.add_space(6.0 * scale);
+                        ui.add_space(2.0 * scale);
                         egui::Frame::window(ui.style())
                             .inner_margin(egui::Margin::same((16.0 * scale) as i8))
                             .show(ui, |ui| {
-                                ui.set_min_width(panel_w);
-                                ui.set_max_width(panel_w);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("perf_scroll")
-                                    .max_height(panel_h)
-                                    .show(ui, |ui| {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(panel_w, panel_h),
+                                    egui::Layout::top_down(egui::Align::Center),
+                                    |ui| {
+                                        ui.set_min_height(panel_h);
                                         ui.vertical_centered(|ui| {
                                             ui.heading(
                                                 egui::RichText::new("Performance Monitor")
                                                     .size(28.0 * scale),
                                             );
                                         });
+                                        ui.add_space(8.0 * scale);
+
+                                        egui::Frame::group(ui.style())
+                                            .fill(egui::Color32::from_rgba_premultiplied(
+                                                14, 18, 26, 210,
+                                            ))
+                                            .inner_margin(egui::Margin::same((10.0 * scale) as i8))
+                                            .show(ui, |ui| {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("MangoHUD-style")
+                                                            .size(14.0 * scale)
+                                                            .color(egui::Color32::from_rgb(
+                                                                120, 220, 170,
+                                                            )),
+                                                    );
+                                                    ui.separator();
+                                                    ui.label(
+                                                        egui::RichText::new(format!(
+                                                            "CPU {:.0}%  RAM {:.0}%  GPU {}",
+                                                            cpu,
+                                                            ram,
+                                                            self.system_stats
+                                                                .gpu_usage_pct
+                                                                .map(|v| format!("{:.0}%", v))
+                                                                .unwrap_or_else(|| "N/A".into())
+                                                        ))
+                                                        .size(13.0 * scale)
+                                                        .color(egui::Color32::LIGHT_GRAY),
+                                                    );
+                                                });
+                                            });
                                         ui.add_space(8.0 * scale);
 
                                         let bar_h = 16.0 * scale;
@@ -981,20 +1063,7 @@ impl ScreenToolGui {
                                             .spacing([18.0 * scale, 8.0 * scale])
                                             .show(ui, |ui| {
                                                 ui.label(
-                                                    egui::RichText::new("Top-screen FPS")
-                                                        .size(name_size),
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "{:.0}",
-                                                        self.capture_fps
-                                                    ))
-                                                    .size(value_size)
-                                                    .strong(),
-                                                );
-                                                ui.end_row();
-                                                ui.label(
-                                                    egui::RichText::new("Render FPS")
+                                                    egui::RichText::new("ScreenTool render FPS")
                                                         .size(name_size),
                                                 );
                                                 ui.label(
@@ -1023,20 +1092,87 @@ impl ScreenToolGui {
                                                 );
                                                 ui.end_row();
                                                 ui.label(
-                                                    egui::RichText::new("Capture size")
+                                                    egui::RichText::new("Display")
                                                         .size(name_size),
                                                 );
                                                 ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "{} x {}",
-                                                        self.capture_size.0, self.capture_size.1
-                                                    ))
+                                                    egui::RichText::new(selected_output_name)
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Display mode")
+                                                        .size(name_size),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(selected_output_mode)
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Display refresh")
+                                                        .size(name_size),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        selected_output_hz
+                                                            .map(|v| format!("{v:.2} Hz"))
+                                                            .unwrap_or_else(|| "N/A".to_string()),
+                                                    )
                                                     .size(value_size)
                                                     .strong(),
                                                 );
                                                 ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Top display")
+                                                        .size(name_size),
+                                                );
+                                                let top_text = top_out
+                                                    .map(|o| {
+                                                        let hz = query_output_refresh_hz("DP-0")
+                                                            .map(|v| format!(" @ {v:.2} Hz"))
+                                                            .unwrap_or_default();
+                                                        format!("{}x{}{}", o.width, o.height, hz)
+                                                    })
+                                                    .unwrap_or_else(|| "N/A".to_string());
+                                                ui.label(
+                                                    egui::RichText::new(top_text)
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Bottom display")
+                                                        .size(name_size),
+                                                );
+                                                let bot_text = bot_out
+                                                    .map(|o| {
+                                                        let hz = query_output_refresh_hz("DP-2")
+                                                            .map(|v| format!(" @ {v:.2} Hz"))
+                                                            .unwrap_or_default();
+                                                        format!("{}x{}{}", o.width, o.height, hz)
+                                                    })
+                                                    .unwrap_or_else(|| "N/A".to_string());
+                                                ui.label(
+                                                    egui::RichText::new(bot_text)
+                                                        .size(value_size)
+                                                        .strong(),
+                                                );
+                                                ui.end_row();
                                             });
-                                    });
+                                        ui.add_space(8.0 * scale);
+                                        ui.colored_label(
+                                            egui::Color32::from_gray(170),
+                                            egui::RichText::new(format!(
+                                                "ScreenTool render loop: {:.0} FPS (debug)",
+                                                self.fps
+                                            ))
+                                            .size(13.0 * scale),
+                                        );
+                                    },
+                                );
                             });
                     });
                 });
@@ -1046,20 +1182,21 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let bottom_reserved = 110.0 * scale;
+                    // Keep only a small reserve for the bottom tray; shader panel should
+                    // use the rest of the window vertically.
+                    let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(540.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(320.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.add_space(6.0 * scale);
+                        ui.add_space(2.0 * scale);
                         egui::Frame::window(ui.style())
                             .inner_margin(egui::Margin::same((14.0 * scale) as i8))
                             .show(ui, |ui| {
-                                ui.set_min_width(panel_w);
-                                ui.set_max_width(panel_w);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("shader_outer_scroll")
-                                    .max_height(panel_h)
-                                    .show(ui, |ui| {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(panel_w, panel_h),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                    ui.set_min_height(panel_h);
                                     ui.vertical_centered(|ui| {
                                         ui.heading(
                                             egui::RichText::new("Shader Presets")
@@ -1098,7 +1235,7 @@ impl ScreenToolGui {
                                         cols[1].heading("Presets");
 
                                         let (dirs, files) = list_shader_entries(&self.shader_current_dir);
-                                        let list_h = (panel_h * 0.55).max(160.0);
+                                        let list_h = (panel_h - 170.0 * scale).max(220.0);
                                         egui::ScrollArea::vertical()
                                             .id_salt("shader_dirs_scroll")
                                             .max_height(list_h)
@@ -1230,7 +1367,8 @@ impl ScreenToolGui {
                                         ui.add_space(8.0 * scale);
                                         ui.label(status);
                                     }
-                                    });
+                                    },
+                                );
                             });
                     });
                 });

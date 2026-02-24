@@ -165,6 +165,20 @@ is_window_on_dp2() {
     [ "$win_w" -ge "$min_w" ] && [ "$win_h" -ge "$min_h" ] && [ "$dx" -le 140 ] && [ "$dy" -le 140 ]
 }
 
+refresh_bottom_connected_immediate() {
+    # Used on explicit show requests so we don't wait for debounce and accidentally
+    # map on the wrong display for one frame.
+    if is_bottom_stream_connected; then
+        BOTTOM_CONNECTED=true
+        BOTTOM_ON_STREAK="$BOTTOM_DEBOUNCE_POLLS"
+        BOTTOM_OFF_STREAK=0
+    else
+        BOTTOM_CONNECTED=false
+        BOTTOM_OFF_STREAK="$BOTTOM_DEBOUNCE_POLLS"
+        BOTTOM_ON_STREAK=0
+    fi
+}
+
 pin_screen_tool_to_target() {
     local wid="$1"
     local target_display target_info target_w target_h target_x target_y
@@ -301,10 +315,16 @@ while true; do
     fi
 
     if [ "$MODE" = "force_show" ]; then
+        # On explicit show, re-sample bottom stream immediately (not debounced)
+        # so the first mapped frame lands on the correct display.
+        refresh_bottom_connected_immediate
         if [ "$HIDDEN" = "true" ]; then
-            # Reposition before mapping to avoid "show on top then jump to bottom".
+            # Reposition before mapping, then map, then reposition again immediately.
+            # The second reposition closes the remaining one-frame race with WM placement.
+            xdotool windowunmap "$SCREEN_TOOL_WID" 2>/dev/null || true
             pin_screen_tool_to_target "$SCREEN_TOOL_WID"
             xdotool windowmap "$SCREEN_TOOL_WID" 2>/dev/null
+            pin_screen_tool_to_target "$SCREEN_TOOL_WID"
             HIDDEN=false
         fi
         xdotool windowraise "$SCREEN_TOOL_WID" 2>/dev/null
