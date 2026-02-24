@@ -259,6 +259,13 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
         anyhow::bail!("No emulator window matching '{}'", target_pattern);
     }
 
+    // Ensure emulator gets focus first for reliable shortcut handling.
+    // Some apps (including Azahar in certain states) ignore --window key events
+    // unless they are active.
+    let _ = std::process::Command::new("xdotool")
+        .args(["windowactivate", "--sync", &wids[0]])
+        .output();
+
     let mut sent = 0usize;
     for wid in &wids {
         let send = std::process::Command::new("xdotool")
@@ -271,6 +278,28 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
 
     if sent == 0 {
         anyhow::bail!("Failed to send key '{}' to matched windows", keyseq);
+    }
+    Ok(())
+}
+
+fn focus_emulator_window() -> anyhow::Result<()> {
+    let target_pattern =
+        std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
+    let search = std::process::Command::new("xdotool")
+        .args(["search", "--onlyvisible", "--name", &target_pattern])
+        .output()?;
+    if !search.status.success() {
+        anyhow::bail!("xdotool search failed");
+    }
+    let stdout = String::from_utf8_lossy(&search.stdout);
+    let Some(first_id) = stdout.lines().map(str::trim).find(|l| !l.is_empty()) else {
+        anyhow::bail!("No emulator window matching '{}'", target_pattern);
+    };
+    let activate = std::process::Command::new("xdotool")
+        .args(["windowactivate", "--sync", first_id])
+        .output()?;
+    if !activate.status.success() {
+        anyhow::bail!("Failed to focus emulator window");
     }
     Ok(())
 }
@@ -2107,6 +2136,31 @@ impl ScreenToolGui {
                                 .clicked()
                             {
                                 self.active_tab = ToolTab::Faketime;
+                            }
+                            ui.add_space(14.0 * scale);
+                            if ui
+                                .add_sized(
+                                    [tab_btn, tab_btn],
+                                    egui::Button::new(egui::RichText::new("🎮").size(24.0 * scale)),
+                                )
+                                .on_hover_text("Focus emulator/game window")
+                                .clicked()
+                            {
+                                match focus_emulator_window() {
+                                    Ok(_) => {
+                                        self.hotkeys_status =
+                                            Some("Focused emulator window".to_string());
+                                        self.hotkeys_status_until = Some(
+                                            std::time::Instant::now() + Duration::from_secs(2),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.hotkeys_status = Some(format!("Focus failed: {}", e));
+                                        self.hotkeys_status_until = Some(
+                                            std::time::Instant::now() + Duration::from_secs(3),
+                                        );
+                                    }
+                                }
                             }
                         });
                     });

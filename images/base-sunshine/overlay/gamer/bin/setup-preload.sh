@@ -26,12 +26,6 @@ if [ -n "${FAKETIME:-}" ]; then
         export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
     fi
     export FAKETIME_NO_CACHE=1
-    # Live-adjustable faketime file for ScreenTool time controls.
-    # libfaketime prefers FAKETIME over file mode, so we seed file then unset FAKETIME.
-    export FAKETIME_TIMESTAMP_FILE="${FAKETIME_TIMESTAMP_FILE:-/home/gamer/.cache/faketime.timestamp}"
-    mkdir -p "$(dirname "$FAKETIME_TIMESTAMP_FILE")" 2>/dev/null || true
-    printf '%s\n' "${FAKETIME}" > "${FAKETIME_TIMESTAMP_FILE}" 2>/dev/null || true
-    unset FAKETIME
 fi
 
 # shader-inject — LD_PRELOAD for NVFBC-compatible shader injection
