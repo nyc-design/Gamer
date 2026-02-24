@@ -98,21 +98,6 @@ echo "force_hide" > "$MODE_FILE"
 # Wait for screen-tool to start
 sleep 2
 
-# Pre-warm: map/unmap once at startup so first user show doesn't pay
-# initialization cost during gameplay.
-WARM_WID=""
-for _ in $(seq 1 30); do
-    WARM_WID="$(find_window_exact "$SCREEN_TOOL_NAME" || true)"
-    [ -n "$WARM_WID" ] && break
-    sleep 0.1
-done
-if [ -n "$WARM_WID" ]; then
-    xdotool windowmap "$WARM_WID" 2>/dev/null || true
-    sleep 0.12
-    xdotool windowunmap "$WARM_WID" 2>/dev/null || true
-    echo "[screen-tool-visibility] Pre-warmed ScreenTool window"
-fi
-
 echo "[screen-tool-visibility] Monitoring for '$PATTERN', managing '$SCREEN_TOOL_NAME'"
 
 is_secondary_active_on_bottom() {
