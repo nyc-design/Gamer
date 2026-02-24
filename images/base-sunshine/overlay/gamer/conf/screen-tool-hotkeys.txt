@@ -4,6 +4,5 @@
 Fullscreen=F11
 Layout Change=F10
 Pause=F4
-Swap Focus=Alt+Tab
 Save State=Ctrl+1
 Load State=1

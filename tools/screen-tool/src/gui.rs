@@ -242,30 +242,35 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
     let target_pattern =
         std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
     let search = std::process::Command::new("xdotool")
-        .args(["search", "--name", &target_pattern])
+        .args(["search", "--onlyvisible", "--name", &target_pattern])
         .output()?;
     if !search.status.success() {
         anyhow::bail!("xdotool search failed");
     }
 
     let stdout = String::from_utf8_lossy(&search.stdout);
-    let Some(first_id) = stdout.lines().find(|l| !l.trim().is_empty()) else {
+    let wids: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if wids.is_empty() {
         anyhow::bail!("No emulator window matching '{}'", target_pattern);
-    };
-    let wid = first_id.trim().to_string();
-
-    let activate = std::process::Command::new("xdotool")
-        .args(["windowactivate", "--sync", &wid])
-        .output()?;
-    if !activate.status.success() {
-        anyhow::bail!("Failed to activate emulator window");
     }
 
-    let send = std::process::Command::new("xdotool")
-        .args(["key", "--window", &wid, "--clearmodifiers", keyseq])
-        .output()?;
-    if !send.status.success() {
-        anyhow::bail!("Failed to send key '{}'", keyseq);
+    let mut sent = 0usize;
+    for wid in &wids {
+        let send = std::process::Command::new("xdotool")
+            .args(["key", "--window", wid, "--clearmodifiers", keyseq])
+            .output()?;
+        if send.status.success() {
+            sent += 1;
+        }
+    }
+
+    if sent == 0 {
+        anyhow::bail!("Failed to send key '{}' to matched windows", keyseq);
     }
     Ok(())
 }
