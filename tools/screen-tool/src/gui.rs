@@ -987,7 +987,7 @@ impl ScreenToolGui {
                     let bottom_reserved = 20.0 * scale;
                     let panel_w = (ui.available_width() - 20.0).max(380.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(240.0);
-                    let gauge_h = (panel_h * 0.45).max(190.0);
+                    let gauge_h = (panel_h * 0.40).max(170.0);
 
                     ui.vertical_centered(|ui| {
                         egui::Frame::window(ui.style())
@@ -1029,14 +1029,12 @@ impl ScreenToolGui {
                                                         egui::Sense::hover(),
                                                     );
                                                     let painter = ui.painter_at(rect);
-                                                    let center = egui::pos2(
-                                                        rect.center().x,
-                                                        rect.top() + rect.height() * 0.62,
-                                                    );
+                                                    let center = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.58);
                                                     let radius =
-                                                        (rect.width() * 0.33).min(rect.height() * 0.42);
-                                                    let start = 210.0_f32.to_radians();
-                                                    let end = -30.0_f32.to_radians();
+                                                        (rect.width() * 0.33).min(rect.height() * 0.28);
+                                                    // top semicircle (left -> right)
+                                                    let start = -std::f32::consts::PI;
+                                                    let end = 0.0_f32;
                                                     let sweep = end - start;
                                                     let t = (pct / 100.0).clamp(0.0, 1.0);
 
@@ -1094,7 +1092,7 @@ impl ScreenToolGui {
                                                         egui::Color32::from_rgb(171, 189, 220),
                                                     );
                                                     painter.text(
-                                                        egui::pos2(rect.center().x, rect.top() + rect.height() * 0.78),
+                                                        egui::pos2(rect.center().x, rect.top() + rect.height() * 0.88),
                                                         egui::Align2::CENTER_CENTER,
                                                         value,
                                                         egui::FontId::proportional((28.0 * scale).clamp(24.0, 36.0)),
@@ -1138,7 +1136,7 @@ impl ScreenToolGui {
                                         .inner_margin(egui::Margin::same((12.0 * scale) as i8))
                                         .show(ui, |ui| {
                                             let name_size = (15.0 * scale).max(16.0);
-                                            let value_size = (20.0 * scale).max(20.0);
+                                            let value_size = (19.0 * scale).max(18.0);
                                             let gpu_mem_text = match (
                                                 self.system_stats.gpu_mem_used_mib,
                                                 self.system_stats.gpu_mem_total_mib,
@@ -1146,41 +1144,62 @@ impl ScreenToolGui {
                                                 (Some(used), Some(total)) => format!("{used} / {total} MiB"),
                                                 _ => "N/A".to_string(),
                                             };
-                                            egui::Grid::new("perf_grid_bottom")
-                                                .num_columns(4)
-                                                .spacing([16.0 * scale, 8.0 * scale])
-                                                .show(ui, |ui| {
-                                                    ui.label(egui::RichText::new("GPU memory").size(name_size));
-                                                    ui.label(egui::RichText::new(gpu_mem_text).size(value_size).strong());
-                                                    ui.label(egui::RichText::new("Display").size(name_size));
-                                                    ui.label(egui::RichText::new(selected_output_name).size(value_size).strong());
-                                                    ui.end_row();
+                                            let card_w = ((panel_w - 80.0 * scale) / 4.0).max(170.0);
+                                            let card_h = (panel_h * 0.24).max(98.0);
+                                            let metric_card = |ui: &mut egui::Ui, title: &str, value: String| {
+                                                egui::Frame::group(ui.style())
+                                                    .fill(egui::Color32::from_rgba_premultiplied(26, 33, 56, 220))
+                                                    .inner_margin(egui::Margin::same((10.0 * scale) as i8))
+                                                    .show(ui, |ui| {
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(card_w, card_h),
+                                                            egui::Layout::top_down_justified(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.vertical_centered(|ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(title)
+                                                                            .size(name_size)
+                                                                            .color(egui::Color32::from_rgb(169, 189, 222)),
+                                                                    );
+                                                                    ui.add_space(4.0 * scale);
+                                                                    ui.label(
+                                                                        egui::RichText::new(value)
+                                                                            .size(value_size)
+                                                                            .strong()
+                                                                            .color(egui::Color32::WHITE),
+                                                                    );
+                                                                });
+                                                            },
+                                                        );
+                                                    });
+                                            };
 
-                                                    ui.label(egui::RichText::new("Mode").size(name_size));
-                                                    ui.label(egui::RichText::new(selected_output_mode).size(value_size).strong());
-                                                    ui.label(egui::RichText::new("Refresh").size(name_size));
-                                                    ui.label(
-                                                        egui::RichText::new(
-                                                            selected_output_hz
-                                                                .map(|v| format!("{v:.2} Hz"))
-                                                                .unwrap_or_else(|| "N/A".to_string()),
-                                                        )
-                                                        .size(value_size)
-                                                        .strong(),
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(egui::RichText::new("RAM used").size(name_size));
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "{:.1}/{:.1} GiB",
-                                                            self.system_stats.ram_used_gib, self.system_stats.ram_total_gib
-                                                        ))
-                                                        .size(value_size)
-                                                        .strong(),
-                                                    );
-                                                    ui.end_row();
-                                                });
+                                            ui.horizontal_centered(|ui| {
+                                                metric_card(ui, "Display", selected_output_name.clone());
+                                                ui.add_space(8.0 * scale);
+                                                metric_card(ui, "Resolution", selected_output_mode.clone());
+                                                ui.add_space(8.0 * scale);
+                                                metric_card(
+                                                    ui,
+                                                    "Display FPS",
+                                                    selected_output_hz
+                                                        .map(|v| format!("{v:.2}"))
+                                                        .unwrap_or_else(|| "N/A".to_string()),
+                                                );
+                                                ui.add_space(8.0 * scale);
+                                                metric_card(ui, "GPU Memory", gpu_mem_text.clone());
+                                            });
+                                            ui.add_space(8.0 * scale);
+                                            ui.horizontal_centered(|ui| {
+                                                metric_card(
+                                                    ui,
+                                                    "RAM Used",
+                                                    format!(
+                                                        "{:.1}/{:.1} GiB",
+                                                        self.system_stats.ram_used_gib, self.system_stats.ram_total_gib
+                                                    ),
+                                                );
+                                            });
                                         });
                                 },
                             )
