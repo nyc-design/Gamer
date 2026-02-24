@@ -1018,87 +1018,78 @@ impl ScreenToolGui {
                                                           pct: f32,
                                                           value: &str,
                                                           color: egui::Color32| {
-                                            egui::Frame::group(ui.style())
-                                                .fill(egui::Color32::from_rgba_premultiplied(24, 30, 53, 230))
-                                                .inner_margin(egui::Margin::same((10.0 * scale) as i8))
-                                                .show(ui, |ui| {
-                                                    let gw = ((panel_w * 0.28).max(180.0)).min(260.0);
-                                                    let gh = gauge_h;
-                                                    let (rect, _) = ui.allocate_exact_size(
-                                                        egui::vec2(gw, gh),
-                                                        egui::Sense::hover(),
-                                                    );
-                                                    let painter = ui.painter_at(rect);
-                                                    let center = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.58);
-                                                    let radius =
-                                                        (rect.width() * 0.24).min(rect.height() * 0.20);
-                                                    // top semicircle (left -> right)
-                                                    let start = -std::f32::consts::PI;
-                                                    let end = 0.0_f32;
-                                                    let sweep = end - start;
-                                                    let t = (pct / 100.0).clamp(0.0, 1.0);
+                                            let gw = ((panel_w * 0.26).max(140.0)).min(220.0);
+                                            let gh = gauge_h;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(gw, gh),
+                                                egui::Sense::hover(),
+                                            );
+                                            let painter = ui.painter_at(rect);
+                                            painter.rect_filled(
+                                                rect,
+                                                10.0 * scale,
+                                                egui::Color32::from_rgba_premultiplied(24, 30, 53, 230),
+                                            );
+                                            let center =
+                                                egui::pos2(rect.center().x, rect.top() + rect.height() * 0.62);
+                                            let radius = (rect.width() * 0.22).min(rect.height() * 0.24);
+                                            let start = -std::f32::consts::PI;
+                                            let end = 0.0_f32;
+                                            let sweep = end - start;
+                                            let t = (pct / 100.0).clamp(0.0, 1.0);
 
-                                                    let arc_points = |a0: f32, a1: f32, r: f32| {
-                                                        let steps = 56;
-                                                        let mut pts = Vec::with_capacity(steps + 1);
-                                                        for i in 0..=steps {
-                                                            let p = i as f32 / steps as f32;
-                                                            let a = a0 + (a1 - a0) * p;
-                                                            pts.push(egui::pos2(
-                                                                center.x + r * a.cos(),
-                                                                center.y + r * a.sin(),
-                                                            ));
-                                                        }
-                                                        pts
-                                                    };
-
-                                                    painter.add(egui::Shape::line(
-                                                        arc_points(start, end, radius),
-                                                        egui::Stroke::new(
-                                                            9.0 * scale,
-                                                            egui::Color32::from_rgba_premultiplied(
-                                                                88, 98, 126, 110,
-                                                            ),
-                                                        ),
+                                            let arc_points = |a0: f32, a1: f32, r: f32| {
+                                                let steps = 56;
+                                                let mut pts = Vec::with_capacity(steps + 1);
+                                                for i in 0..=steps {
+                                                    let p = i as f32 / steps as f32;
+                                                    let a = a0 + (a1 - a0) * p;
+                                                    pts.push(egui::pos2(
+                                                        center.x + r * a.cos(),
+                                                        center.y + r * a.sin(),
                                                     ));
-                                                    painter.add(egui::Shape::line(
-                                                        arc_points(start, start + sweep * t, radius),
-                                                        egui::Stroke::new(10.5 * scale, color),
-                                                    ));
-
-                                                    let needle_a = start + sweep * t;
-                                                    let needle_tip = egui::pos2(
-                                                        center.x + (radius - 6.0 * scale) * needle_a.cos(),
-                                                        center.y + (radius - 6.0 * scale) * needle_a.sin(),
-                                                    );
-                                                    painter.line_segment(
-                                                        [center, needle_tip],
-                                                        egui::Stroke::new(
-                                                            (2.6 * scale).max(2.0),
-                                                            egui::Color32::WHITE,
-                                                        ),
-                                                    );
-                                                    painter.circle_filled(
-                                                        center,
-                                                        (4.0 * scale).max(3.0),
-                                                        egui::Color32::WHITE,
-                                                    );
-
-                                                    painter.text(
-                                                        egui::pos2(rect.center().x, rect.top() + 10.0 * scale),
-                                                        egui::Align2::CENTER_TOP,
-                                                        title,
-                                                        egui::FontId::proportional((16.0 * scale).clamp(15.0, 22.0)),
-                                                        egui::Color32::from_rgb(171, 189, 220),
-                                                    );
-                                                    painter.text(
-                                                        egui::pos2(rect.center().x, rect.top() + rect.height() * 0.88),
-                                                        egui::Align2::CENTER_CENTER,
-                                                        value,
-                                                        egui::FontId::proportional((28.0 * scale).clamp(24.0, 36.0)),
-                                                        egui::Color32::WHITE,
-                                                    );
-                                                });
+                                                }
+                                                pts
+                                            };
+                                            painter.add(egui::Shape::line(
+                                                arc_points(start, end, radius),
+                                                egui::Stroke::new(
+                                                    6.0 * scale,
+                                                    egui::Color32::from_rgba_premultiplied(88, 98, 126, 110),
+                                                ),
+                                            ));
+                                            painter.add(egui::Shape::line(
+                                                arc_points(start, start + sweep * t, radius),
+                                                egui::Stroke::new(7.0 * scale, color),
+                                            ));
+                                            let needle_a = start + sweep * t;
+                                            let needle_tip = egui::pos2(
+                                                center.x + (radius - 5.0 * scale) * needle_a.cos(),
+                                                center.y + (radius - 5.0 * scale) * needle_a.sin(),
+                                            );
+                                            painter.line_segment(
+                                                [center, needle_tip],
+                                                egui::Stroke::new((2.0 * scale).max(1.5), egui::Color32::WHITE),
+                                            );
+                                            painter.circle_filled(
+                                                center,
+                                                (3.0 * scale).max(2.2),
+                                                egui::Color32::WHITE,
+                                            );
+                                            painter.text(
+                                                egui::pos2(rect.center().x, rect.top() + 7.0 * scale),
+                                                egui::Align2::CENTER_TOP,
+                                                title,
+                                                egui::FontId::proportional((14.0 * scale).clamp(13.0, 18.0)),
+                                                egui::Color32::from_rgb(171, 189, 220),
+                                            );
+                                            painter.text(
+                                                egui::pos2(rect.center().x, rect.bottom() - 14.0 * scale),
+                                                egui::Align2::CENTER_BOTTOM,
+                                                value,
+                                                egui::FontId::proportional((18.0 * scale).clamp(16.0, 24.0)),
+                                                egui::Color32::WHITE,
+                                            );
                                         };
 
                                         draw_gauge(
