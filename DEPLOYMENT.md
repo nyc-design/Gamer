@@ -2,7 +2,8 @@
 
 Proven working deployment of Azahar 3DS emulator with dual-screen streaming and RetroArch shader injection (lcd3x) on TensorDock RTX 4090 VM.
 
-**Checkpoint branch**: `checkpoint-dual-screen-shader` at this commit.
+**Checkpoint branch (sacred baseline)**: `checkpoint-dual-screen-shader`
+**Current working snapshot checkpoint**: `checkpoint-screen-tool-ui-prepass-2026-02-24`
 
 > **SACRED BRANCH**: `checkpoint-dual-screen-shader` must NEVER be modified unless explicitly instructed by the user. It is a read-only reference of the last known working state. All new work must branch FROM it, never commit TO it.
 
@@ -120,6 +121,10 @@ sudo docker run -d \
   -v /run/udev:/run/udev:ro \
   gamer/azahar-sunshine:latest
 ```
+
+Notes:
+- Keep `/home/gamer/sunshine-state/top` and `/home/gamer/sunshine-state/bottom` mounted for stable pairing/cert persistence across container restarts.
+- ScreenTool startup now primes preferred capture output during boot so first user toggle does less work during gameplay.
 
 ### Without Shaders
 

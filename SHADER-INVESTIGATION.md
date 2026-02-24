@@ -152,7 +152,7 @@ Azahar window (emulator) -> XComposite backing pixmap
 ## Tests Performed & Results
 
 ### 1. Container Startup (PASS)
-- All supervisor services running: xserver, openbox, sunshine-top, sunshine-bottom, azahar, input-remap, shader-overlay
+- All supervisor services running: xserver, openbox, sunshine-top, sunshine-bottom, azahar, shader-overlay, screen-tool
 - dbus/udev fail but non-critical (same as checkpoint which works)
 
 ### 2. Shader Overlay Logs (PASS)
