@@ -98,6 +98,18 @@ echo "force_hide" > "$MODE_FILE"
 # Wait for screen-tool to start
 sleep 2
 
+# Prime the preferred capture output once at startup while ScreenTool is still
+# mapped. This shifts the first NVFBC output switch (if needed) away from the
+# first user toggle, reducing first-show hitch without changing runtime behavior.
+if is_bottom_stream_connected; then
+    printf 'DP-0\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
+    echo "[screen-tool-visibility] Startup capture output hint: DP-0"
+else
+    printf 'DP-2\n' > "$CAPTURE_OUTPUT_FILE" 2>/dev/null || true
+    echo "[screen-tool-visibility] Startup capture output hint: DP-2"
+fi
+sleep 0.8
+
 echo "[screen-tool-visibility] Monitoring for '$PATTERN', managing '$SCREEN_TOOL_NAME'"
 
 is_secondary_active_on_bottom() {
