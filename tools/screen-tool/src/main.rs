@@ -123,6 +123,7 @@ fn main() -> Result<()> {
     let mut current_output_idx = selected_idx;
     let mut last_output_refresh = Instant::now();
     let mut last_desired_output_refresh = Instant::now();
+    let mut manual_output_override_until = Instant::now();
     let mut current_capture_size = if !args.toggle_only && !gui.available_outputs.is_empty() {
         (
             gui.available_outputs[current_output_idx].width,
@@ -173,7 +174,9 @@ fn main() -> Result<()> {
             // Optional external hint for which output should be cropped.
             // Used by visibility helper so when the tool is on DP-0, crop defaults
             // to DP-2 (and vice-versa) to avoid self-referential capture.
-            if last_desired_output_refresh.elapsed() >= Duration::from_millis(500) {
+            if Instant::now() >= manual_output_override_until
+                && last_desired_output_refresh.elapsed() >= Duration::from_millis(500)
+            {
                 let desired_file =
                     std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE").unwrap_or_else(|_| {
                         "/home/gamer/.cache/screen-tool.capture-output".to_string()
@@ -210,6 +213,7 @@ fn main() -> Result<()> {
                         current_output_idx = gui.selected_output_idx;
                         current_capture_size = (new_output.width, new_output.height);
                         gui.reset_view();
+                        manual_output_override_until = Instant::now() + Duration::from_secs(3);
                     }
                     Err(e) => {
                         log::error!("Failed to switch NVFBC output '{}': {}", new_output.name, e);
@@ -304,6 +308,19 @@ fn main() -> Result<()> {
             let mut capture_ref = capture.as_mut();
             gui.show(ctx, &mut capture_ref);
         });
+
+        // If user manually changed output selector, keep that choice stable briefly
+        // and reflect it to the shared capture-output hint file.
+        if !args.toggle_only
+            && gui.take_output_selection_changed()
+            && !gui.available_outputs.is_empty()
+        {
+            let desired_file = std::env::var("SCREEN_TOOL_CAPTURE_OUTPUT_FILE")
+                .unwrap_or_else(|_| "/home/gamer/.cache/screen-tool.capture-output".to_string());
+            let selected_name = gui.available_outputs[gui.selected_output_idx].name.clone();
+            let _ = std::fs::write(&desired_file, format!("{selected_name}\n"));
+            manual_output_override_until = Instant::now() + Duration::from_secs(3);
+        }
 
         unsafe {
             gl.make_current(window.glx_window);

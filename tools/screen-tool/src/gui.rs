@@ -363,6 +363,7 @@ pub struct ScreenToolGui {
     // Source selection
     pub available_outputs: Vec<OutputInfo>,
     pub selected_output_idx: usize,
+    output_selection_changed: bool,
 
     // Viewport
     pub zoom_level: f32,
@@ -435,6 +436,7 @@ impl ScreenToolGui {
             active_tab: ToolTab::Performance,
             available_outputs: outputs,
             selected_output_idx: 0,
+            output_selection_changed: false,
             zoom_level: 1.0,
             pan_center: (0.5, 0.5),
             quad_renderer: None,
@@ -473,6 +475,12 @@ impl ScreenToolGui {
 
     pub fn wants_capture(&self) -> bool {
         !self.toggle_only && self.active_tab == ToolTab::Crop
+    }
+
+    pub fn take_output_selection_changed(&mut self) -> bool {
+        let v = self.output_selection_changed;
+        self.output_selection_changed = false;
+        v
     }
 
     pub fn update_system_stats(&mut self, stats: SystemStatsSnapshot) {
@@ -863,7 +871,12 @@ impl ScreenToolGui {
                             for (idx, output) in self.available_outputs.iter().enumerate() {
                                 let label =
                                     format!("{} ({}x{})", output.name, output.width, output.height);
-                                ui.selectable_value(&mut self.selected_output_idx, idx, label);
+                                if ui
+                                    .selectable_value(&mut self.selected_output_idx, idx, label)
+                                    .clicked()
+                                {
+                                    self.output_selection_changed = true;
+                                }
                             }
                         });
 
@@ -996,7 +1009,7 @@ impl ScreenToolGui {
                             .show(ui, |ui| {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(panel_w, panel_h),
-                                egui::Layout::top_down(egui::Align::Center),
+                                egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.vertical_centered(|ui| {
                                         ui.heading(
@@ -1256,9 +1269,10 @@ impl ScreenToolGui {
                                         });
 
                                     ui.add_space(8.0 * scale);
-                                    let header_reserved = (180.0 * scale).clamp(145.0, 320.0);
-                                    let footer_reserved = (245.0 * scale).clamp(190.0, 400.0);
-                                    let list_h = (panel_h - header_reserved - footer_reserved).max(180.0);
+                                    let header_reserved = (170.0 * scale).clamp(140.0, 300.0);
+                                    let footer_reserved = (230.0 * scale).clamp(190.0, 360.0);
+                                    let list_h =
+                                        (panel_h - header_reserved - footer_reserved).max(160.0);
                                     self.refresh_shader_listing_if_needed();
                                     let dirs = self.shader_dirs.clone();
                                     let files = self.shader_files.clone();
@@ -1340,10 +1354,16 @@ impl ScreenToolGui {
                                     });
 
                                     ui.add_space(8.0 * scale);
-                                    egui::Frame::group(ui.style())
-                                        .fill(egui::Color32::from_rgba_premultiplied(26, 32, 56, 220))
-                                        .inner_margin(egui::Margin::same((10.0 * scale) as i8))
-                                        .show(ui, |ui| {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(panel_w - 10.0 * scale, footer_reserved),
+                                        egui::Layout::top_down(egui::Align::Center),
+                                        |ui| {
+                                            egui::Frame::group(ui.style())
+                                                .fill(egui::Color32::from_rgba_premultiplied(
+                                                    26, 32, 56, 220,
+                                                ))
+                                                .inner_margin(egui::Margin::same((10.0 * scale) as i8))
+                                                .show(ui, |ui| {
                                             if let Some(selected) = self.shader_selected.clone() {
                                                 egui::Frame::group(ui.style())
                                                     .fill(egui::Color32::from_rgba_premultiplied(33, 41, 68, 230))
@@ -1377,7 +1397,7 @@ impl ScreenToolGui {
                                                             );
                                                         });
                                                     });
-                                                ui.add_space(6.0 * scale);
+                                                ui.add_space(4.0 * scale);
                                                 ui.horizontal_centered(|ui| {
                                                     ui.label(
                                                         egui::RichText::new("Apply to:")
@@ -1447,6 +1467,8 @@ impl ScreenToolGui {
                                                 });
                                             }
                                         });
+                                        },
+                                    );
 
                                     if let Some(until) = self.shader_status_until {
                                         if Instant::now() > until {
