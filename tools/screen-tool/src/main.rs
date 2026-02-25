@@ -227,7 +227,7 @@ fn main() -> Result<()> {
             }
 
             // Periodically refresh output geometry so 1x tracks resolution changes
-            if last_output_refresh.elapsed() >= Duration::from_secs(1) {
+            if last_output_refresh.elapsed() >= Duration::from_secs(5) {
                 let latest_outputs = cap
                     .list_outputs()
                     .iter()

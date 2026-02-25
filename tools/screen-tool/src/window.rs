@@ -36,6 +36,9 @@ pub struct AppWindow {
     start_time: Instant,
     pending_output: Option<egui::FullOutput>,
 
+    // Window state
+    mapped: bool,
+
     // Atoms
     wm_delete_window: c_ulong,
 }
@@ -221,6 +224,7 @@ impl AppWindow {
                 modifiers: egui::Modifiers::NONE,
                 start_time: Instant::now(),
                 pending_output: None,
+                mapped: true,
                 wm_delete_window,
             })
         }
@@ -241,6 +245,16 @@ impl AppWindow {
                         let cm = event.client_message;
                         if cm.data.get_long(0) as c_ulong == self.wm_delete_window {
                             app_events.push(AppEvent::CloseRequested);
+                        }
+                    }
+                    xlib::MapNotify => {
+                        if event.map.window == self.window {
+                            self.mapped = true;
+                        }
+                    }
+                    xlib::UnmapNotify => {
+                        if event.unmap.window == self.window {
+                            self.mapped = false;
                         }
                     }
                     xlib::ConfigureNotify => {
@@ -439,15 +453,9 @@ impl AppWindow {
     }
 
     /// Check if the window is currently mapped (visible).
+    /// Tracked via MapNotify/UnmapNotify events — no X11 round-trip.
     pub fn is_mapped(&self) -> bool {
-        unsafe {
-            let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-            if xlib::XGetWindowAttributes(self.display, self.window, &mut attrs) != 0 {
-                attrs.map_state == 2 // IsViewable
-            } else {
-                false
-            }
-        }
+        self.mapped
     }
 }
 

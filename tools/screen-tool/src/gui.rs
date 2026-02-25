@@ -11,6 +11,233 @@ use std::time::{Duration, Instant};
 use crate::nvfbc::NvfbcCapture;
 use crate::system_stats::SystemStatsSnapshot;
 
+// ─── Modern Retro Color Palette ────────────────────────────────────────────
+#[allow(dead_code)]
+mod colors {
+    use egui::Color32;
+
+    // Backgrounds
+    pub const BG_DEEP: Color32 = Color32::from_rgb(10, 11, 20);         // #0A0B14
+    pub const BG_PANEL: Color32 = Color32::from_rgba_premultiplied(18, 21, 42, 230); // glass panel
+    pub const BG_PANEL_LIGHT: Color32 = Color32::from_rgba_premultiplied(24, 28, 52, 220);
+    pub const BG_CARD: Color32 = Color32::from_rgba_premultiplied(22, 26, 48, 235);
+    pub const BG_INPUT: Color32 = Color32::from_rgba_premultiplied(14, 16, 32, 240);
+
+    // Accents
+    pub const ACCENT_BLUE: Color32 = Color32::from_rgb(0, 212, 255);     // #00D4FF — primary
+    pub const ACCENT_PINK: Color32 = Color32::from_rgb(255, 46, 151);    // #FF2E97 — secondary
+    pub const ACCENT_GREEN: Color32 = Color32::from_rgb(0, 255, 136);    // #00FF88 — success/GPU
+    pub const ACCENT_AMBER: Color32 = Color32::from_rgb(255, 184, 0);    // #FFB800 — warning
+    pub const ACCENT_RED: Color32 = Color32::from_rgb(255, 82, 82);      // #FF5252 — danger
+
+    // Text
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(232, 236, 244);   // #E8ECF4
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(123, 141, 181); // #7B8DB5
+    pub const TEXT_DIM: Color32 = Color32::from_rgb(80, 95, 130);         // dimmer labels
+
+    // Borders
+    pub const BORDER_GLOW: Color32 = Color32::from_rgba_premultiplied(0, 212, 255, 40);
+    pub const BORDER_SUBTLE: Color32 = Color32::from_rgba_premultiplied(80, 100, 160, 60);
+
+    // Tab bar
+    pub const TAB_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(0, 212, 255, 35);
+    pub const TAB_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(0, 212, 255, 18);
+
+    // Gauge colors
+    pub const GAUGE_CPU: Color32 = Color32::from_rgb(255, 120, 92);
+    pub const GAUGE_RAM: Color32 = Color32::from_rgb(109, 186, 255);
+    pub const GAUGE_GPU: Color32 = Color32::from_rgb(0, 255, 136);
+
+    /// Interpolate between two colors based on t (0..1)
+    pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+        let t = t.clamp(0.0, 1.0);
+        Color32::from_rgba_premultiplied(
+            (a.r() as f32 + (b.r() as f32 - a.r() as f32) * t) as u8,
+            (a.g() as f32 + (b.g() as f32 - a.g() as f32) * t) as u8,
+            (a.b() as f32 + (b.b() as f32 - a.b() as f32) * t) as u8,
+            (a.a() as f32 + (b.a() as f32 - a.a() as f32) * t) as u8,
+        )
+    }
+
+    /// Get gauge color based on percentage (green → amber → red)
+    pub fn gauge_heat_color(pct: f32) -> Color32 {
+        if pct < 60.0 {
+            lerp_color(ACCENT_GREEN, ACCENT_AMBER, pct / 60.0)
+        } else {
+            lerp_color(ACCENT_AMBER, ACCENT_RED, (pct - 60.0) / 40.0)
+        }
+    }
+}
+
+// ─── Drawing Helpers ───────────────────────────────────────────────────────
+
+/// Draw a frosted glass panel with glow border
+fn draw_glass_panel(painter: &egui::Painter, rect: egui::Rect, rounding: f32, glow: bool) {
+    // Soft shadow (slightly larger, offset rect)
+    let shadow_rect = rect.expand(2.0).translate(egui::vec2(0.0, 1.0));
+    painter.rect_filled(
+        shadow_rect,
+        rounding + 2.0,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 50),
+    );
+    // Panel fill
+    painter.rect_filled(rect, rounding, colors::BG_PANEL);
+    // Border with optional glow
+    let border_color = if glow { colors::BORDER_GLOW } else { colors::BORDER_SUBTLE };
+    painter.rect_stroke(rect, rounding, egui::Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+}
+
+/// Draw a full-ring gauge with glow effect
+fn draw_ring_gauge(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    thickness: f32,
+    pct: f32,
+    color: egui::Color32,
+    label: &str,
+    value_text: &str,
+    scale: f32,
+) {
+    let pct = pct.clamp(0.0, 100.0);
+    let t = pct / 100.0;
+
+    // Full circle background track
+    let steps = 64;
+    let start_angle = -std::f32::consts::FRAC_PI_2; // 12 o'clock
+    let full_sweep = std::f32::consts::TAU;
+
+    let arc_points = |a0: f32, a1: f32, r: f32| -> Vec<egui::Pos2> {
+        let mut pts = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let p = i as f32 / steps as f32;
+            let a = a0 + (a1 - a0) * p;
+            pts.push(egui::pos2(center.x + r * a.cos(), center.y + r * a.sin()));
+        }
+        pts
+    };
+
+    // Background track
+    painter.add(egui::Shape::line(
+        arc_points(start_angle, start_angle + full_sweep, radius),
+        egui::Stroke::new(thickness, egui::Color32::from_rgba_premultiplied(40, 50, 80, 80)),
+    ));
+
+    // Glow layer (slightly thicker, more transparent)
+    if t > 0.01 {
+        let glow_color = egui::Color32::from_rgba_premultiplied(
+            color.r(), color.g(), color.b(), 40,
+        );
+        painter.add(egui::Shape::line(
+            arc_points(start_angle, start_angle + full_sweep * t, radius),
+            egui::Stroke::new(thickness + 4.0, glow_color),
+        ));
+    }
+
+    // Active arc
+    if t > 0.01 {
+        painter.add(egui::Shape::line(
+            arc_points(start_angle, start_angle + full_sweep * t, radius),
+            egui::Stroke::new(thickness, color),
+        ));
+    }
+
+    // End dot
+    if t > 0.01 {
+        let end_angle = start_angle + full_sweep * t;
+        let dot = egui::pos2(center.x + radius * end_angle.cos(), center.y + radius * end_angle.sin());
+        painter.circle_filled(dot, thickness * 0.6, color);
+    }
+
+    // Center percentage text
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        value_text,
+        egui::FontId::proportional((22.0 * scale).clamp(18.0, 36.0)),
+        colors::TEXT_PRIMARY,
+    );
+
+    // Label below
+    painter.text(
+        egui::pos2(center.x, center.y + radius + thickness + 8.0 * scale),
+        egui::Align2::CENTER_TOP,
+        label,
+        egui::FontId::proportional((13.0 * scale).clamp(11.0, 18.0)),
+        colors::TEXT_SECONDARY,
+    );
+}
+
+/// Draw a "keycap" style button background
+fn draw_keycap(painter: &egui::Painter, rect: egui::Rect, hovered: bool, scale: f32) {
+    let rounding = 8.0 * scale;
+    // Bottom shadow (3D effect)
+    let shadow_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + 2.0 * scale),
+        egui::pos2(rect.right(), rect.bottom() + 2.0 * scale),
+    );
+    painter.rect_filled(
+        shadow_rect,
+        rounding,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 80),
+    );
+    // Key face
+    let face_color = if hovered {
+        egui::Color32::from_rgba_premultiplied(40, 50, 80, 230)
+    } else {
+        egui::Color32::from_rgba_premultiplied(30, 36, 62, 220)
+    };
+    painter.rect_filled(rect, rounding, face_color);
+    // Top highlight (subtle 3D effect)
+    let highlight_rect = egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rect.right(), rect.top() + 2.0 * scale),
+    );
+    painter.rect_filled(
+        highlight_rect,
+        egui::CornerRadius { nw: rounding.round() as u8, ne: rounding.round() as u8, sw: 0, se: 0 },
+        egui::Color32::from_rgba_premultiplied(255, 255, 255, 15),
+    );
+    // Border
+    let border = if hovered { colors::ACCENT_BLUE } else { colors::BORDER_SUBTLE };
+    painter.rect_stroke(rect, rounding, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
+}
+
+/// Draw a retro digital clock display
+fn draw_digital_clock(painter: &egui::Painter, rect: egui::Rect, time_str: &str, scale: f32) {
+    let rounding = 10.0 * scale;
+    // LCD panel background
+    painter.rect_filled(
+        rect,
+        rounding,
+        egui::Color32::from_rgba_premultiplied(8, 12, 20, 240),
+    );
+    painter.rect_stroke(
+        rect,
+        rounding,
+        egui::Stroke::new(1.5, colors::ACCENT_GREEN.linear_multiply(0.3)),
+        egui::StrokeKind::Inside,
+    );
+    // Subtle scanline effect (horizontal lines every 3px)
+    let step = (3.0 * scale).max(2.0);
+    let mut y = rect.top() + step;
+    while y < rect.bottom() {
+        painter.line_segment(
+            [egui::pos2(rect.left() + rounding, y), egui::pos2(rect.right() - rounding, y)],
+            egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(0, 255, 136, 8)),
+        );
+        y += step;
+    }
+    // Time text
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        time_str,
+        egui::FontId::proportional((28.0 * scale).clamp(22.0, 44.0)),
+        colors::ACCENT_GREEN,
+    );
+}
+
 /// Save the current GL framebuffer as a PPM image file.
 /// PPM is a simple uncompressed format that needs no extra dependencies.
 fn save_framebuffer_ppm(gl: &glow::Context, width: u32, height: u32, path: &str) {
@@ -426,6 +653,7 @@ struct QuadRenderer {
     vbo: glow::NativeBuffer,
     u_uv_offset: glow::UniformLocation,
     u_uv_scale: glow::UniformLocation,
+    last_filter_tex_id: u32,
 }
 
 impl QuadRenderer {
@@ -520,12 +748,13 @@ void main() {
                 vbo,
                 u_uv_offset,
                 u_uv_scale,
+                last_filter_tex_id: 0,
             }
         }
     }
 
     /// Draw a textured quad with the given NVFBC texture and UV parameters.
-    fn draw(&self, gl: &glow::Context, texture_id: u32, uv_offset: [f32; 2], uv_scale: [f32; 2]) {
+    fn draw(&mut self, gl: &glow::Context, texture_id: u32, uv_offset: [f32; 2], uv_scale: [f32; 2]) {
         unsafe {
             let tex = glow::NativeTexture(std::num::NonZeroU32::new_unchecked(texture_id));
 
@@ -535,24 +764,17 @@ void main() {
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            // Ensure proper sampling for NVFBC texture
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
+
+            // Only set filter params when texture changes (they're texture-object state)
+            if self.last_filter_tex_id != texture_id {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                self.last_filter_tex_id = texture_id;
+            }
 
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
-            gl.bind_vertex_array(None);
-
-            gl.bind_texture(glow::TEXTURE_2D, None);
-            gl.use_program(None);
+            // Skip unbinding — egui_glow sets its own state before painting
         }
     }
 
@@ -631,6 +853,11 @@ pub struct ScreenToolGui {
     hotkeys: Vec<(String, String)>,
     hotkeys_status: Option<String>,
     hotkeys_status_until: Option<Instant>,
+
+    // cached refresh rate (avoid shelling out to xrandr every frame)
+    cached_refresh_hz: Option<f32>,
+    cached_refresh_output: String,
+    last_refresh_query: Instant,
 
     // live faketime controls
     faketime_file: String,
@@ -712,6 +939,9 @@ impl ScreenToolGui {
             faketime_hour: 12,
             faketime_minute: 0,
             faketime_second: 0,
+            cached_refresh_hz: None,
+            cached_refresh_output: String::new(),
+            last_refresh_query: Instant::now() - Duration::from_secs(60),
             faketime_status: None,
             faketime_status_until: None,
         };
@@ -753,29 +983,44 @@ impl ScreenToolGui {
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0 * ui_scale, 6.0 * ui_scale);
-        style.spacing.button_padding = egui::vec2(12.0 * ui_scale, 8.0 * ui_scale);
+        style.spacing.button_padding = egui::vec2(14.0 * ui_scale, 8.0 * ui_scale);
+        style.spacing.window_margin = egui::Margin::same((12.0 * ui_scale) as i8);
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(22.0 * ui_scale, egui::FontFamily::Proportional),
+        );
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(14.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(14.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(13.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(12.0 * ui_scale, egui::FontFamily::Proportional),
         );
         ctx.set_style(style);
 
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgba_premultiplied(18, 20, 28, 215);
-        visuals.window_fill = egui::Color32::from_rgba_premultiplied(18, 20, 28, 225);
-        visuals.widgets.noninteractive.bg_fill =
-            egui::Color32::from_rgba_premultiplied(35, 38, 52, 210);
-        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(46, 50, 70, 200);
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(65, 74, 110, 220);
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(77, 94, 142, 240);
+        visuals.panel_fill = colors::BG_PANEL;
+        visuals.window_fill = colors::BG_PANEL;
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
+        visuals.window_stroke = egui::Stroke::new(1.0, colors::BORDER_SUBTLE);
+        visuals.widgets.noninteractive.bg_fill = colors::BG_PANEL_LIGHT;
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors::TEXT_SECONDARY);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(28, 34, 60, 210);
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, colors::TEXT_PRIMARY);
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.hovered.bg_fill = colors::TAB_HOVER_BG;
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE);
+        visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.active.bg_fill = colors::TAB_ACTIVE_BG;
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE);
+        visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
+        visuals.selection.bg_fill = colors::ACCENT_BLUE.linear_multiply(0.2);
+        visuals.selection.stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE);
         ctx.set_visuals(visuals);
     }
 
@@ -786,6 +1031,19 @@ impl ScreenToolGui {
             self.shader_files = files;
             self.shader_list_dir = self.shader_current_dir.clone();
         }
+    }
+
+    fn get_refresh_hz(&mut self, output_name: &str) -> Option<f32> {
+        if self.cached_refresh_output == output_name
+            && self.last_refresh_query.elapsed() < Duration::from_secs(10)
+        {
+            return self.cached_refresh_hz;
+        }
+        let hz = query_output_refresh_hz(output_name);
+        self.cached_refresh_hz = hz;
+        self.cached_refresh_output = output_name.to_string();
+        self.last_refresh_query = Instant::now();
+        hz
     }
 
     pub fn reset_view(&mut self) {
@@ -888,7 +1146,7 @@ impl ScreenToolGui {
                 gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
                 gl.disable(glow::SCISSOR_TEST);
                 gl.disable(glow::BLEND);
-                gl.clear_color(0.07, 0.09, 0.13, 0.95);
+                gl.clear_color(0.04, 0.043, 0.078, 0.95); // BG_DEEP
                 gl.clear(glow::COLOR_BUFFER_BIT);
             }
             return;
@@ -899,7 +1157,7 @@ impl ScreenToolGui {
                 gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
                 gl.disable(glow::SCISSOR_TEST);
                 gl.disable(glow::BLEND);
-                gl.clear_color(0.04, 0.045, 0.06, 1.0);
+                gl.clear_color(0.039, 0.043, 0.078, 1.0); // BG_DEEP
                 gl.clear(glow::COLOR_BUFFER_BIT);
             }
             return;
@@ -946,7 +1204,7 @@ impl ScreenToolGui {
             gl.viewport(draw_x, draw_y, draw_w, draw_h);
         }
 
-        self.quad_renderer.as_ref().unwrap().draw(
+        self.quad_renderer.as_mut().unwrap().draw(
             gl,
             self.current_nvfbc_tex_id,
             uv_offset,
@@ -980,17 +1238,19 @@ impl ScreenToolGui {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.add_space((ui.available_height() * 0.2).max(2.0));
+                        ui.add_space((ui.available_height() * 0.15).max(2.0));
                         let side = ui.available_width().min(ui.available_height()).max(24.0);
                         if ui
                             .add_sized(
                                 [side, side],
-                                egui::Button::new(egui::RichText::new("◎").size(0.62 * side))
-                                    .fill(egui::Color32::from_rgba_premultiplied(255, 255, 255, 26))
-                                    .stroke(egui::Stroke::new(
-                                        1.2,
-                                        egui::Color32::from_rgba_premultiplied(255, 255, 255, 90),
-                                    )),
+                                egui::Button::new(
+                                    egui::RichText::new("G")
+                                        .size(0.5 * side)
+                                        .color(colors::ACCENT_BLUE),
+                                )
+                                .fill(egui::Color32::from_rgba_premultiplied(0, 212, 255, 18))
+                                .stroke(egui::Stroke::new(1.5, colors::ACCENT_BLUE.linear_multiply(0.5)))
+                                .corner_radius(side * 0.5),
                             )
                             .clicked()
                         {
@@ -1121,121 +1381,118 @@ impl ScreenToolGui {
         let scale =
             ((rect.width().min(rect.height()) / 620.0).clamp(1.0, 3.8)) * self.ui_scale_user;
 
-        // Toolbar
-        if self.show_toolbar {
-            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Display:");
-                    let current_name = self
-                        .available_outputs
-                        .get(self.selected_output_idx)
-                        .map(|o| o.name.as_str())
-                        .unwrap_or("None");
-                    let prev_selected_output_idx = self.selected_output_idx;
-                    egui::ComboBox::from_id_salt("display_selector")
-                        .selected_text(current_name)
-                        .show_ui(ui, |ui| {
-                            for (idx, output) in self.available_outputs.iter().enumerate() {
-                                let label =
-                                    format!("{} ({}x{})", output.name, output.width, output.height);
-                                let _ =
-                                    ui.selectable_value(&mut self.selected_output_idx, idx, label);
-                            }
+        // Compact floating toolbar (Crop tab only, auto-hideable)
+        if self.show_toolbar && self.active_tab == ToolTab::Crop {
+            egui::Area::new(egui::Id::new("crop_toolbar"))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    egui::Frame::NONE
+                        .fill(colors::BG_PANEL)
+                        .corner_radius((10.0 * scale) as u8)
+                        .stroke(egui::Stroke::new(1.0, colors::BORDER_GLOW))
+                        .inner_margin(egui::Margin::symmetric((12.0 * scale) as i8, (6.0 * scale) as i8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Display selector
+                                let current_name = self.available_outputs.get(self.selected_output_idx).map(|o| o.name.as_str()).unwrap_or("None");
+                                let prev_idx = self.selected_output_idx;
+                                ui.label(egui::RichText::new("Display").size(12.0 * scale).color(colors::TEXT_DIM));
+                                egui::ComboBox::from_id_salt("display_selector")
+                                    .selected_text(egui::RichText::new(current_name).size(12.0 * scale))
+                                    .width(80.0 * scale)
+                                    .show_ui(ui, |ui| {
+                                        for (idx, output) in self.available_outputs.iter().enumerate() {
+                                            let label = format!("{} ({}x{})", output.name, output.width, output.height);
+                                            let _ = ui.selectable_value(&mut self.selected_output_idx, idx, label);
+                                        }
+                                    });
+                                if self.selected_output_idx != prev_idx {
+                                    self.output_selection_changed = true;
+                                }
+
+                                ui.add_space(8.0 * scale);
+                                ui.label(egui::RichText::new("|").size(12.0 * scale).color(colors::BORDER_SUBTLE));
+                                ui.add_space(4.0 * scale);
+
+                                // Quick presets
+                                for label in ["Full", "TL", "TR", "BL", "BR"] {
+                                    if ui.add(egui::Button::new(egui::RichText::new(label).size(11.0 * scale).color(colors::TEXT_SECONDARY)).fill(egui::Color32::TRANSPARENT).corner_radius(6.0)).clicked() {
+                                        self.apply_quick_preset(label);
+                                    }
+                                }
+
+                                ui.add_space(8.0 * scale);
+                                ui.label(egui::RichText::new("|").size(12.0 * scale).color(colors::BORDER_SUBTLE));
+                                ui.add_space(4.0 * scale);
+
+                                // Slots
+                                for idx in 0..3 {
+                                    let slot_label = format!("{}", idx + 1);
+                                    let has_slot = self.saved_slots[idx].is_some();
+                                    let color = if has_slot { colors::ACCENT_BLUE } else { colors::TEXT_DIM };
+                                    if ui.add(egui::Button::new(egui::RichText::new(&slot_label).size(11.0 * scale).color(color)).fill(egui::Color32::TRANSPARENT).corner_radius(6.0)).clicked() {
+                                        if let Some((center, zoom)) = self.saved_slots[idx] {
+                                            self.set_view(center, zoom);
+                                        }
+                                    }
+                                }
+                            });
                         });
-                    if self.selected_output_idx != prev_selected_output_idx {
-                        self.output_selection_changed = true;
-                    }
-
-                    ui.separator();
-
-                    ui.label("Zoom:");
-                    ui.add(
-                        egui::Slider::new(&mut self.zoom_level, 1.0..=8.0)
-                            .logarithmic(true)
-                            .text("x"),
-                    );
-
-                    if ui.button("Reset").clicked() {
-                        self.reset_view();
-                    }
-
-                    ui.separator();
-
-                    ui.label("Quick:");
-                    for label in ["Full", "TL", "TR", "BL", "BR", "Center"] {
-                        if ui.small_button(label).clicked() {
-                            self.apply_quick_preset(label);
-                        }
-                    }
-
-                    ui.separator();
-
-                    ui.label("Slots:");
-                    for idx in 0..3 {
-                        let slot_text = format!("S{}", idx + 1);
-                        if ui.small_button(slot_text).clicked() {
-                            if let Some((center, zoom)) = self.saved_slots[idx] {
-                                self.set_view(center, zoom);
-                            }
-                        }
-                        if ui.small_button(format!("Save {}", idx + 1)).clicked() {
-                            self.saved_slots[idx] = Some((self.pan_center, self.zoom_level));
-                        }
-                    }
-
-                    ui.separator();
-                    ui.checkbox(&mut self.show_stats_panel, "Stats");
-                    ui.checkbox(&mut self.show_help_panel, "Help");
-                    ui.separator();
-                    ui.label("UI Scale");
-                    ui.add(
-                        egui::Slider::new(&mut self.ui_scale_user, 0.8..=3.0)
-                            .logarithmic(true)
-                            .show_value(true),
-                    );
                 });
-            });
         }
 
         if self.show_stats_panel && self.active_tab == ToolTab::Crop {
-            egui::Window::new("Performance")
-                .default_pos(egui::pos2(10.0, 56.0))
-                .resizable(false)
-                .collapsible(true)
+            egui::Area::new(egui::Id::new("stats_hud"))
+                .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 52.0))
+                .order(egui::Order::Foreground)
+                .interactable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("Render FPS: {:.0}", self.fps));
-                    ui.label(format!("Capture FPS (new): {:.0}", self.capture_fps));
-                    if self.capture_size.0 > 0 {
-                        ui.label(format!(
-                            "Capture: {}x{}",
-                            self.capture_size.0, self.capture_size.1
-                        ));
-                    }
-                    ui.label(format!("Zoom: {:.2}x", self.zoom_level));
-                    ui.label(format!(
-                        "Pan: {:.3}, {:.3}",
-                        self.pan_center.0, self.pan_center.1
-                    ));
+                    egui::Frame::NONE
+                        .fill(egui::Color32::from_rgba_premultiplied(10, 12, 24, 180))
+                        .corner_radius(8)
+                        .stroke(egui::Stroke::new(0.5, colors::BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            let s = (11.0 * scale).clamp(10.0, 15.0);
+                            ui.label(egui::RichText::new(format!("FPS {:.0} | Capture {:.0}", self.fps, self.capture_fps)).size(s).color(colors::ACCENT_GREEN));
+                            if self.capture_size.0 > 0 {
+                                ui.label(egui::RichText::new(format!("{}x{} | {:.1}x", self.capture_size.0, self.capture_size.1, self.zoom_level)).size(s).color(colors::TEXT_DIM));
+                            }
+                        });
                 });
         }
 
         if self.show_help_panel && self.active_tab == ToolTab::Crop {
-            egui::Window::new("Controls")
-                .default_pos(egui::pos2(280.0, 56.0))
-                .resizable(false)
-                .collapsible(true)
+            egui::Area::new(egui::Id::new("help_hud"))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 52.0))
+                .order(egui::Order::Foreground)
+                .interactable(true)
                 .show(ctx, |ui| {
-                    ui.label("Scroll: Zoom");
-                    ui.label("Drag / Arrows: Pan");
-                    ui.label("Tab/H: Toggle toolbar");
-                    ui.label("F1: Toggle stats");
-                    ui.label("F2: Toggle help");
-                    ui.label("Alt+1..5: Switch display output");
-                    ui.label("Ctrl+1..3: Save crop slots");
-                    ui.label("1..3: Recall crop slots");
-                    ui.label("F5: Save screenshot");
-                    ui.label("F6/F7/F9: Crop/Perf/Shader tabs");
-                    ui.label("Ctrl+Shift+F8 or Ctrl+Shift+K: Toggle tool overlay");
+                    egui::Frame::NONE
+                        .fill(colors::BG_PANEL)
+                        .corner_radius(10)
+                        .stroke(egui::Stroke::new(1.0, colors::BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            let s = (11.0 * scale).clamp(10.0, 14.0);
+                            let shortcut = |ui: &mut egui::Ui, key: &str, desc: &str| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(key).size(s).color(colors::ACCENT_BLUE).strong());
+                                    ui.label(egui::RichText::new(desc).size(s).color(colors::TEXT_DIM));
+                                });
+                            };
+                            shortcut(ui, "Scroll", "Zoom");
+                            shortcut(ui, "Drag", "Pan");
+                            shortcut(ui, "Tab", "Toggle toolbar");
+                            shortcut(ui, "F1/F2", "Stats / Help");
+                            shortcut(ui, "F5", "Screenshot");
+                            shortcut(ui, "F6/F7/F9", "Crop / Perf / Shader");
+                            shortcut(ui, "Alt+1..5", "Switch display");
+                            shortcut(ui, "1..3", "Load slot");
+                            shortcut(ui, "Ctrl+1..3", "Save slot");
+                        });
                 });
         }
 
@@ -1252,239 +1509,127 @@ impl ScreenToolGui {
                     };
                     let gpu = self.system_stats.gpu_usage_pct.unwrap_or(0.0).clamp(0.0, 100.0);
                     let selected_output = self.available_outputs.get(self.selected_output_idx).cloned();
-                    let selected_output_name = selected_output
-                        .as_ref()
-                        .map(|o| o.name.clone())
-                        .unwrap_or_else(|| "N/A".to_string());
-                    let selected_output_mode = selected_output
-                        .as_ref()
-                        .map(|o| format!("{} x {}", o.width, o.height))
-                        .unwrap_or_else(|| "N/A".to_string());
-                    let selected_output_hz = selected_output
-                        .as_ref()
-                        .and_then(|o| query_output_refresh_hz(&o.name));
+                    let selected_output_name = selected_output.as_ref().map(|o| o.name.clone()).unwrap_or_else(|| "N/A".into());
+                    let selected_output_mode = selected_output.as_ref().map(|o| format!("{}x{}", o.width, o.height)).unwrap_or_else(|| "N/A".into());
+                    let selected_output_hz = selected_output.as_ref().map(|o| o.name.clone()).and_then(|name| self.get_refresh_hz(&name));
 
                     let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
                     let panel_w = (ui.available_width() - 20.0).max(440.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
-                    let top_space = (14.0 * scale).clamp(10.0, 24.0);
-                    let row_gap = (12.0 * scale).clamp(8.0, 20.0);
-                    let card_gap = (8.0 * scale).clamp(6.0, 14.0);
+                    let card_gap = (10.0 * scale).clamp(6.0, 16.0);
 
-                    egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgba_premultiplied(12, 18, 36, 238))
-                        .inner_margin(egui::Margin::same((16.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(panel_w, panel_h),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                        ui.vertical_centered(|ui| {
-                                            ui.heading(
-                                                egui::RichText::new("Performance Monitor")
-                                                    .size((26.0 * scale).clamp(24.0, 34.0))
-                                                    .color(egui::Color32::from_rgb(181, 214, 255)),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new("Live system telemetry")
-                                                    .size((15.0 * scale).clamp(14.0, 20.0))
-                                                    .color(egui::Color32::from_rgb(145, 163, 196)),
-                                            );
-                                        });
+                    // Main glass panel
+                    let panel_rect = egui::Rect::from_min_size(
+                        ui.cursor().min + egui::vec2(10.0, 4.0),
+                        egui::vec2(panel_w, panel_h),
+                    );
+                    let painter = ui.painter();
+                    draw_glass_panel(painter, panel_rect, 14.0 * scale, true);
 
-                                        ui.add_space(top_space);
-                                        let content_w = ui.available_width().max(300.0);
-                                        let content_h = ui.available_height().max(180.0);
-                                        let row2_h = ((content_h * 0.24).max(64.0)).min(140.0);
-                                        let row1_h = ((content_h - row2_h - row_gap).max(130.0))
-                                            .min(320.0);
-                                        let vertical_spacer =
-                                            ((content_h - row1_h - row2_h - row_gap).max(0.0)) * 0.5;
-                                        let card_w = ((content_w - card_gap * 2.0) / 3.0).max(120.0);
-                                        let pill_w = ((content_w - card_gap * 4.0) / 5.0).max(90.0);
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
+                        ui.vertical_centered(|ui| {
+                            // Header with branding
+                            ui.add_space(6.0 * scale);
+                            ui.label(
+                                egui::RichText::new("GAMER")
+                                    .size((11.0 * scale).clamp(10.0, 16.0))
+                                    .color(colors::ACCENT_BLUE)
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Performance Monitor")
+                                    .size((24.0 * scale).clamp(20.0, 34.0))
+                                    .color(colors::TEXT_PRIMARY)
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Live system telemetry")
+                                    .size((12.0 * scale).clamp(11.0, 16.0))
+                                    .color(colors::TEXT_DIM),
+                            );
 
-                                        let draw_gauge = |ui: &mut egui::Ui,
-                                                          title: &str,
-                                                          pct: f32,
-                                                          value: &str,
-                                                          color: egui::Color32| {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                egui::vec2(card_w, row1_h),
-                                                egui::Sense::hover(),
-                                            );
-                                            let painter = ui.painter_at(rect);
-                                            painter.rect_filled(
-                                                rect,
-                                                12.0 * scale,
-                                                egui::Color32::from_rgba_premultiplied(24, 30, 53, 230),
-                                            );
-                                            let center =
-                                                egui::pos2(rect.center().x, rect.top() + rect.height() * 0.62);
-                                            let radius = (rect.width() * 0.24).min(rect.height() * 0.26);
-                                            let start = -std::f32::consts::PI;
-                                            let end = 0.0_f32;
-                                            let sweep = end - start;
-                                            let t = (pct / 100.0).clamp(0.0, 1.0);
+                            ui.add_space(12.0 * scale);
 
-                                            let arc_points = |a0: f32, a1: f32, r: f32| {
-                                                let steps = 56;
-                                                let mut pts = Vec::with_capacity(steps + 1);
-                                                for i in 0..=steps {
-                                                    let p = i as f32 / steps as f32;
-                                                    let a = a0 + (a1 - a0) * p;
-                                                    pts.push(egui::pos2(
-                                                        center.x + r * a.cos(),
-                                                        center.y + r * a.sin(),
-                                                    ));
-                                                }
-                                                pts
-                                            };
+                            // Ring gauges row
+                            let content_w = ui.available_width();
+                            let gauge_area_h = (panel_h * 0.45).clamp(120.0, 280.0);
+                            let gauge_card_w = ((content_w - card_gap * 2.0) / 3.0).max(100.0);
+                            let gauge_radius = (gauge_card_w * 0.3).min(gauge_area_h * 0.32);
+                            let gauge_thickness = (6.0 * scale).clamp(4.0, 10.0);
 
-                                            painter.add(egui::Shape::line(
-                                                arc_points(start, end, radius),
-                                                egui::Stroke::new(
-                                                    6.0 * scale,
-                                                    egui::Color32::from_rgba_premultiplied(88, 98, 126, 110),
-                                                ),
-                                            ));
-                                            painter.add(egui::Shape::line(
-                                                arc_points(start, start + sweep * t, radius),
-                                                egui::Stroke::new(7.0 * scale, color),
-                                            ));
+                            ui.horizontal(|ui| {
+                                // CPU gauge card
+                                let (cpu_rect, _) = ui.allocate_exact_size(egui::vec2(gauge_card_w, gauge_area_h), egui::Sense::hover());
+                                let p = ui.painter_at(cpu_rect);
+                                draw_glass_panel(&p, cpu_rect, 12.0 * scale, false);
+                                let cpu_center = egui::pos2(cpu_rect.center().x, cpu_rect.center().y - 6.0 * scale);
+                                draw_ring_gauge(&p, cpu_center, gauge_radius, gauge_thickness, cpu, colors::GAUGE_CPU, "CPU", &format!("{:.0}%", cpu), scale);
 
-                                            let needle_a = start + sweep * t;
-                                            let needle_tip = egui::pos2(
-                                                center.x + (radius - 5.0 * scale) * needle_a.cos(),
-                                                center.y + (radius - 5.0 * scale) * needle_a.sin(),
-                                            );
-                                            painter.line_segment(
-                                                [center, needle_tip],
-                                                egui::Stroke::new((2.0 * scale).max(1.5), egui::Color32::WHITE),
-                                            );
-                                            painter.circle_filled(
-                                                center,
-                                                (3.0 * scale).max(2.2),
-                                                egui::Color32::WHITE,
-                                            );
-                                            painter.text(
-                                                egui::pos2(rect.center().x, rect.top() + 10.0 * scale),
-                                                egui::Align2::CENTER_TOP,
-                                                title,
-                                                egui::FontId::proportional((14.0 * scale).clamp(13.0, 20.0)),
-                                                egui::Color32::from_rgb(171, 189, 220),
-                                            );
-                                            painter.text(
-                                                egui::pos2(rect.center().x, rect.bottom() - 14.0 * scale),
-                                                egui::Align2::CENTER_BOTTOM,
-                                                value,
-                                                egui::FontId::proportional((18.0 * scale).clamp(16.0, 26.0)),
-                                                egui::Color32::WHITE,
-                                            );
-                                        };
+                                ui.add_space(card_gap);
 
-                                        if vertical_spacer > 2.0 {
-                                            ui.add_space(vertical_spacer);
-                                        }
+                                // RAM gauge card
+                                let (ram_rect, _) = ui.allocate_exact_size(egui::vec2(gauge_card_w, gauge_area_h), egui::Sense::hover());
+                                let p = ui.painter_at(ram_rect);
+                                draw_glass_panel(&p, ram_rect, 12.0 * scale, false);
+                                let ram_center = egui::pos2(ram_rect.center().x, ram_rect.center().y - 6.0 * scale);
+                                draw_ring_gauge(&p, ram_center, gauge_radius, gauge_thickness, ram, colors::GAUGE_RAM, "RAM", &format!("{:.0}%", ram), scale);
 
-                                        ui.horizontal(|ui| {
-                                            draw_gauge(
-                                                ui,
-                                                "CPU",
-                                                cpu,
-                                                &format!("{:.0}%", cpu),
-                                                egui::Color32::from_rgb(255, 120, 92),
-                                            );
-                                            ui.add_space(card_gap);
-                                            draw_gauge(
-                                                ui,
-                                                "RAM",
-                                                ram,
-                                                &format!("{:.0}%", ram),
-                                                egui::Color32::from_rgb(109, 186, 255),
-                                            );
-                                            ui.add_space(card_gap);
-                                            draw_gauge(
-                                                ui,
-                                                "GPU",
-                                                gpu,
-                                                &self
-                                                    .system_stats
-                                                    .gpu_usage_pct
-                                                    .map(|v| format!("{v:.0}%"))
-                                                    .unwrap_or_else(|| "N/A".to_string()),
-                                                egui::Color32::from_rgb(120, 224, 164),
-                                            );
-                                        });
+                                ui.add_space(card_gap);
 
-                                        ui.add_space(row_gap);
-                                        let name_size = (14.0 * scale).max(13.0);
-                                        let value_size = (16.0 * scale).max(15.0);
-                                        let gpu_mem_text = match (
-                                            self.system_stats.gpu_mem_used_mib,
-                                            self.system_stats.gpu_mem_total_mib,
-                                        ) {
-                                            (Some(used), Some(total)) => format!("{used}/{total} MiB"),
-                                            _ => "N/A".to_string(),
-                                        };
+                                // GPU gauge card
+                                let (gpu_rect, _) = ui.allocate_exact_size(egui::vec2(gauge_card_w, gauge_area_h), egui::Sense::hover());
+                                let p = ui.painter_at(gpu_rect);
+                                draw_glass_panel(&p, gpu_rect, 12.0 * scale, false);
+                                let gpu_center = egui::pos2(gpu_rect.center().x, gpu_rect.center().y - 6.0 * scale);
+                                let gpu_text = self.system_stats.gpu_usage_pct.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "N/A".into());
+                                draw_ring_gauge(&p, gpu_center, gauge_radius, gauge_thickness, gpu, colors::GAUGE_GPU, "GPU", &gpu_text, scale);
+                            });
 
-                                        let metric_pill = |ui: &mut egui::Ui, title: &str, value: String| {
-                                            egui::Frame::group(ui.style())
-                                                .fill(egui::Color32::from_rgba_premultiplied(26, 33, 56, 220))
-                                                .inner_margin(egui::Margin::same((6.0 * scale) as i8))
-                                                .show(ui, |ui| {
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(pill_w, row2_h),
-                                                        egui::Layout::top_down(egui::Align::Center),
-                                                        |ui| {
-                                                            ui.vertical_centered(|ui| {
-                                                                ui.label(
-                                                                    egui::RichText::new(title)
-                                                                        .size(name_size)
-                                                                        .color(egui::Color32::from_rgb(169, 189, 222)),
-                                                                );
-                                                                ui.label(
-                                                                    egui::RichText::new(value)
-                                                                        .size(value_size)
-                                                                        .strong()
-                                                                        .color(egui::Color32::WHITE),
-                                                                );
-                                                            });
-                                                        },
-                                                    );
-                                                });
-                                        };
+                            ui.add_space(12.0 * scale);
 
-                                        ui.horizontal(|ui| {
-                                            metric_pill(ui, "Display", selected_output_name.clone());
-                                            ui.add_space(card_gap);
-                                            metric_pill(ui, "Resolution", selected_output_mode.clone());
-                                            ui.add_space(card_gap);
-                                            metric_pill(
-                                                ui,
-                                                "Display FPS",
-                                                selected_output_hz
-                                                    .map(|v| format!("{v:.2}"))
-                                                    .unwrap_or_else(|| "N/A".to_string()),
-                                            );
-                                            ui.add_space(card_gap);
-                                            metric_pill(ui, "GPU Mem", gpu_mem_text);
-                                            ui.add_space(card_gap);
-                                            metric_pill(
-                                                ui,
-                                                "RAM Used",
-                                                format!(
-                                                    "{:.1}/{:.1} GiB",
-                                                    self.system_stats.ram_used_gib, self.system_stats.ram_total_gib
-                                                ),
-                                            );
-                                        });
+                            // Metric cards row
+                            let pill_w = ((content_w - card_gap * 4.0) / 5.0).max(80.0);
+                            let pill_h = (48.0 * scale).clamp(40.0, 80.0);
+                            let name_size = (11.0 * scale).clamp(10.0, 15.0);
+                            let value_size = (14.0 * scale).clamp(13.0, 20.0);
+                            let gpu_mem_text = match (self.system_stats.gpu_mem_used_mib, self.system_stats.gpu_mem_total_mib) {
+                                (Some(used), Some(total)) => format!("{used}/{total}M"),
+                                _ => "N/A".into(),
+                            };
 
-                                        if vertical_spacer > 2.0 {
-                                            ui.add_space(vertical_spacer * 0.5);
-                                        }
-                                    },
+                            let metric_card = |ui: &mut egui::Ui, title: &str, value: &str, accent: egui::Color32| {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(pill_w, pill_h), egui::Sense::hover());
+                                let p = ui.painter_at(rect);
+                                draw_glass_panel(&p, rect, 8.0 * scale, false);
+                                p.text(
+                                    egui::pos2(rect.center().x, rect.top() + 8.0 * scale),
+                                    egui::Align2::CENTER_TOP,
+                                    title,
+                                    egui::FontId::proportional(name_size),
+                                    colors::TEXT_DIM,
                                 );
+                                p.text(
+                                    egui::pos2(rect.center().x, rect.bottom() - 8.0 * scale),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    value,
+                                    egui::FontId::proportional(value_size),
+                                    accent,
+                                );
+                            };
+
+                            ui.horizontal(|ui| {
+                                metric_card(ui, "Display", &selected_output_name, colors::TEXT_PRIMARY);
+                                ui.add_space(card_gap);
+                                metric_card(ui, "Resolution", &selected_output_mode, colors::TEXT_PRIMARY);
+                                ui.add_space(card_gap);
+                                metric_card(ui, "Refresh", &selected_output_hz.map(|v| format!("{v:.0} Hz")).unwrap_or_else(|| "N/A".into()), colors::ACCENT_BLUE);
+                                ui.add_space(card_gap);
+                                metric_card(ui, "VRAM", &gpu_mem_text, colors::ACCENT_GREEN);
+                                ui.add_space(card_gap);
+                                metric_card(ui, "RAM", &format!("{:.1}/{:.1}G", self.system_stats.ram_used_gib, self.system_stats.ram_total_gib), colors::GAUGE_RAM);
+                            });
                         });
+                    });
                 });
         }
 
@@ -1493,303 +1638,264 @@ impl ScreenToolGui {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
-                    let panel_w = (ui.available_width() - 20.0).max(540.0);
-                    let panel_h = (ui.available_height() - bottom_reserved).max(320.0);
-                    ui.add_space(4.0 * scale);
-                    egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgba_premultiplied(17, 21, 38, 240))
-                        .inner_margin(egui::Margin::same((14.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(panel_w, panel_h),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.set_min_height(panel_h);
-                                    ui.vertical_centered(|ui| {
-                                        ui.heading(
-                                            egui::RichText::new("Shader Library")
-                                                .size(24.0 * scale)
-                                                .color(egui::Color32::from_rgb(214, 233, 255)),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new("Browse presets and apply to Top / Bottom / Both")
-                                                .size(12.0 * scale)
-                                                .color(egui::Color32::from_rgb(149, 168, 201)),
-                                        );
-                                    });
-                                    ui.add_space(8.0 * scale);
+                    let panel_w = (ui.available_width() - 20.0).max(440.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
 
-                                    let current_display = if self.shader_current_dir.len() > 80 {
-                                        format!("…{}", &self.shader_current_dir[self.shader_current_dir.len() - 80..])
-                                    } else {
-                                        self.shader_current_dir.clone()
-                                    };
-                                    egui::Frame::group(ui.style())
-                                        .fill(egui::Color32::from_rgba_premultiplied(27, 34, 58, 220))
-                                        .inner_margin(egui::Margin::same((8.0 * scale) as i8))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new("Current folder")
-                                                        .size(13.0 * scale)
-                                                        .color(egui::Color32::from_rgb(176, 194, 224)),
-                                                );
-                                                ui.separator();
-                                                ui.monospace(current_display);
-                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    if ui.button("Refresh").clicked() {
-                                                        self.shader_presets = discover_shader_presets();
-                                                        self.shader_list_dir.clear();
-                                                    }
-                                                    if ui.button("Up").clicked() {
-                                                        if let Some(parent) = std::path::Path::new(&self.shader_current_dir).parent() {
-                                                            let parent = parent.to_string_lossy().to_string();
-                                                            if parent.starts_with(&self.shader_root_dir) {
-                                                                self.shader_current_dir = parent;
-                                                            }
-                                                        }
-                                                    }
-                                                });
-                                            });
-                                        });
+                    let panel_rect = egui::Rect::from_min_size(
+                        ui.cursor().min + egui::vec2(10.0, 4.0),
+                        egui::vec2(panel_w, panel_h),
+                    );
+                    let painter = ui.painter();
+                    draw_glass_panel(painter, panel_rect, 14.0 * scale, true);
 
-                                    ui.add_space(8.0 * scale);
-                                    let section_gap = (8.0 * scale).clamp(6.0, 14.0);
-                                    let footer_reserved = (panel_h * 0.36).clamp(190.0, 360.0);
-                                    let list_h = (ui.available_height() - footer_reserved - section_gap).max(140.0);
-                                    self.refresh_shader_listing_if_needed();
-                                    let dirs = self.shader_dirs.clone();
-                                    let files = self.shader_files.clone();
-                                    let item_text_size = (16.0 * scale).clamp(16.0, 24.0);
-                                    let row_h = (40.0 * scale).clamp(38.0, 56.0);
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(12.0 * scale)), |ui| {
+                        // Header
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(4.0 * scale);
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Shader Library").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("Browse and apply shader presets").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                        });
+                        ui.add_space(6.0 * scale);
 
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(panel_w - 12.0 * scale, list_h),
-                                        egui::Layout::left_to_right(egui::Align::Min),
-                                        |ui| {
-                                            let col_gap = (10.0 * scale).clamp(8.0, 16.0);
-                                            let col_w = ((ui.available_width() - col_gap) / 2.0).max(220.0);
-                                            egui::Frame::group(ui.style())
-                                                .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
-                                                .inner_margin(egui::Margin::same((8.0 * scale) as i8))
-                                                .show(ui, |ui| {
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(col_w, list_h),
-                                                        egui::Layout::top_down(egui::Align::Min),
-                                                        |ui| {
-                                                            ui.label(egui::RichText::new("Folders").size((16.0 * scale).clamp(15.0, 22.0)).strong());
-                                                            ui.add_space(4.0 * scale);
-                                                            egui::ScrollArea::vertical()
-                                                                .id_salt("shader_dirs_scroll")
-                                                                .max_height((list_h - 36.0 * scale).max(60.0))
-                                                                .show(ui, |ui| {
-                                                                    for d in &dirs {
-                                                                        let label = format!(
-                                                                            "📁 {}",
-                                                                            std::path::Path::new(d)
-                                                                                .file_name()
-                                                                                .and_then(|s| s.to_str())
-                                                                                .unwrap_or(d)
-                                                                        );
-                                                                        if ui
-                                                                            .add_sized(
-                                                                                [ui.available_width(), row_h],
-                                                                                egui::Button::new(
-                                                                                    egui::RichText::new(label).size(item_text_size),
-                                                                                ),
-                                                                            )
-                                                                            .clicked()
-                                                                        {
-                                                                            self.shader_current_dir = d.clone();
-                                                                            self.shader_selected = None;
-                                                                        }
-                                                                    }
-                                                                });
-                                                        },
-                                                    );
-                                                });
-                                            ui.add_space(col_gap);
-                                            egui::Frame::group(ui.style())
-                                                .fill(egui::Color32::from_rgba_premultiplied(22, 28, 49, 220))
-                                                .inner_margin(egui::Margin::same((8.0 * scale) as i8))
-                                                .show(ui, |ui| {
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(col_w, list_h),
-                                                        egui::Layout::top_down(egui::Align::Min),
-                                                        |ui| {
-                                                            ui.label(egui::RichText::new("Presets").size((16.0 * scale).clamp(15.0, 22.0)).strong());
-                                                            ui.add_space(4.0 * scale);
-                                                            egui::ScrollArea::vertical()
-                                                                .id_salt("shader_files_scroll")
-                                                                .max_height((list_h - 36.0 * scale).max(60.0))
-                                                                .show(ui, |ui| {
-                                                                    for file in &files {
-                                                                        let selected = self
-                                                                            .shader_selected
-                                                                            .as_ref()
-                                                                            .map(|s| s == file)
-                                                                            .unwrap_or(false);
-                                                                        let label = std::path::Path::new(file)
-                                                                            .file_name()
-                                                                            .and_then(|s| s.to_str())
-                                                                            .unwrap_or(file)
-                                                                            .to_string();
-                                                                        if ui
-                                                                            .add_sized(
-                                                                                [ui.available_width(), row_h],
-                                                                                egui::Button::new(
-                                                                                    egui::RichText::new(label).size(item_text_size),
-                                                                                )
-                                                                                .selected(selected),
-                                                                            )
-                                                                            .clicked()
-                                                                        {
-                                                                            self.shader_selected = Some(file.clone());
-                                                                        }
-                                                                    }
-                                                                });
-                                                        },
-                                                    );
-                                                });
-                                        },
-                                    );
+                        // Path bar with navigation
+                        let current_display = ellipsize_middle(&self.shader_current_dir, 60);
+                        let path_bar_h = (28.0 * scale).clamp(26.0, 40.0);
+                        let path_rect = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(ui.available_width(), path_bar_h),
+                        );
+                        let p = ui.painter();
+                        p.rect_filled(path_rect, 6.0 * scale, colors::BG_INPUT);
+                        p.rect_stroke(path_rect, 6.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
 
-                                    ui.add_space(section_gap);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(panel_w - 10.0 * scale, footer_reserved),
-                                        egui::Layout::top_down(egui::Align::Center),
-                                        |ui| {
-                                            egui::Frame::group(ui.style())
-                                                .fill(egui::Color32::from_rgba_premultiplied(
-                                                    26, 32, 56, 220,
-                                                ))
-                                                .inner_margin(egui::Margin::same((10.0 * scale) as i8))
-                                                .show(ui, |ui| {
-                                            if let Some(selected) = self.shader_selected.clone() {
-                                                egui::Frame::group(ui.style())
-                                                    .fill(egui::Color32::from_rgba_premultiplied(33, 41, 68, 230))
-                                                    .inner_margin(egui::Margin::same((10.0 * scale) as i8))
-                                                    .show(ui, |ui| {
-                                                        ui.set_min_height((118.0 * scale).clamp(104.0, 180.0));
-                                                        let selected_name = std::path::Path::new(&selected)
-                                                            .file_name()
-                                                            .and_then(|s| s.to_str())
-                                                            .unwrap_or(&selected)
-                                                            .to_string();
-                                                        let selected_dir = std::path::Path::new(&selected)
-                                                            .parent()
-                                                            .and_then(|s| s.to_str())
-                                                            .unwrap_or("")
-                                                            .to_string();
-                                                        ui.vertical_centered(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new("Selected preset")
-                                                                    .size((16.0 * scale).max(17.0))
-                                                                    .color(egui::Color32::from_rgb(178, 199, 232)),
-                                                            );
-                                                            ui.add_space(4.0 * scale);
-                                                            ui.monospace(egui::RichText::new(ellipsize_middle(&selected_name, 54))
-                                                                .size((17.0 * scale).clamp(16.0, 22.0))
-                                                                .strong());
-                                                            ui.label(
-                                                                egui::RichText::new(ellipsize_middle(&selected_dir, 78))
-                                                                    .size((13.0 * scale).clamp(13.0, 16.0))
-                                                                    .color(egui::Color32::from_rgb(149, 168, 201)),
-                                                            );
-                                                        });
-                                                    });
-                                                ui.add_space(4.0 * scale);
-                                                ui.horizontal_centered(|ui| {
-                                                    ui.label(
-                                                        egui::RichText::new("Apply to:")
-                                                            .size((13.0 * scale).max(14.0))
-                                                            .color(egui::Color32::from_rgb(169, 189, 222)),
-                                                    );
-                                                });
-                                                ui.horizontal_centered(|ui| {
-                                                    let apply = |target: &str,
-                                                                 path: &str,
-                                                                 status: &mut Option<String>,
-                                                                 until: &mut Option<Instant>| {
-                                                        match write_shader_file(target, path) {
-                                                            Ok(()) => {
-                                                                *status = Some(format!("{} shader → {}", target, path));
-                                                                *until = Some(Instant::now() + Duration::from_secs(4));
-                                                            }
-                                                            Err(e) => {
-                                                                *status = Some(format!("Failed ({}): {}", target, e));
-                                                                *until = Some(Instant::now() + Duration::from_secs(4));
-                                                            }
-                                                        }
-                                                    };
-                                                    if ui.button("Apply Top").clicked() {
-                                                        apply("primary", &selected, &mut self.shader_status, &mut self.shader_status_until);
-                                                    }
-                                                    if ui.button("Apply Bottom").clicked() {
-                                                        apply("secondary", &selected, &mut self.shader_status, &mut self.shader_status_until);
-                                                    }
-                                                    if ui.button("Apply Both").clicked() {
-                                                        match write_shader_file("primary", &selected) {
-                                                            Ok(()) => {
-                                                                let _ = write_shader_file("secondary", &selected);
-                                                                self.shader_status = Some(format!("Both shaders → {}", selected));
-                                                                self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
-                                                            }
-                                                            Err(e) => {
-                                                                self.shader_status = Some(format!("Failed (both): {}", e));
-                                                                self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
-                                                            }
-                                                        }
-                                                    }
-                                                    if ui.button("Clear").clicked() {
-                                                        let clear_primary = write_shader_file("primary", "");
-                                                        let clear_secondary = write_shader_file("secondary", "");
-                                                        if clear_primary.is_ok() && clear_secondary.is_ok() {
-                                                            self.shader_status = Some("Cleared shaders (top+bottom)".to_string());
-                                                        } else {
-                                                            self.shader_status = Some("Failed to clear one or more shader targets".to_string());
-                                                        }
-                                                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
-                                                    }
-                                                });
-                                            } else {
-                                                ui.horizontal_centered(|ui| {
-                                                    ui.label("Select a shader preset to enable apply actions.");
-                                                    if ui.button("Clear").clicked() {
-                                                        let clear_primary = write_shader_file("primary", "");
-                                                        let clear_secondary = write_shader_file("secondary", "");
-                                                        if clear_primary.is_ok() && clear_secondary.is_ok() {
-                                                            self.shader_status = Some("Cleared shaders (top+bottom)".to_string());
-                                                        } else {
-                                                            self.shader_status = Some("Failed to clear one or more shader targets".to_string());
-                                                        }
-                                                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
-                                                    }
-                                                });
-                                            }
-                                        });
-                                        },
-                                    );
-
-                                    if let Some(until) = self.shader_status_until {
-                                        if Instant::now() > until {
-                                            self.shader_status = None;
-                                            self.shader_status_until = None;
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(path_rect.shrink2(egui::vec2(8.0 * scale, 2.0))), |ui| {
+                            ui.horizontal_centered(|ui| {
+                                // Up button
+                                if ui.add(egui::Button::new(
+                                    egui::RichText::new("\u{25C0}").size((12.0 * scale).clamp(11.0, 18.0)).color(colors::ACCENT_BLUE)
+                                ).fill(egui::Color32::TRANSPARENT).frame(false)).clicked() {
+                                    if let Some(parent) = std::path::Path::new(&self.shader_current_dir).parent() {
+                                        let parent = parent.to_string_lossy().to_string();
+                                        if parent.starts_with(&self.shader_root_dir) {
+                                            self.shader_current_dir = parent;
                                         }
                                     }
-                                    if let Some(status) = &self.shader_status {
-                                        ui.add_space(8.0 * scale);
-                                        ui.horizontal_centered(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(status)
-                                                    .size(13.0 * scale)
-                                                    .color(egui::Color32::from_rgb(187, 221, 255)),
-                                            );
-                                        });
+                                }
+                                ui.label(egui::RichText::new(&current_display).size((11.0 * scale).clamp(10.0, 16.0)).color(colors::TEXT_SECONDARY));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(egui::Button::new(
+                                        egui::RichText::new("Refresh").size((10.0 * scale).clamp(10.0, 14.0)).color(colors::ACCENT_BLUE)
+                                    ).fill(egui::Color32::TRANSPARENT).frame(false)).clicked() {
+                                        self.shader_presets = discover_shader_presets();
+                                        self.shader_list_dir.clear();
                                     }
-                                },
-                            );
+                                });
+                            });
                         });
+                        ui.add_space(path_bar_h + 6.0 * scale);
+
+                        // Two-pane browser
+                        self.refresh_shader_listing_if_needed();
+                        let dirs = self.shader_dirs.clone();
+                        let files = self.shader_files.clone();
+                        let item_text_size = (13.0 * scale).clamp(12.0, 20.0);
+                        let row_h = (32.0 * scale).clamp(28.0, 48.0);
+                        let col_gap = (8.0 * scale).clamp(6.0, 14.0);
+                        let footer_h = (120.0 * scale).clamp(100.0, 200.0);
+                        let list_h = (ui.available_height() - footer_h - 14.0 * scale).max(100.0);
+
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), list_h),
+                            egui::Layout::left_to_right(egui::Align::Min),
+                            |ui| {
+                                let col_w = ((ui.available_width() - col_gap) / 2.0).max(180.0);
+
+                                // Folders pane
+                                let folder_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(col_w, list_h));
+                                let p = ui.painter();
+                                p.rect_filled(folder_rect, 8.0 * scale, colors::BG_CARD);
+                                p.rect_stroke(folder_rect, 8.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
+
+                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(folder_rect.shrink(6.0 * scale)), |ui| {
+                                    ui.label(egui::RichText::new("Folders").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_BLUE).strong());
+                                    ui.add_space(3.0 * scale);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("shader_dirs_scroll")
+                                        .max_height(list_h - 30.0 * scale)
+                                        .show(ui, |ui| {
+                                            for d in &dirs {
+                                                let dir_name = std::path::Path::new(d)
+                                                    .file_name()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or(d);
+                                                let is_current = *d == self.shader_current_dir;
+                                                let text_color = if is_current { colors::ACCENT_BLUE } else { colors::TEXT_PRIMARY };
+                                                let bg = if is_current { colors::TAB_ACTIVE_BG } else { egui::Color32::TRANSPARENT };
+                                                if ui.add_sized(
+                                                    [ui.available_width(), row_h],
+                                                    egui::Button::new(
+                                                        egui::RichText::new(dir_name).size(item_text_size).color(text_color),
+                                                    ).fill(bg).corner_radius(egui::CornerRadius::from(4.0 * scale)),
+                                                ).clicked() {
+                                                    self.shader_current_dir = d.clone();
+                                                    self.shader_selected = None;
+                                                }
+                                            }
+                                        });
+                                });
+                                ui.add_space(col_w + col_gap);
+
+                                // Presets pane
+                                let presets_rect = egui::Rect::from_min_size(
+                                    egui::pos2(folder_rect.right() + col_gap, folder_rect.top()),
+                                    egui::vec2(col_w, list_h),
+                                );
+                                let p = ui.painter();
+                                p.rect_filled(presets_rect, 8.0 * scale, colors::BG_CARD);
+                                p.rect_stroke(presets_rect, 8.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
+
+                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(presets_rect.shrink(6.0 * scale)), |ui| {
+                                    ui.label(egui::RichText::new("Presets").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_PINK).strong());
+                                    ui.add_space(3.0 * scale);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("shader_files_scroll")
+                                        .max_height(list_h - 30.0 * scale)
+                                        .show(ui, |ui| {
+                                            for file in &files {
+                                                let selected = self.shader_selected.as_ref().map(|s| s == file).unwrap_or(false);
+                                                let label = std::path::Path::new(file)
+                                                    .file_name()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or(file)
+                                                    .to_string();
+                                                let text_color = if selected { colors::ACCENT_PINK } else { colors::TEXT_PRIMARY };
+                                                let bg = if selected { egui::Color32::from_rgba_premultiplied(255, 46, 151, 30) } else { egui::Color32::TRANSPARENT };
+                                                if ui.add_sized(
+                                                    [ui.available_width(), row_h],
+                                                    egui::Button::new(
+                                                        egui::RichText::new(&label).size(item_text_size).color(text_color),
+                                                    ).fill(bg).corner_radius(egui::CornerRadius::from(4.0 * scale)),
+                                                ).clicked() {
+                                                    self.shader_selected = Some(file.clone());
+                                                }
+                                            }
+                                        });
+                                });
+                            },
+                        );
+
+                        ui.add_space(8.0 * scale);
+
+                        // Action footer
+                        let footer_rect = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(ui.available_width(), footer_h),
+                        );
+                        let p = ui.painter();
+                        draw_glass_panel(p, footer_rect, 10.0 * scale, false);
+
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect.shrink(10.0 * scale)), |ui| {
+                            if let Some(selected) = self.shader_selected.clone() {
+                                let selected_name = std::path::Path::new(&selected)
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(&selected)
+                                    .to_string();
+
+                                // Selected preset info
+                                ui.vertical_centered(|ui| {
+                                    ui.label(egui::RichText::new("Selected").size((10.0 * scale).clamp(9.0, 14.0)).color(colors::TEXT_DIM));
+                                    ui.label(egui::RichText::new(ellipsize_middle(&selected_name, 50))
+                                        .size((14.0 * scale).clamp(13.0, 20.0)).color(colors::TEXT_PRIMARY).strong());
+                                });
+                                ui.add_space(6.0 * scale);
+
+                                // Apply buttons row
+                                let btn_h = (32.0 * scale).clamp(28.0, 44.0);
+                                ui.horizontal(|ui| {
+                                    let btn_w = ((ui.available_width() - 24.0 * scale) / 4.0).max(70.0);
+                                    let apply = |target: &str, path: &str, status: &mut Option<String>, until: &mut Option<Instant>| {
+                                        match write_shader_file(target, path) {
+                                            Ok(()) => {
+                                                *status = Some(format!("{} shader applied", target));
+                                                *until = Some(Instant::now() + Duration::from_secs(4));
+                                            }
+                                            Err(e) => {
+                                                *status = Some(format!("Failed: {}", e));
+                                                *until = Some(Instant::now() + Duration::from_secs(4));
+                                            }
+                                        }
+                                    };
+                                    if ui.add_sized([btn_w, btn_h], egui::Button::new(
+                                        egui::RichText::new("Top").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::TEXT_PRIMARY)
+                                    ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
+                                        apply("primary", &selected, &mut self.shader_status, &mut self.shader_status_until);
+                                    }
+                                    ui.add_space(6.0 * scale);
+                                    if ui.add_sized([btn_w, btn_h], egui::Button::new(
+                                        egui::RichText::new("Bottom").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::TEXT_PRIMARY)
+                                    ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
+                                        apply("secondary", &selected, &mut self.shader_status, &mut self.shader_status_until);
+                                    }
+                                    ui.add_space(6.0 * scale);
+                                    if ui.add_sized([btn_w, btn_h], egui::Button::new(
+                                        egui::RichText::new("Both").size((12.0 * scale).clamp(11.0, 17.0)).color(egui::Color32::from_rgb(10, 11, 20)).strong()
+                                    ).fill(colors::ACCENT_BLUE).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
+                                        match write_shader_file("primary", &selected) {
+                                            Ok(()) => {
+                                                let _ = write_shader_file("secondary", &selected);
+                                                self.shader_status = Some("Applied to both screens".into());
+                                                self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
+                                            }
+                                            Err(e) => {
+                                                self.shader_status = Some(format!("Failed: {}", e));
+                                                self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
+                                            }
+                                        }
+                                    }
+                                    ui.add_space(6.0 * scale);
+                                    if ui.add_sized([btn_w, btn_h], egui::Button::new(
+                                        egui::RichText::new("Clear").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_RED)
+                                    ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
+                                        let ok1 = write_shader_file("primary", "").is_ok();
+                                        let ok2 = write_shader_file("secondary", "").is_ok();
+                                        self.shader_status = Some(if ok1 && ok2 { "Cleared all shaders".into() } else { "Failed to clear".into() });
+                                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
+                                    }
+                                });
+                            } else {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(10.0 * scale);
+                                    ui.label(egui::RichText::new("Select a shader preset above").size((13.0 * scale).clamp(12.0, 18.0)).color(colors::TEXT_DIM));
+                                    ui.add_space(8.0 * scale);
+                                    let btn_h = (32.0 * scale).clamp(28.0, 44.0);
+                                    if ui.add_sized([120.0 * scale, btn_h], egui::Button::new(
+                                        egui::RichText::new("Clear All").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_RED)
+                                    ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
+                                        let ok1 = write_shader_file("primary", "").is_ok();
+                                        let ok2 = write_shader_file("secondary", "").is_ok();
+                                        self.shader_status = Some(if ok1 && ok2 { "Cleared all shaders".into() } else { "Failed to clear".into() });
+                                        self.shader_status_until = Some(Instant::now() + Duration::from_secs(4));
+                                    }
+                                });
+                            }
+
+                            // Status toast
+                            if let Some(until) = self.shader_status_until {
+                                if Instant::now() > until {
+                                    self.shader_status = None;
+                                    self.shader_status_until = None;
+                                }
+                            }
+                            if let Some(status) = &self.shader_status {
+                                ui.add_space(4.0 * scale);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(egui::RichText::new(status).size((11.0 * scale).clamp(10.0, 15.0)).color(colors::ACCENT_GREEN));
+                                });
+                            }
+                        });
+                    });
                 });
         }
 
@@ -1798,105 +1904,95 @@ impl ScreenToolGui {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
-                    let panel_w = (ui.available_width() - 20.0).max(540.0);
-                    let panel_h = (ui.available_height() - bottom_reserved).max(320.0);
-                    egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgba_premultiplied(12, 18, 36, 238))
-                        .inner_margin(egui::Margin::same((16.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(panel_w, panel_h));
-                            ui.vertical_centered(|ui| {
-                                ui.heading(
-                                    egui::RichText::new("Hotkey Pad")
-                                        .size((25.0 * scale).clamp(22.0, 34.0))
-                                        .color(egui::Color32::from_rgb(196, 220, 255)),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Tap to send emulator hotkeys")
-                                        .size((13.0 * scale).clamp(12.0, 18.0))
-                                        .color(egui::Color32::from_rgb(150, 170, 205)),
-                                );
+                    let panel_w = (ui.available_width() - 20.0).max(440.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
+
+                    let panel_rect = egui::Rect::from_min_size(
+                        ui.cursor().min + egui::vec2(10.0, 4.0),
+                        egui::vec2(panel_w, panel_h),
+                    );
+                    let painter = ui.painter();
+                    draw_glass_panel(painter, panel_rect, 14.0 * scale, true);
+
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(6.0 * scale);
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Hotkey Pad").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("Tap to send emulator shortcuts").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                        });
+                        ui.add_space(10.0 * scale);
+
+                        // Reload button (subtle, right-aligned)
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(ellipsize_middle(&self.hotkeys_file, 50)).size(10.0 * scale).color(colors::TEXT_DIM));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new(egui::RichText::new("Reload").size(10.0 * scale).color(colors::ACCENT_BLUE)).fill(egui::Color32::TRANSPARENT)).clicked() {
+                                    self.hotkeys = load_hotkeys_from_file(&self.hotkeys_file);
+                                }
                             });
-                            ui.add_space(8.0 * scale);
-                            ui.horizontal(|ui| {
-                                ui.monospace(egui::RichText::new(&self.hotkeys_file).size(12.0 * scale));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button("Reload").clicked() {
-                                        self.hotkeys = load_hotkeys_from_file(&self.hotkeys_file);
+                        });
+                        ui.add_space(8.0 * scale);
+
+                        // Keycap-style hotkey grid
+                        let columns = if panel_w > 1000.0 { 4 } else if panel_w > 700.0 { 3 } else { 2 };
+                        let btn_h = (70.0 * scale).clamp(56.0, 96.0);
+                        let btn_w = ((ui.available_width() - (columns as f32 - 1.0) * 10.0 * scale) / columns as f32).max(140.0);
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut col_idx = 0usize;
+                            egui::Grid::new("hotkeys_grid")
+                                .num_columns(columns)
+                                .spacing(egui::vec2(10.0 * scale, 10.0 * scale))
+                                .show(ui, |ui| {
+                                    for (title, keyseq) in &self.hotkeys {
+                                        let (rect, response) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::click());
+                                        let p = ui.painter_at(rect);
+                                        draw_keycap(&p, rect, response.hovered(), scale);
+
+                                        // Title
+                                        p.text(
+                                            egui::pos2(rect.center().x, rect.top() + 12.0 * scale),
+                                            egui::Align2::CENTER_TOP,
+                                            title,
+                                            egui::FontId::proportional((13.0 * scale).clamp(11.0, 18.0)),
+                                            colors::TEXT_PRIMARY,
+                                        );
+                                        // Key sequence in accent color
+                                        p.text(
+                                            egui::pos2(rect.center().x, rect.bottom() - 12.0 * scale),
+                                            egui::Align2::CENTER_BOTTOM,
+                                            keyseq,
+                                            egui::FontId::proportional((11.0 * scale).clamp(10.0, 15.0)),
+                                            colors::ACCENT_BLUE,
+                                        );
+
+                                        if response.clicked() {
+                                            match send_hotkey_to_emulator(keyseq) {
+                                                Ok(()) => { self.hotkeys_status = Some(format!("Sent: {title}")); }
+                                                Err(e) => { self.hotkeys_status = Some(format!("Failed: {e}")); }
+                                            }
+                                            self.hotkeys_status_until = Some(Instant::now() + Duration::from_secs(3));
+                                        }
+                                        col_idx += 1;
+                                        if col_idx % columns == 0 { ui.end_row(); }
                                     }
                                 });
-                            });
-                            ui.separator();
-
-                            let columns = if panel_w > 1200.0 {
-                                4
-                            } else if panel_w > 860.0 {
-                                3
-                            } else {
-                                2
-                            };
-                            let btn_h = (66.0 * scale).clamp(60.0, 92.0);
-                            let btn_w = ((panel_w - 42.0 * scale) / columns as f32).max(170.0);
-
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                let mut col_idx = 0usize;
-                                egui::Grid::new("hotkeys_grid")
-                                    .num_columns(columns)
-                                    .spacing(egui::vec2(10.0 * scale, 10.0 * scale))
-                                    .show(ui, |ui| {
-                                        for (title, keyseq) in &self.hotkeys {
-                                            let label = format!("{title}\n{keyseq}");
-                                            if ui
-                                                .add_sized(
-                                                    [btn_w, btn_h],
-                                                    egui::Button::new(
-                                                        egui::RichText::new(label)
-                                                            .size((14.5 * scale).clamp(14.0, 22.0)),
-                                                    ),
-                                                )
-                                                .clicked()
-                                            {
-                                                match send_hotkey_to_emulator(keyseq) {
-                                                    Ok(()) => {
-                                                        self.hotkeys_status =
-                                                            Some(format!("Sent hotkey: {title} ({keyseq})"));
-                                                    }
-                                                    Err(e) => {
-                                                        self.hotkeys_status = Some(format!(
-                                                            "Hotkey failed for {title}: {e}"
-                                                        ));
-                                                    }
-                                                }
-                                                self.hotkeys_status_until =
-                                                    Some(Instant::now() + Duration::from_secs(4));
-                                            }
-                                            col_idx += 1;
-                                            if col_idx % columns == 0 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-                            });
-
-                            if self.hotkeys.is_empty() {
-                                ui.add_space(12.0 * scale);
-                                ui.label("No hotkeys found. Use TITLE=KEY format in SCREEN_TOOL_HOTKEYS_FILE.");
-                            }
-                            if let Some(until) = self.hotkeys_status_until {
-                                if Instant::now() > until {
-                                    self.hotkeys_status = None;
-                                    self.hotkeys_status_until = None;
-                                }
-                            }
-                            if let Some(status) = &self.hotkeys_status {
-                                ui.add_space(8.0 * scale);
-                                ui.label(
-                                    egui::RichText::new(status)
-                                        .size((13.0 * scale).clamp(12.0, 18.0))
-                                        .color(egui::Color32::from_rgb(183, 216, 255)),
-                                );
-                            }
                         });
+
+                        if self.hotkeys.is_empty() {
+                            ui.add_space(20.0 * scale);
+                            ui.label(egui::RichText::new("No hotkeys configured").size(13.0 * scale).color(colors::TEXT_DIM));
+                        }
+                        // Status toast
+                        if let Some(until) = self.hotkeys_status_until {
+                            if Instant::now() > until { self.hotkeys_status = None; self.hotkeys_status_until = None; }
+                        }
+                        if let Some(status) = &self.hotkeys_status {
+                            ui.add_space(6.0 * scale);
+                            ui.label(egui::RichText::new(status).size(11.0 * scale).color(colors::ACCENT_GREEN));
+                        }
+                    });
                 });
         }
 
@@ -1905,138 +2001,113 @@ impl ScreenToolGui {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
-                    let panel_w = (ui.available_width() - 20.0).max(540.0);
-                    let panel_h = (ui.available_height() - bottom_reserved).max(320.0);
-                    egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgba_premultiplied(12, 18, 36, 238))
-                        .inner_margin(egui::Margin::same((16.0 * scale) as i8))
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(panel_w, panel_h));
-                            ui.vertical_centered(|ui| {
-                                ui.heading(
-                                    egui::RichText::new("Time Warp")
-                                        .size((25.0 * scale).clamp(22.0, 34.0))
-                                        .color(egui::Color32::from_rgb(196, 220, 255)),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Live libfaketime calendar/clock")
-                                        .size((13.0 * scale).clamp(12.0, 18.0))
-                                        .color(egui::Color32::from_rgb(150, 170, 205)),
-                                );
+                    let panel_w = (ui.available_width() - 20.0).max(440.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
+
+                    let panel_rect = egui::Rect::from_min_size(
+                        ui.cursor().min + egui::vec2(10.0, 4.0),
+                        egui::vec2(panel_w, panel_h),
+                    );
+                    let painter = ui.painter();
+                    draw_glass_panel(painter, panel_rect, 14.0 * scale, true);
+
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(6.0 * scale);
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Time Warp").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("In-game clock control (libfaketime)").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                        });
+                        ui.add_space(12.0 * scale);
+
+                        // Validate values
+                        self.faketime_month = self.faketime_month.clamp(1, 12);
+                        let max_days = days_in_month(self.faketime_year, self.faketime_month);
+                        self.faketime_day = self.faketime_day.clamp(1, max_days);
+                        self.faketime_hour = self.faketime_hour.min(23);
+                        self.faketime_minute = self.faketime_minute.min(59);
+                        self.faketime_second = self.faketime_second.min(59);
+
+                        let formatted = format_faketime_parts(
+                            self.faketime_year, self.faketime_month, self.faketime_day,
+                            self.faketime_hour, self.faketime_minute, self.faketime_second,
+                        );
+
+                        // Retro digital clock display
+                        let clock_h = (64.0 * scale).clamp(48.0, 100.0);
+                        let clock_w = (panel_w - 32.0 * scale).min(400.0 * scale);
+                        let (clock_rect, _) = ui.allocate_exact_size(egui::vec2(clock_w, clock_h), egui::Sense::hover());
+                        draw_digital_clock(&ui.painter_at(clock_rect), clock_rect, &formatted, scale);
+
+                        ui.add_space(16.0 * scale);
+
+                        // Date controls
+                        ui.vertical_centered(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Date").size(13.0 * scale).color(colors::TEXT_SECONDARY));
+                                ui.add_space(8.0);
+                                ui.add(egui::DragValue::new(&mut self.faketime_year).speed(1).prefix("Y: "));
+                                ui.add(egui::DragValue::new(&mut self.faketime_month).range(1..=12).prefix("M: "));
+                                ui.add(egui::DragValue::new(&mut self.faketime_day).range(1..=max_days).prefix("D: "));
                             });
-                            ui.add_space(8.0 * scale);
-                            ui.monospace(
-                                egui::RichText::new(&self.faketime_file)
-                                    .size((12.0 * scale).clamp(11.0, 16.0)),
-                            );
-                            ui.separator();
-
-                            self.faketime_month = self.faketime_month.clamp(1, 12);
-                            let max_days = days_in_month(self.faketime_year, self.faketime_month);
-                            self.faketime_day = self.faketime_day.clamp(1, max_days);
-                            self.faketime_hour = self.faketime_hour.min(23);
-                            self.faketime_minute = self.faketime_minute.min(59);
-                            self.faketime_second = self.faketime_second.min(59);
-
-                            ui.vertical_centered(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("Date:");
-                                    ui.add(egui::DragValue::new(&mut self.faketime_year).speed(1));
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.faketime_month)
-                                            .range(1..=12),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.faketime_day)
-                                            .range(1..=max_days),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Time:");
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.faketime_hour).range(0..=23),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.faketime_minute)
-                                            .range(0..=59),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.faketime_second)
-                                            .range(0..=59),
-                                    );
-                                });
+                            ui.add_space(6.0 * scale);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Time").size(13.0 * scale).color(colors::TEXT_SECONDARY));
+                                ui.add_space(8.0);
+                                ui.add(egui::DragValue::new(&mut self.faketime_hour).range(0..=23).prefix("H: "));
+                                ui.add(egui::DragValue::new(&mut self.faketime_minute).range(0..=59).prefix("M: "));
+                                ui.add(egui::DragValue::new(&mut self.faketime_second).range(0..=59).prefix("S: "));
                             });
+                        });
 
-                            let formatted = format_faketime_parts(
-                                self.faketime_year,
-                                self.faketime_month,
-                                self.faketime_day,
-                                self.faketime_hour,
-                                self.faketime_minute,
-                                self.faketime_second,
-                            );
+                        ui.add_space(16.0 * scale);
 
-                            ui.add_space(10.0 * scale);
-                            ui.horizontal_centered(|ui| {
-                                if ui.button("Reload").clicked() {
-                                    if let Some(s) = read_faketime_string(&self.faketime_file)
-                                        .or_else(|| read_faketime_from_mtime(&self.faketime_file))
-                                    {
-                                        if let Some((y, m, d, hh, mm, ss)) =
-                                            parse_faketime_parts(&s)
-                                        {
-                                            self.faketime_year = y;
-                                            self.faketime_month = m.clamp(1, 12);
-                                            self.faketime_day = d.max(1);
-                                            self.faketime_hour = hh.min(23);
-                                            self.faketime_minute = mm.min(59);
-                                            self.faketime_second = ss.min(59);
-                                            self.faketime_status = Some(
-                                                "Loaded current faketime from file".to_string(),
-                                            );
-                                            self.faketime_status_until =
-                                                Some(Instant::now() + Duration::from_secs(4));
-                                        }
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            ui.add_space((ui.available_width() * 0.2).max(20.0));
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new("Reload").size(13.0 * scale).color(colors::TEXT_SECONDARY))
+                                    .fill(colors::BG_CARD)
+                                    .corner_radius(8.0),
+                            ).clicked() {
+                                if let Some(s) = read_faketime_string(&self.faketime_file)
+                                    .or_else(|| read_faketime_from_mtime(&self.faketime_file))
+                                {
+                                    if let Some((y, m, d, hh, mm, ss)) = parse_faketime_parts(&s) {
+                                        self.faketime_year = y;
+                                        self.faketime_month = m.clamp(1, 12);
+                                        self.faketime_day = d.max(1);
+                                        self.faketime_hour = hh.min(23);
+                                        self.faketime_minute = mm.min(59);
+                                        self.faketime_second = ss.min(59);
+                                        self.faketime_status = Some("Loaded from file".into());
+                                        self.faketime_status_until = Some(Instant::now() + Duration::from_secs(3));
                                     }
-                                }
-                                if ui.button("Apply").clicked() {
-                                    match write_faketime_follow_file(&self.faketime_file, &formatted)
-                                    {
-                                        Ok(()) => {
-                                            self.faketime_status =
-                                                Some(format!("Set faketime → {formatted}"));
-                                        }
-                                        Err(e) => {
-                                            self.faketime_status =
-                                                Some(format!("Failed to update faketime: {e}"));
-                                        }
-                                    }
-                                    self.faketime_status_until =
-                                        Some(Instant::now() + Duration::from_secs(4));
-                                }
-                            });
-                            ui.add_space(8.0 * scale);
-                            ui.label(
-                                egui::RichText::new(format!("Current selection: {formatted}"))
-                                    .size((14.0 * scale).clamp(13.0, 20.0))
-                                    .color(egui::Color32::from_rgb(183, 216, 255)),
-                            );
-
-                            if let Some(until) = self.faketime_status_until {
-                                if Instant::now() > until {
-                                    self.faketime_status = None;
-                                    self.faketime_status_until = None;
                                 }
                             }
-                            if let Some(status) = &self.faketime_status {
-                                ui.add_space(8.0 * scale);
-                                ui.label(
-                                    egui::RichText::new(status)
-                                        .size((13.0 * scale).clamp(12.0, 18.0))
-                                        .color(egui::Color32::from_rgb(183, 216, 255)),
-                                );
+                            ui.add_space(12.0 * scale);
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new("Apply").size(14.0 * scale).color(colors::BG_DEEP).strong())
+                                    .fill(colors::ACCENT_GREEN)
+                                    .corner_radius(8.0),
+                            ).clicked() {
+                                match write_faketime_follow_file(&self.faketime_file, &formatted) {
+                                    Ok(()) => { self.faketime_status = Some(format!("Set → {formatted}")); }
+                                    Err(e) => { self.faketime_status = Some(format!("Failed: {e}")); }
+                                }
+                                self.faketime_status_until = Some(Instant::now() + Duration::from_secs(3));
                             }
                         });
+
+                        // Status toast
+                        if let Some(until) = self.faketime_status_until {
+                            if Instant::now() > until { self.faketime_status = None; self.faketime_status_until = None; }
+                        }
+                        if let Some(status) = &self.faketime_status {
+                            ui.add_space(8.0 * scale);
+                            ui.label(egui::RichText::new(status).size(11.0 * scale).color(colors::ACCENT_GREEN));
+                        }
+                    });
                 });
         }
 
@@ -2071,54 +2142,39 @@ impl ScreenToolGui {
                 });
         }
 
-        // Always-visible, touch-friendly zoom controls for high-res displays.
+        // Compact floating zoom controls (Crop tab only)
         if self.active_tab == ToolTab::Crop {
-            let btn_w = 60.0 * scale;
-            let btn_h = 48.0 * scale;
-            let reset_h = 34.0 * scale;
-            let pad = 24.0;
+            let btn_sz = (44.0 * scale).clamp(36.0, 64.0);
             egui::Area::new(egui::Id::new("quick_zoom_controls"))
-                .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-pad, 0.0))
+                .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-16.0, 0.0))
                 .order(egui::Order::Foreground)
                 .interactable(true)
                 .show(ctx, |ui| {
-                    egui::Frame::window(ui.style())
-                        .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                    egui::Frame::NONE
+                        .fill(colors::BG_PANEL)
+                        .corner_radius(egui::CornerRadius::from(10.0 * scale))
+                        .stroke(egui::Stroke::new(1.0, colors::BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric((6.0 * scale) as i8, (8.0 * scale) as i8))
                         .show(ui, |ui| {
                             ui.vertical_centered(|ui| {
-                                if ui
-                                    .add_sized(
-                                        [btn_w, btn_h],
-                                        egui::Button::new(
-                                            egui::RichText::new("+").size(22.0 * scale),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                let zoom_btn = |ui: &mut egui::Ui, label: &str, size: f32| -> bool {
+                                    ui.add_sized(
+                                        [btn_sz, btn_sz],
+                                        egui::Button::new(egui::RichText::new(label).size(size).color(colors::TEXT_PRIMARY))
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .corner_radius(8.0),
+                                    ).clicked()
+                                };
+                                if zoom_btn(ui, "+", 20.0 * scale) {
                                     self.zoom_level = (self.zoom_level * 1.2).clamp(1.0, 8.0);
                                 }
-                                ui.add_space(8.0 * scale);
-                                if ui
-                                    .add_sized(
-                                        [btn_w, btn_h],
-                                        egui::Button::new(
-                                            egui::RichText::new("−").size(22.0 * scale),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                // Zoom level display
+                                ui.label(egui::RichText::new(format!("{:.1}x", self.zoom_level)).size(11.0 * scale).color(colors::ACCENT_BLUE));
+                                if zoom_btn(ui, "−", 20.0 * scale) {
                                     self.zoom_level = (self.zoom_level / 1.2).clamp(1.0, 8.0);
                                 }
-                                ui.add_space(8.0 * scale);
-                                if ui
-                                    .add_sized(
-                                        [btn_w, reset_h],
-                                        egui::Button::new(
-                                            egui::RichText::new("1x").size(16.0 * scale),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                ui.add_space(4.0 * scale);
+                                if zoom_btn(ui, "1:1", 12.0 * scale) {
                                     self.reset_view();
                                 }
                             });
@@ -2126,99 +2182,108 @@ impl ScreenToolGui {
                 });
         }
 
-        // Left-side vertical feature tabs (icon buttons) on top of all content.
-        let tab_btn = 56.0 * scale;
-        let tab_pad = 24.0;
+        // ─── Bottom Navigation Bar ─────────────────────────────────────
+        // Modern pill-shaped tab bar with icon + label, active glow indicator
+        let tab_h = (42.0 * scale).clamp(36.0, 60.0);
+        let tab_w = (64.0 * scale).clamp(52.0, 90.0);
+        let tab_gap = (4.0 * scale).clamp(2.0, 8.0);
+        let tab_pad = (16.0 * scale).clamp(12.0, 24.0);
+
         egui::Area::new(egui::Id::new("feature_tab_controls"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -tab_pad))
             .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
-                egui::Frame::window(ui.style())
-                    .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                egui::Frame::NONE
+                    .fill(colors::BG_PANEL)
+                    .corner_radius(egui::CornerRadius::from(14.0 * scale))
+                    .stroke(egui::Stroke::new(1.0, colors::BORDER_GLOW))
+                    .inner_margin(egui::Margin::symmetric((8.0 * scale) as i8, (4.0 * scale) as i8))
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("🔍").size(24.0 * scale))
-                                        .selected(self.active_tab == ToolTab::Crop),
-                                )
-                                .on_hover_text("Screen Crop Tool")
-                                .clicked()
-                            {
+                            let icon_size = (16.0 * scale).clamp(14.0, 24.0);
+                            let label_size = (10.0 * scale).clamp(9.0, 14.0);
+
+                            let tab_button = |ui: &mut egui::Ui, icon: &str, label: &str, active: bool, _tab: ToolTab| -> bool {
+                                let fill = if active { colors::TAB_ACTIVE_BG } else { egui::Color32::TRANSPARENT };
+                                let text_color = if active { colors::ACCENT_BLUE } else { colors::TEXT_SECONDARY };
+                                let response = ui.allocate_ui(egui::vec2(tab_w, tab_h), |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(2.0);
+                                        let resp = ui.add_sized(
+                                            [tab_w, tab_h - 4.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(format!("{icon}\n{label}"))
+                                                    .size(icon_size)
+                                                    .color(text_color),
+                                            )
+                                            .fill(fill)
+                                            .corner_radius(10.0 * scale),
+                                        );
+                                        // Active tab glow underline
+                                        if active {
+                                            let rect = resp.rect;
+                                            let underline_y = rect.bottom() - 1.0;
+                                            let center_x = rect.center().x;
+                                            let half_w = rect.width() * 0.3;
+                                            ui.painter().line_segment(
+                                                [
+                                                    egui::pos2(center_x - half_w, underline_y),
+                                                    egui::pos2(center_x + half_w, underline_y),
+                                                ],
+                                                egui::Stroke::new(2.0, colors::ACCENT_BLUE),
+                                            );
+                                        }
+                                        resp.clicked()
+                                    }).inner
+                                }).inner;
+                                response
+                            };
+
+                            if tab_button(ui, "Crop", "", self.active_tab == ToolTab::Crop, ToolTab::Crop) {
                                 self.active_tab = ToolTab::Crop;
                             }
-                            ui.add_space(10.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("📈").size(24.0 * scale))
-                                        .selected(self.active_tab == ToolTab::Performance),
-                                )
-                                .on_hover_text("Performance Monitor")
-                                .clicked()
-                            {
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "Perf", "", self.active_tab == ToolTab::Performance, ToolTab::Performance) {
                                 self.active_tab = ToolTab::Performance;
                             }
-                            ui.add_space(10.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("🎨").size(24.0 * scale))
-                                        .selected(self.active_tab == ToolTab::Shaders),
-                                )
-                                .on_hover_text("Shader Presets")
-                                .clicked()
-                            {
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "Shader", "", self.active_tab == ToolTab::Shaders, ToolTab::Shaders) {
                                 self.active_tab = ToolTab::Shaders;
                             }
-                            ui.add_space(8.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("⌨️").size(22.0 * scale))
-                                        .selected(self.active_tab == ToolTab::Hotkeys),
-                                )
-                                .on_hover_text("Hotkey Pad")
-                                .clicked()
-                            {
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "Keys", "", self.active_tab == ToolTab::Hotkeys, ToolTab::Hotkeys) {
                                 self.active_tab = ToolTab::Hotkeys;
                             }
-                            ui.add_space(8.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("🕒").size(22.0 * scale))
-                                        .selected(self.active_tab == ToolTab::Faketime),
-                                )
-                                .on_hover_text("Live Faketime")
-                                .clicked()
-                            {
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "Time", "", self.active_tab == ToolTab::Faketime, ToolTab::Faketime) {
                                 self.active_tab = ToolTab::Faketime;
                             }
-                            ui.add_space(14.0 * scale);
-                            if ui
-                                .add_sized(
-                                    [tab_btn, tab_btn],
-                                    egui::Button::new(egui::RichText::new("🎮").size(24.0 * scale)),
+
+                            // Separator + Focus Game button
+                            ui.add_space(8.0 * scale);
+                            ui.label(egui::RichText::new("|").size(16.0 * scale).color(colors::BORDER_SUBTLE));
+                            ui.add_space(4.0 * scale);
+
+                            let focus_resp = ui.add_sized(
+                                [tab_w, tab_h],
+                                egui::Button::new(
+                                    egui::RichText::new("Focus\nGame")
+                                        .size(label_size)
+                                        .color(colors::ACCENT_PINK),
                                 )
-                                .on_hover_text("Focus emulator/game window")
-                                .clicked()
-                            {
+                                .fill(egui::Color32::from_rgba_premultiplied(255, 46, 151, 15))
+                                .corner_radius(10.0 * scale),
+                            );
+                            if focus_resp.clicked() {
                                 match focus_emulator_window() {
                                     Ok(_) => {
-                                        self.hotkeys_status =
-                                            Some("Focused emulator window".to_string());
-                                        self.hotkeys_status_until = Some(
-                                            std::time::Instant::now() + Duration::from_secs(2),
-                                        );
+                                        self.hotkeys_status = Some("Focused emulator".into());
+                                        self.hotkeys_status_until = Some(Instant::now() + Duration::from_secs(2));
                                     }
                                     Err(e) => {
                                         self.hotkeys_status = Some(format!("Focus failed: {}", e));
-                                        self.hotkeys_status_until = Some(
-                                            std::time::Instant::now() + Duration::from_secs(3),
-                                        );
+                                        self.hotkeys_status_until = Some(Instant::now() + Duration::from_secs(3));
                                     }
                                 }
                             }

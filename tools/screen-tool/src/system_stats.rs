@@ -25,7 +25,7 @@ impl SystemStatsSampler {
         thread::spawn(move || {
             let mut prev_cpu = read_cpu_times();
             loop {
-                thread::sleep(Duration::from_millis(900));
+                thread::sleep(Duration::from_millis(2000));
 
                 let cpu_usage = match (prev_cpu, read_cpu_times()) {
                     (Some(prev), Some(now)) => {
@@ -46,7 +46,7 @@ impl SystemStatsSampler {
 
                 let (ram_used_gib, ram_total_gib) = read_ram_gib().unwrap_or((0.0, 0.0));
                 let (gpu_usage_pct, gpu_mem_used_mib, gpu_mem_total_mib) =
-                    query_nvidia_smi().unwrap_or((None, None, None));
+                    query_gpu_stats().unwrap_or((None, None, None));
 
                 let snapshot = SystemStatsSnapshot {
                     cpu_usage_pct: cpu_usage,
@@ -122,7 +122,91 @@ fn read_ram_gib() -> Option<(f32, f32)> {
     Some((used / 1024.0 / 1024.0, total / 1024.0 / 1024.0))
 }
 
-fn query_nvidia_smi() -> Option<(Option<f32>, Option<u32>, Option<u32>)> {
+/// Read GPU stats from sysfs/procfs — avoids spawning nvidia-smi subprocess.
+/// Falls back to nvidia-smi if sysfs files aren't available.
+fn query_gpu_stats() -> Option<(Option<f32>, Option<u32>, Option<u32>)> {
+    // Try NVML sysfs paths first (fastest, no subprocess)
+    if let Some(result) = query_gpu_sysfs() {
+        return Some(result);
+    }
+    // Fallback to nvidia-smi (slower, spawns subprocess)
+    query_nvidia_smi_fallback()
+}
+
+fn query_gpu_sysfs() -> Option<(Option<f32>, Option<u32>, Option<u32>)> {
+    // Find the first NVIDIA GPU via /proc/driver/nvidia/gpus/
+    let gpu_dir = std::fs::read_dir("/proc/driver/nvidia/gpus/").ok()?;
+    let first_gpu = gpu_dir.into_iter().find_map(|e| e.ok())?;
+    let _gpu_path = first_gpu.path();
+
+    // GPU utilization from /sys — path varies by driver version
+    let util = read_sysfs_gpu_utilization();
+
+    // Memory from /proc/driver/nvidia (more reliable than sysfs for memory)
+    let (mem_used, mem_total) = read_nvidia_proc_meminfo();
+
+    if util.is_some() || mem_used.is_some() {
+        Some((util, mem_used, mem_total))
+    } else {
+        None
+    }
+}
+
+fn read_sysfs_gpu_utilization() -> Option<f32> {
+    // Try the common sysfs path for GPU utilization
+    for path in [
+        "/sys/devices/gpu.0/load",
+        "/sys/class/drm/card0/device/gpu_busy_percent",
+        "/sys/class/drm/card1/device/gpu_busy_percent",
+    ] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let trimmed = content.trim();
+            if let Ok(val) = trimmed.parse::<f32>() {
+                // /sys/devices/gpu.0/load reports 0-1000 scale
+                return Some(if val > 100.0 { val / 10.0 } else { val });
+            }
+        }
+    }
+    None
+}
+
+fn read_nvidia_proc_meminfo() -> (Option<u32>, Option<u32>) {
+    // Try reading from /proc/driver/nvidia/gpus/0000:XX:XX.X/information
+    let mut mem_used = None;
+    let mut mem_total = None;
+    if let Ok(entries) = std::fs::read_dir("/proc/driver/nvidia/gpus/") {
+        for entry in entries.flatten() {
+            let info_path = entry.path().join("information");
+            if let Ok(content) = std::fs::read_to_string(&info_path) {
+                for line in content.lines() {
+                    if line.starts_with("Video Memory") {
+                        // "Video Memory:       24576 MB" -> extract total
+                        if let Some(val) = line.split(':').nth(1) {
+                            let num_str = val.trim().split_whitespace().next().unwrap_or("");
+                            mem_total = num_str.parse::<u32>().ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // For used memory, /proc doesn't expose it directly — fall back to nvidia-smi for this
+    if mem_total.is_some() {
+        // Quick nvidia-smi just for memory.used (much faster than full query)
+        if let Ok(output) = Command::new("nvidia-smi")
+            .args(["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+            .output()
+        {
+            if output.status.success() {
+                let out = String::from_utf8_lossy(&output.stdout);
+                mem_used = out.trim().parse::<u32>().ok();
+            }
+        }
+    }
+    (mem_used, mem_total)
+}
+
+fn query_nvidia_smi_fallback() -> Option<(Option<f32>, Option<u32>, Option<u32>)> {
     let output = Command::new("nvidia-smi")
         .args([
             "--query-gpu=utilization.gpu,memory.used,memory.total",
