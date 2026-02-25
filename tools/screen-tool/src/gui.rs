@@ -8,6 +8,7 @@ use glow::HasContext;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::gamepad::{GamepadButton, StickAxis};
 use crate::nvfbc::NvfbcCapture;
 use crate::system_stats::SystemStatsSnapshot;
 
@@ -163,7 +164,7 @@ fn draw_ring_gauge(
         egui::pos2(center.x, center.y + radius + thickness + 8.0 * scale),
         egui::Align2::CENTER_TOP,
         label,
-        egui::FontId::proportional((13.0 * scale).clamp(11.0, 18.0)),
+        egui::FontId::proportional((13.0 * scale).clamp(11.0, 34.0)),
         colors::TEXT_SECONDARY,
     );
 }
@@ -282,6 +283,27 @@ pub struct OutputInfo {
     pub name: String,
     pub width: u32,
     pub height: u32,
+}
+
+/// Display info for the Windows tab (populated by LayoutManager/WindowManager).
+#[derive(Clone, Debug)]
+pub struct WmDisplayInfo {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Window entry for the Windows tab.
+#[derive(Clone, Debug)]
+pub struct WmWindowEntry {
+    pub id: u64,
+    pub title: String,
+    pub display: String, // which display it's currently on
+    pub width: u32,
+    pub height: u32,
+    pub mapped: bool,
 }
 
 fn discover_shader_presets() -> Vec<String> {
@@ -514,10 +536,8 @@ fn find_emulator_primary_window_id(target_pattern: &str) -> anyhow::Result<Strin
     Ok(fallback[0].1.clone())
 }
 
-fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
-    let target_pattern =
-        std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
-    let primary_wid = find_emulator_primary_window_id(&target_pattern)?;
+fn send_hotkey_to_emulator(keyseq: &str, target_pattern: &str) -> anyhow::Result<()> {
+    let primary_wid = find_emulator_primary_window_id(target_pattern)?;
 
     // Ensure emulator gets focus first for reliable shortcut handling.
     // Azahar can ignore key events when sent to non-active windows.
@@ -546,10 +566,8 @@ fn send_hotkey_to_emulator(keyseq: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn focus_emulator_window() -> anyhow::Result<()> {
-    let target_pattern =
-        std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string());
-    let first_id = find_emulator_primary_window_id(&target_pattern)?;
+fn focus_emulator_window(target_pattern: &str) -> anyhow::Result<()> {
+    let first_id = find_emulator_primary_window_id(target_pattern)?;
     let activate = std::process::Command::new("xdotool")
         .args(["windowactivate", "--sync", &first_id])
         .output()?;
@@ -851,6 +869,7 @@ pub struct ScreenToolGui {
     // hotkey pad
     hotkeys_file: String,
     hotkeys: Vec<(String, String)>,
+    hotkey_target: String, // window name pattern to send hotkeys to
     hotkeys_status: Option<String>,
     hotkeys_status_until: Option<Instant>,
 
@@ -858,6 +877,20 @@ pub struct ScreenToolGui {
     cached_refresh_hz: Option<f32>,
     cached_refresh_output: String,
     last_refresh_query: Instant,
+
+    // Window management tab state
+    pub wm_displays: Vec<WmDisplayInfo>,
+    pub wm_windows: Vec<WmWindowEntry>,
+    pub wm_pending_actions: Vec<(u64, String, String)>, // (window_id, display_name, mode)
+    wm_status: Option<String>,
+    wm_status_until: Option<Instant>,
+
+    // Virtual gamepad state
+    pub gamepad_pending_presses: Vec<(GamepadButton, bool)>,
+    pub gamepad_pending_axes: Vec<(StickAxis, i32)>,
+    gamepad_button_states: [bool; GamepadButton::COUNT],
+    gamepad_left_stick: (f32, f32),   // normalized -1..1
+    gamepad_right_stick: (f32, f32),  // normalized -1..1
 
     // live faketime controls
     faketime_file: String,
@@ -875,9 +908,11 @@ pub struct ScreenToolGui {
 enum ToolTab {
     Crop,
     Performance,
+    Windows,
     Shaders,
     Hotkeys,
     Faketime,
+    Gamepad,
 }
 
 impl ScreenToolGui {
@@ -891,7 +926,7 @@ impl ScreenToolGui {
         let faketime_file = faketime_timestamp_file_path();
         let mut gui = Self {
             toggle_only: false,
-            active_tab: ToolTab::Performance,
+            active_tab: ToolTab::Crop,
             available_outputs: outputs,
             selected_output_idx: 0,
             output_selection_changed: false,
@@ -930,6 +965,7 @@ impl ScreenToolGui {
             shader_status_until: None,
             hotkeys_file: hotkeys_file.clone(),
             hotkeys: load_hotkeys_from_file(&hotkeys_file),
+            hotkey_target: std::env::var("SCREEN_TOOL_HOTKEY_TARGET").unwrap_or_else(|_| "Azahar".to_string()),
             hotkeys_status: None,
             hotkeys_status_until: None,
             faketime_file: faketime_file.clone(),
@@ -944,6 +980,16 @@ impl ScreenToolGui {
             last_refresh_query: Instant::now() - Duration::from_secs(60),
             faketime_status: None,
             faketime_status_until: None,
+            gamepad_pending_presses: Vec::new(),
+            gamepad_pending_axes: Vec::new(),
+            gamepad_button_states: [false; GamepadButton::COUNT],
+            gamepad_left_stick: (0.0, 0.0),
+            gamepad_right_stick: (0.0, 0.0),
+            wm_displays: Vec::new(),
+            wm_windows: Vec::new(),
+            wm_pending_actions: Vec::new(),
+            wm_status: None,
+            wm_status_until: None,
         };
         if let Some(s) =
             read_faketime_string(&faketime_file).or_else(|| read_faketime_from_mtime(&faketime_file))
@@ -987,19 +1033,19 @@ impl ScreenToolGui {
         style.spacing.window_margin = egui::Margin::same((12.0 * ui_scale) as i8);
         style.text_styles.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(22.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(24.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(14.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(14.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(15.0 * ui_scale, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(12.0 * ui_scale, egui::FontFamily::Proportional),
+            egui::FontId::new(13.0 * ui_scale, egui::FontFamily::Proportional),
         );
         ctx.set_style(style);
 
@@ -1164,6 +1210,14 @@ impl ScreenToolGui {
         }
 
         if self.current_nvfbc_tex_id == 0 {
+            // No NVFBC frame yet — clear to background instead of leaving garbage
+            unsafe {
+                gl.viewport(0, 0, viewport_w as i32, viewport_h as i32);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.disable(glow::BLEND);
+                gl.clear_color(0.039, 0.043, 0.078, 1.0); // BG_DEEP
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
             return;
         }
 
@@ -1227,10 +1281,12 @@ impl ScreenToolGui {
     /// Only renders the toolbar and handles input — the texture is rendered separately.
     pub fn show(&mut self, ctx: &egui::Context, _capture: &mut Option<&mut NvfbcCapture>) {
         let rect = ctx.screen_rect();
-        let auto_scale = ((rect.width() * rect.height()) / (1920.0 * 1080.0))
-            .sqrt()
-            .clamp(0.95, 3.2);
-        let ui_scale = (auto_scale * self.ui_scale_user).clamp(0.85, 4.0);
+        // Scale based on geometric mean, using a smaller reference so phone-sized screens
+        // get scale ~2.0x (good touch targets). Desktop 1920x1080 gets ~1.5x.
+        let w = rect.width();
+        let h = rect.height();
+        let auto_scale = ((w * h) / (1100.0 * 750.0)).sqrt().clamp(1.0, 3.0);
+        let ui_scale = (auto_scale * self.ui_scale_user).clamp(1.0, 4.0);
         self.ensure_style(ctx, ui_scale);
 
         if self.toggle_only {
@@ -1301,6 +1357,9 @@ impl ScreenToolGui {
             }
             if i.key_pressed(egui::Key::F9) {
                 self.active_tab = ToolTab::Shaders;
+            }
+            if i.key_pressed(egui::Key::F10) {
+                self.active_tab = ToolTab::Windows;
             }
             if i.key_pressed(egui::Key::F8) {
                 match toggle_tool_mode_file() {
@@ -1377,9 +1436,8 @@ impl ScreenToolGui {
         });
         self.clamp_pan_center();
 
-        // Scale controls continuously with available screen real estate.
-        let scale =
-            ((rect.width().min(rect.height()) / 620.0).clamp(1.0, 3.8)) * self.ui_scale_user;
+        // Reuse the unified ui_scale from show()
+        let scale = ui_scale;
 
         // Compact floating toolbar (Crop tab only, auto-hideable)
         if self.show_toolbar && self.active_tab == ToolTab::Crop {
@@ -1400,12 +1458,17 @@ impl ScreenToolGui {
                                 let prev_idx = self.selected_output_idx;
                                 ui.label(egui::RichText::new("Display").size(12.0 * scale).color(colors::TEXT_DIM));
                                 egui::ComboBox::from_id_salt("display_selector")
-                                    .selected_text(egui::RichText::new(current_name).size(12.0 * scale))
-                                    .width(80.0 * scale)
+                                    .selected_text(egui::RichText::new(current_name).size((12.0 * scale).clamp(12.0, 28.0)))
+                                    .width((80.0 * scale).clamp(80.0, 200.0))
                                     .show_ui(ui, |ui| {
                                         for (idx, output) in self.available_outputs.iter().enumerate() {
                                             let label = format!("{} ({}x{})", output.name, output.width, output.height);
-                                            let _ = ui.selectable_value(&mut self.selected_output_idx, idx, label);
+                                            let resp = ui.selectable_value(&mut self.selected_output_idx, idx,
+                                                egui::RichText::new(label).size((12.0 * scale).clamp(12.0, 28.0)));
+                                            // Ensure minimum tap target height
+                                            if resp.rect.height() < 32.0 {
+                                                ui.add_space(4.0);
+                                            }
                                         }
                                     });
                                 if self.selected_output_idx != prev_idx {
@@ -1455,7 +1518,7 @@ impl ScreenToolGui {
                         .stroke(egui::Stroke::new(0.5, colors::BORDER_SUBTLE))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
-                            let s = (11.0 * scale).clamp(10.0, 15.0);
+                            let s = (11.0 * scale).clamp(10.0, 30.0);
                             ui.label(egui::RichText::new(format!("FPS {:.0} | Capture {:.0}", self.fps, self.capture_fps)).size(s).color(colors::ACCENT_GREEN));
                             if self.capture_size.0 > 0 {
                                 ui.label(egui::RichText::new(format!("{}x{} | {:.1}x", self.capture_size.0, self.capture_size.1, self.zoom_level)).size(s).color(colors::TEXT_DIM));
@@ -1476,7 +1539,7 @@ impl ScreenToolGui {
                         .stroke(egui::Stroke::new(1.0, colors::BORDER_SUBTLE))
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            let s = (11.0 * scale).clamp(10.0, 14.0);
+                            let s = (11.0 * scale).clamp(10.0, 28.0);
                             let shortcut = |ui: &mut egui::Ui, key: &str, desc: &str| {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(key).size(s).color(colors::ACCENT_BLUE).strong());
@@ -1513,10 +1576,10 @@ impl ScreenToolGui {
                     let selected_output_mode = selected_output.as_ref().map(|o| format!("{}x{}", o.width, o.height)).unwrap_or_else(|| "N/A".into());
                     let selected_output_hz = selected_output.as_ref().map(|o| o.name.clone()).and_then(|name| self.get_refresh_hz(&name));
 
-                    let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
-                    let panel_w = (ui.available_width() - 20.0).max(440.0);
+                    let bottom_reserved = (96.0 * scale).clamp(84.0, 260.0);
+                    let panel_w = (ui.available_width() - 20.0).max(200.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
-                    let card_gap = (10.0 * scale).clamp(6.0, 16.0);
+                    let card_gap = (8.0 * scale).clamp(4.0, 14.0);
 
                     // Main glass panel
                     let panel_rect = egui::Rect::from_min_size(
@@ -1527,24 +1590,25 @@ impl ScreenToolGui {
                     draw_glass_panel(painter, panel_rect, 14.0 * scale, true);
 
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;  // we handle gaps manually
                         ui.vertical_centered(|ui| {
                             // Header with branding
                             ui.add_space(6.0 * scale);
                             ui.label(
                                 egui::RichText::new("GAMER")
-                                    .size((11.0 * scale).clamp(10.0, 16.0))
+                                    .size((11.0 * scale).clamp(10.0, 30.0))
                                     .color(colors::ACCENT_BLUE)
                                     .strong(),
                             );
                             ui.label(
                                 egui::RichText::new("Performance Monitor")
-                                    .size((24.0 * scale).clamp(20.0, 34.0))
+                                    .size((24.0 * scale).clamp(20.0, 56.0))
                                     .color(colors::TEXT_PRIMARY)
                                     .strong(),
                             );
                             ui.label(
                                 egui::RichText::new("Live system telemetry")
-                                    .size((12.0 * scale).clamp(11.0, 16.0))
+                                    .size((12.0 * scale).clamp(11.0, 30.0))
                                     .color(colors::TEXT_DIM),
                             );
 
@@ -1552,8 +1616,8 @@ impl ScreenToolGui {
 
                             // Ring gauges row
                             let content_w = ui.available_width();
-                            let gauge_area_h = (panel_h * 0.45).clamp(120.0, 280.0);
-                            let gauge_card_w = ((content_w - card_gap * 2.0) / 3.0).max(100.0);
+                            let gauge_area_h = (panel_h * 0.45).clamp(120.0, 450.0);
+                            let gauge_card_w = ((content_w - card_gap * 2.0) / 3.0).clamp(60.0, content_w * 0.32);
                             let gauge_radius = (gauge_card_w * 0.3).min(gauge_area_h * 0.32);
                             let gauge_thickness = (6.0 * scale).clamp(4.0, 10.0);
 
@@ -1588,10 +1652,10 @@ impl ScreenToolGui {
                             ui.add_space(12.0 * scale);
 
                             // Metric cards row
-                            let pill_w = ((content_w - card_gap * 4.0) / 5.0).max(80.0);
-                            let pill_h = (48.0 * scale).clamp(40.0, 80.0);
-                            let name_size = (11.0 * scale).clamp(10.0, 15.0);
-                            let value_size = (14.0 * scale).clamp(13.0, 20.0);
+                            let pill_w = ((content_w - card_gap * 4.0) / 5.0).clamp(40.0, content_w * 0.19);
+                            let pill_h = (48.0 * scale).clamp(40.0, 130.0);
+                            let name_size = (11.0 * scale).clamp(10.0, 30.0);
+                            let value_size = (14.0 * scale).clamp(13.0, 38.0);
                             let gpu_mem_text = match (self.system_stats.gpu_mem_used_mib, self.system_stats.gpu_mem_total_mib) {
                                 (Some(used), Some(total)) => format!("{used}/{total}M"),
                                 _ => "N/A".into(),
@@ -1633,11 +1697,198 @@ impl ScreenToolGui {
                 });
         }
 
+        // ─── Windows Tab ──────────────────────────────────────────────
+        if self.active_tab == ToolTab::Windows {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let bottom_reserved = (96.0 * scale).clamp(84.0, 260.0);
+                    let panel_w = (ui.available_width() - 20.0).max(440.0);
+                    let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
+                    let panel_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            (ui.available_width() - panel_w) / 2.0 + ui.min_rect().left(),
+                            (ui.available_height() - panel_h - bottom_reserved) / 2.0 + ui.min_rect().top(),
+                        ),
+                        egui::vec2(panel_w, panel_h),
+                    );
+                    draw_glass_panel(ui.painter(), panel_rect, 16.0 * scale, true);
+
+                    let mut inner_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(panel_rect.shrink(16.0 * scale))
+                    );
+                    let iu = &mut inner_ui;
+
+                    iu.vertical(|ui| {
+                        ui.add_space(4.0 * scale);
+                        ui.label(
+                            egui::RichText::new("Window Manager")
+                                .size(20.0 * scale)
+                                .color(colors::TEXT_PRIMARY),
+                        );
+                        ui.add_space(8.0 * scale);
+
+                        // Displays section
+                        ui.label(
+                            egui::RichText::new("Displays")
+                                .size(14.0 * scale)
+                                .color(colors::ACCENT_BLUE),
+                        );
+                        ui.add_space(4.0 * scale);
+
+                        if self.wm_displays.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No displays detected")
+                                    .size(12.0 * scale)
+                                    .color(colors::TEXT_DIM),
+                            );
+                        } else {
+                            for disp in &self.wm_displays {
+                                ui.horizontal(|ui| {
+                                    let indicator_color = if disp.name.contains("DP-0") || disp.name.contains("primary") {
+                                        colors::ACCENT_GREEN
+                                    } else {
+                                        colors::ACCENT_PINK
+                                    };
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0 * scale, 8.0 * scale), egui::Sense::hover());
+                                    ui.painter().circle_filled(rect.center(), 4.0 * scale, indicator_color);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} — {}x{} @ ({},{})",
+                                            disp.name, disp.width, disp.height, disp.x, disp.y
+                                        ))
+                                        .size(12.0 * scale)
+                                        .color(colors::TEXT_SECONDARY),
+                                    );
+                                });
+                            }
+                        }
+
+                        ui.add_space(12.0 * scale);
+                        ui.separator();
+                        ui.add_space(8.0 * scale);
+
+                        // Windows section
+                        ui.label(
+                            egui::RichText::new("Open Windows")
+                                .size(14.0 * scale)
+                                .color(colors::ACCENT_BLUE),
+                        );
+                        ui.add_space(4.0 * scale);
+
+                        if self.wm_windows.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No emulator windows found")
+                                    .size(12.0 * scale)
+                                    .color(colors::TEXT_DIM),
+                            );
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .max_height(panel_h * 0.55)
+                                .show(ui, |ui| {
+                                    // Collect actions to apply after iteration
+                                    let mut actions: Vec<(u64, String, &str)> = Vec::new();
+
+                                    let windows_snapshot: Vec<_> = self.wm_windows.clone();
+                                    for win in &windows_snapshot {
+                                        ui.horizontal(|ui| {
+                                            // Window title and current display
+                                            let mapped_label = if win.mapped { "" } else { " [hidden]" };
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{}{} ({}x{}) on {}",
+                                                    win.title, mapped_label, win.width, win.height, win.display
+                                                ))
+                                                .size(11.0 * scale)
+                                                .color(colors::TEXT_PRIMARY),
+                                            );
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                // Move buttons for each display
+                                                for disp in &self.wm_displays {
+                                                    let btn_label = format!("{}▪", disp.name);
+                                                    if ui.add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new(&btn_label)
+                                                                .size(10.0 * scale)
+                                                                .color(colors::TEXT_SECONDARY),
+                                                        )
+                                                        .fill(colors::BG_INPUT)
+                                                        .corner_radius(4.0)
+                                                    ).on_hover_text(format!("Fullscreen on {}", disp.name))
+                                                    .clicked()
+                                                    {
+                                                        actions.push((win.id, disp.name.clone(), "full"));
+                                                    }
+                                                }
+
+                                                // Side-by-side buttons (only when 2+ displays)
+                                                if self.wm_displays.len() >= 1 {
+                                                    let first_disp = &self.wm_displays[0].name;
+                                                    if ui.add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("L½")
+                                                                .size(10.0 * scale)
+                                                                .color(colors::TEXT_SECONDARY),
+                                                        )
+                                                        .fill(colors::BG_INPUT)
+                                                        .corner_radius(4.0)
+                                                    ).on_hover_text(format!("Left half on {}", first_disp))
+                                                    .clicked()
+                                                    {
+                                                        actions.push((win.id, first_disp.clone(), "left"));
+                                                    }
+                                                    if ui.add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("R½")
+                                                                .size(10.0 * scale)
+                                                                .color(colors::TEXT_SECONDARY),
+                                                        )
+                                                        .fill(colors::BG_INPUT)
+                                                        .corner_radius(4.0)
+                                                    ).on_hover_text(format!("Right half on {}", first_disp))
+                                                    .clicked()
+                                                    {
+                                                        actions.push((win.id, first_disp.clone(), "right"));
+                                                    }
+                                                }
+                                            });
+                                        });
+                                        ui.add_space(2.0 * scale);
+                                    }
+
+                                    // Queue actions for main.rs to execute via WindowManager
+                                    for (wid, display, mode) in actions {
+                                        self.wm_status = Some(format!("Moving {} → {} ({})", wid, display, mode));
+                                        self.wm_status_until = Some(Instant::now() + Duration::from_secs(3));
+                                        self.wm_pending_actions.push((wid, display, mode.to_string()));
+                                    }
+                                });
+                        }
+
+                        // Status message
+                        if let Some(ref status) = self.wm_status {
+                            if self.wm_status_until.map_or(false, |t| Instant::now() < t) {
+                                ui.add_space(8.0 * scale);
+                                ui.label(
+                                    egui::RichText::new(status)
+                                        .size(11.0 * scale)
+                                        .color(colors::ACCENT_GREEN),
+                                );
+                            } else {
+                                self.wm_status = None;
+                            }
+                        }
+                    });
+                });
+        }
+
         if self.active_tab == ToolTab::Shaders {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
+                    let bottom_reserved = (96.0 * scale).clamp(84.0, 260.0);
                     let panel_w = (ui.available_width() - 20.0).max(440.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
 
@@ -1652,15 +1903,15 @@ impl ScreenToolGui {
                         // Header
                         ui.vertical_centered(|ui| {
                             ui.add_space(4.0 * scale);
-                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
-                            ui.label(egui::RichText::new("Shader Library").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
-                            ui.label(egui::RichText::new("Browse and apply shader presets").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Shader Library").size((22.0 * scale).clamp(18.0, 56.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("Browse and apply shader presets").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::TEXT_DIM));
                         });
                         ui.add_space(6.0 * scale);
 
                         // Path bar with navigation
                         let current_display = ellipsize_middle(&self.shader_current_dir, 60);
-                        let path_bar_h = (28.0 * scale).clamp(26.0, 40.0);
+                        let path_bar_h = (28.0 * scale).clamp(26.0, 70.0);
                         let path_rect = egui::Rect::from_min_size(
                             ui.cursor().min,
                             egui::vec2(ui.available_width(), path_bar_h),
@@ -1673,7 +1924,7 @@ impl ScreenToolGui {
                             ui.horizontal_centered(|ui| {
                                 // Up button
                                 if ui.add(egui::Button::new(
-                                    egui::RichText::new("\u{25C0}").size((12.0 * scale).clamp(11.0, 18.0)).color(colors::ACCENT_BLUE)
+                                    egui::RichText::new("\u{25C0}").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::ACCENT_BLUE)
                                 ).fill(egui::Color32::TRANSPARENT).frame(false)).clicked() {
                                     if let Some(parent) = std::path::Path::new(&self.shader_current_dir).parent() {
                                         let parent = parent.to_string_lossy().to_string();
@@ -1682,10 +1933,10 @@ impl ScreenToolGui {
                                         }
                                     }
                                 }
-                                ui.label(egui::RichText::new(&current_display).size((11.0 * scale).clamp(10.0, 16.0)).color(colors::TEXT_SECONDARY));
+                                ui.label(egui::RichText::new(&current_display).size((11.0 * scale).clamp(10.0, 30.0)).color(colors::TEXT_SECONDARY));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui.add(egui::Button::new(
-                                        egui::RichText::new("Refresh").size((10.0 * scale).clamp(10.0, 14.0)).color(colors::ACCENT_BLUE)
+                                        egui::RichText::new("Refresh").size((10.0 * scale).clamp(10.0, 28.0)).color(colors::ACCENT_BLUE)
                                     ).fill(egui::Color32::TRANSPARENT).frame(false)).clicked() {
                                         self.shader_presets = discover_shader_presets();
                                         self.shader_list_dir.clear();
@@ -1699,11 +1950,13 @@ impl ScreenToolGui {
                         self.refresh_shader_listing_if_needed();
                         let dirs = self.shader_dirs.clone();
                         let files = self.shader_files.clone();
-                        let item_text_size = (13.0 * scale).clamp(12.0, 20.0);
-                        let row_h = (32.0 * scale).clamp(28.0, 48.0);
-                        let col_gap = (8.0 * scale).clamp(6.0, 14.0);
-                        let footer_h = (120.0 * scale).clamp(100.0, 200.0);
-                        let list_h = (ui.available_height() - footer_h - 14.0 * scale).max(100.0);
+                        let item_text_size = (14.0 * scale).clamp(14.0, 38.0);
+                        let row_h = (24.0 * scale).clamp(30.0, 60.0);
+                        let col_gap = (6.0 * scale).clamp(6.0, 14.0);
+                        // Fixed footer height — no shifting when selection changes
+                        let footer_h = (55.0 * scale).clamp(60.0, 160.0);
+                        let available = ui.available_height();
+                        let list_h = (available - footer_h - 12.0 * scale).max(available * 0.4);
 
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_width(), list_h),
@@ -1717,8 +1970,8 @@ impl ScreenToolGui {
                                 p.rect_filled(folder_rect, 8.0 * scale, colors::BG_CARD);
                                 p.rect_stroke(folder_rect, 8.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
 
-                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(folder_rect.shrink(6.0 * scale)), |ui| {
-                                    ui.label(egui::RichText::new("Folders").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_BLUE).strong());
+                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(folder_rect.shrink(6.0 * scale)).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                                    ui.label(egui::RichText::new("Folders").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::ACCENT_BLUE).strong());
                                     ui.add_space(3.0 * scale);
                                     egui::ScrollArea::vertical()
                                         .id_salt("shader_dirs_scroll")
@@ -1755,8 +2008,8 @@ impl ScreenToolGui {
                                 p.rect_filled(presets_rect, 8.0 * scale, colors::BG_CARD);
                                 p.rect_stroke(presets_rect, 8.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
 
-                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(presets_rect.shrink(6.0 * scale)), |ui| {
-                                    ui.label(egui::RichText::new("Presets").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_PINK).strong());
+                                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(presets_rect.shrink(6.0 * scale)).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                                    ui.label(egui::RichText::new("Presets").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::ACCENT_PINK).strong());
                                     ui.add_space(3.0 * scale);
                                     egui::ScrollArea::vertical()
                                         .id_salt("shader_files_scroll")
@@ -1787,15 +2040,16 @@ impl ScreenToolGui {
 
                         ui.add_space(8.0 * scale);
 
-                        // Action footer
+                        // Action footer — proper card below panes
                         let footer_rect = egui::Rect::from_min_size(
                             ui.cursor().min,
                             egui::vec2(ui.available_width(), footer_h),
                         );
                         let p = ui.painter();
-                        draw_glass_panel(p, footer_rect, 10.0 * scale, false);
+                        p.rect_filled(footer_rect, 8.0 * scale, colors::BG_CARD);
+                        p.rect_stroke(footer_rect, 8.0 * scale, egui::Stroke::new(1.0, colors::BORDER_SUBTLE), egui::StrokeKind::Inside);
 
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect.shrink(10.0 * scale)), |ui| {
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect.shrink(8.0 * scale)).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
                             if let Some(selected) = self.shader_selected.clone() {
                                 let selected_name = std::path::Path::new(&selected)
                                     .file_name()
@@ -1803,16 +2057,12 @@ impl ScreenToolGui {
                                     .unwrap_or(&selected)
                                     .to_string();
 
-                                // Selected preset info
-                                ui.vertical_centered(|ui| {
-                                    ui.label(egui::RichText::new("Selected").size((10.0 * scale).clamp(9.0, 14.0)).color(colors::TEXT_DIM));
-                                    ui.label(egui::RichText::new(ellipsize_middle(&selected_name, 50))
-                                        .size((14.0 * scale).clamp(13.0, 20.0)).color(colors::TEXT_PRIMARY).strong());
-                                });
-                                ui.add_space(6.0 * scale);
+                                // Selected preset name
+                                ui.label(egui::RichText::new(ellipsize_middle(&selected_name, 50))
+                                    .size((14.0 * scale).clamp(14.0, 38.0)).color(colors::ACCENT_PINK).strong());
 
                                 // Apply buttons row
-                                let btn_h = (32.0 * scale).clamp(28.0, 44.0);
+                                let btn_h = (24.0 * scale).clamp(26.0, 62.0);
                                 ui.horizontal(|ui| {
                                     let btn_w = ((ui.available_width() - 24.0 * scale) / 4.0).max(70.0);
                                     let apply = |target: &str, path: &str, status: &mut Option<String>, until: &mut Option<Instant>| {
@@ -1828,19 +2078,19 @@ impl ScreenToolGui {
                                         }
                                     };
                                     if ui.add_sized([btn_w, btn_h], egui::Button::new(
-                                        egui::RichText::new("Top").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::TEXT_PRIMARY)
+                                        egui::RichText::new("Top").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::TEXT_PRIMARY)
                                     ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
                                         apply("primary", &selected, &mut self.shader_status, &mut self.shader_status_until);
                                     }
                                     ui.add_space(6.0 * scale);
                                     if ui.add_sized([btn_w, btn_h], egui::Button::new(
-                                        egui::RichText::new("Bottom").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::TEXT_PRIMARY)
+                                        egui::RichText::new("Bottom").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::TEXT_PRIMARY)
                                     ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
                                         apply("secondary", &selected, &mut self.shader_status, &mut self.shader_status_until);
                                     }
                                     ui.add_space(6.0 * scale);
                                     if ui.add_sized([btn_w, btn_h], egui::Button::new(
-                                        egui::RichText::new("Both").size((12.0 * scale).clamp(11.0, 17.0)).color(egui::Color32::from_rgb(10, 11, 20)).strong()
+                                        egui::RichText::new("Both").size((12.0 * scale).clamp(11.0, 34.0)).color(egui::Color32::from_rgb(10, 11, 20)).strong()
                                     ).fill(colors::ACCENT_BLUE).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
                                         match write_shader_file("primary", &selected) {
                                             Ok(()) => {
@@ -1856,7 +2106,7 @@ impl ScreenToolGui {
                                     }
                                     ui.add_space(6.0 * scale);
                                     if ui.add_sized([btn_w, btn_h], egui::Button::new(
-                                        egui::RichText::new("Clear").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_RED)
+                                        egui::RichText::new("Clear").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::ACCENT_RED)
                                     ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
                                         let ok1 = write_shader_file("primary", "").is_ok();
                                         let ok2 = write_shader_file("secondary", "").is_ok();
@@ -1867,11 +2117,11 @@ impl ScreenToolGui {
                             } else {
                                 ui.vertical_centered(|ui| {
                                     ui.add_space(10.0 * scale);
-                                    ui.label(egui::RichText::new("Select a shader preset above").size((13.0 * scale).clamp(12.0, 18.0)).color(colors::TEXT_DIM));
+                                    ui.label(egui::RichText::new("Select a shader preset above").size((13.0 * scale).clamp(12.0, 36.0)).color(colors::TEXT_DIM));
                                     ui.add_space(8.0 * scale);
-                                    let btn_h = (32.0 * scale).clamp(28.0, 44.0);
+                                    let btn_h = (24.0 * scale).clamp(26.0, 62.0);
                                     if ui.add_sized([120.0 * scale, btn_h], egui::Button::new(
-                                        egui::RichText::new("Clear All").size((12.0 * scale).clamp(11.0, 17.0)).color(colors::ACCENT_RED)
+                                        egui::RichText::new("Clear All").size((12.0 * scale).clamp(11.0, 34.0)).color(colors::ACCENT_RED)
                                     ).fill(colors::BG_INPUT).corner_radius(egui::CornerRadius::from(6.0 * scale))).clicked() {
                                         let ok1 = write_shader_file("primary", "").is_ok();
                                         let ok2 = write_shader_file("secondary", "").is_ok();
@@ -1891,7 +2141,7 @@ impl ScreenToolGui {
                             if let Some(status) = &self.shader_status {
                                 ui.add_space(4.0 * scale);
                                 ui.vertical_centered(|ui| {
-                                    ui.label(egui::RichText::new(status).size((11.0 * scale).clamp(10.0, 15.0)).color(colors::ACCENT_GREEN));
+                                    ui.label(egui::RichText::new(status).size((11.0 * scale).clamp(10.0, 30.0)).color(colors::ACCENT_GREEN));
                                 });
                             }
                         });
@@ -1903,7 +2153,7 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
+                    let bottom_reserved = (96.0 * scale).clamp(84.0, 260.0);
                     let panel_w = (ui.available_width() - 20.0).max(440.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
 
@@ -1917,26 +2167,54 @@ impl ScreenToolGui {
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
                         ui.vertical_centered(|ui| {
                             ui.add_space(6.0 * scale);
-                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
-                            ui.label(egui::RichText::new("Hotkey Pad").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
-                            ui.label(egui::RichText::new("Tap to send emulator shortcuts").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Hotkey Pad").size((22.0 * scale).clamp(18.0, 56.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("Tap to send emulator shortcuts").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::TEXT_DIM));
                         });
                         ui.add_space(10.0 * scale);
 
-                        // Reload button (subtle, right-aligned)
+                        // Target window selector + reload
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(ellipsize_middle(&self.hotkeys_file, 50)).size(10.0 * scale).color(colors::TEXT_DIM));
+                            ui.label(egui::RichText::new("Target:").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::TEXT_DIM));
+                            ui.add_space(4.0 * scale);
+
+                            // Dropdown of visible windows from wm_windows
+                            let current_label = if self.hotkey_target.is_empty() { "(auto)" } else { &self.hotkey_target };
+                            egui::ComboBox::from_id_salt("hotkey_target_combo")
+                                .selected_text(egui::RichText::new(ellipsize_middle(current_label, 30)).size((11.0 * scale).clamp(10.0, 30.0)).color(colors::ACCENT_BLUE))
+                                .width(panel_w * 0.45)
+                                .show_ui(ui, |ui| {
+                                    // Auto option (uses default emulator search)
+                                    if ui.selectable_label(self.hotkey_target.is_empty(), "(auto)").clicked() {
+                                        self.hotkey_target = String::new();
+                                    }
+                                    ui.separator();
+                                    // Actual visible windows from wm_windows
+                                    for win in &self.wm_windows {
+                                        let selected = self.hotkey_target == win.title;
+                                        let label = format!("{} ({}x{})", ellipsize_middle(&win.title, 35), win.width, win.height);
+                                        if ui.selectable_label(selected, label).clicked() {
+                                            self.hotkey_target = win.title.clone();
+                                        }
+                                    }
+                                    if self.wm_windows.is_empty() {
+                                        ui.label(egui::RichText::new("No windows detected").size((10.0 * scale).clamp(9.0, 28.0)).color(colors::TEXT_DIM));
+                                    }
+                                });
+
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.add(egui::Button::new(egui::RichText::new("Reload").size(10.0 * scale).color(colors::ACCENT_BLUE)).fill(egui::Color32::TRANSPARENT)).clicked() {
+                                if ui.add(egui::Button::new(egui::RichText::new("Reload").size((10.0 * scale).clamp(9.0, 28.0)).color(colors::ACCENT_BLUE)).fill(egui::Color32::TRANSPARENT)).clicked() {
                                     self.hotkeys = load_hotkeys_from_file(&self.hotkeys_file);
                                 }
                             });
                         });
+                        ui.add_space(4.0 * scale);
+                        ui.label(egui::RichText::new(ellipsize_middle(&self.hotkeys_file, 50)).size((9.0 * scale).clamp(8.0, 24.0)).color(colors::TEXT_DIM));
                         ui.add_space(8.0 * scale);
 
                         // Keycap-style hotkey grid
                         let columns = if panel_w > 1000.0 { 4 } else if panel_w > 700.0 { 3 } else { 2 };
-                        let btn_h = (70.0 * scale).clamp(56.0, 96.0);
+                        let btn_h = (70.0 * scale).clamp(56.0, 180.0);
                         let btn_w = ((ui.available_width() - (columns as f32 - 1.0) * 10.0 * scale) / columns as f32).max(140.0);
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1955,7 +2233,7 @@ impl ScreenToolGui {
                                             egui::pos2(rect.center().x, rect.top() + 12.0 * scale),
                                             egui::Align2::CENTER_TOP,
                                             title,
-                                            egui::FontId::proportional((13.0 * scale).clamp(11.0, 18.0)),
+                                            egui::FontId::proportional((13.0 * scale).clamp(11.0, 34.0)),
                                             colors::TEXT_PRIMARY,
                                         );
                                         // Key sequence in accent color
@@ -1963,12 +2241,12 @@ impl ScreenToolGui {
                                             egui::pos2(rect.center().x, rect.bottom() - 12.0 * scale),
                                             egui::Align2::CENTER_BOTTOM,
                                             keyseq,
-                                            egui::FontId::proportional((11.0 * scale).clamp(10.0, 15.0)),
+                                            egui::FontId::proportional((11.0 * scale).clamp(10.0, 30.0)),
                                             colors::ACCENT_BLUE,
                                         );
 
                                         if response.clicked() {
-                                            match send_hotkey_to_emulator(keyseq) {
+                                            match send_hotkey_to_emulator(keyseq, &self.hotkey_target) {
                                                 Ok(()) => { self.hotkeys_status = Some(format!("Sent: {title}")); }
                                                 Err(e) => { self.hotkeys_status = Some(format!("Failed: {e}")); }
                                             }
@@ -2000,7 +2278,7 @@ impl ScreenToolGui {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let bottom_reserved = (96.0 * scale).clamp(84.0, 140.0);
+                    let bottom_reserved = (96.0 * scale).clamp(84.0, 260.0);
                     let panel_w = (ui.available_width() - 20.0).max(440.0);
                     let panel_h = (ui.available_height() - bottom_reserved).max(300.0);
 
@@ -2014,9 +2292,9 @@ impl ScreenToolGui {
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect.shrink(16.0 * scale)), |ui| {
                         ui.vertical_centered(|ui| {
                             ui.add_space(6.0 * scale);
-                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 16.0)).color(colors::ACCENT_BLUE).strong());
-                            ui.label(egui::RichText::new("Time Warp").size((22.0 * scale).clamp(18.0, 32.0)).color(colors::TEXT_PRIMARY).strong());
-                            ui.label(egui::RichText::new("In-game clock control (libfaketime)").size((11.0 * scale).clamp(10.0, 15.0)).color(colors::TEXT_DIM));
+                            ui.label(egui::RichText::new("GAMER").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::ACCENT_BLUE).strong());
+                            ui.label(egui::RichText::new("Time Warp").size((22.0 * scale).clamp(18.0, 56.0)).color(colors::TEXT_PRIMARY).strong());
+                            ui.label(egui::RichText::new("In-game clock control (libfaketime)").size((11.0 * scale).clamp(10.0, 30.0)).color(colors::TEXT_DIM));
                         });
                         ui.add_space(12.0 * scale);
 
@@ -2041,32 +2319,83 @@ impl ScreenToolGui {
 
                         ui.add_space(16.0 * scale);
 
-                        // Date controls
+                        // Touch-friendly +/- spinner helper
+                        let btn_fs = (14.0 * scale).clamp(14.0, 36.0);
+                        let val_fs = (16.0 * scale).clamp(15.0, 40.0);
+                        let spin_btn_w = (32.0 * scale).clamp(36.0, 80.0);
+                        let spin_btn_h = (26.0 * scale).clamp(30.0, 64.0);
+                        let spin_gap = (4.0 * scale).clamp(2.0, 10.0);
+
+                        let spinner = |ui: &mut egui::Ui, label: &str, val: &mut i32, min: i32, max: i32, width: f32| {
+                            ui.vertical(|ui| {
+                                ui.set_width(width);
+                                ui.label(egui::RichText::new(label).size((11.0 * scale).clamp(10.0, 28.0)).color(colors::TEXT_DIM));
+                                ui.add_space(spin_gap);
+                                ui.horizontal(|ui| {
+                                    if ui.add_sized(
+                                        [spin_btn_w, spin_btn_h],
+                                        egui::Button::new(egui::RichText::new("\u{2212}").size(btn_fs).color(colors::TEXT_PRIMARY))
+                                            .fill(colors::BG_INPUT).corner_radius(6.0),
+                                    ).clicked() {
+                                        *val = if *val <= min { max } else { *val - 1 };
+                                    }
+                                    ui.add_space(spin_gap);
+                                    let display = format!("{:02}", *val);
+                                    ui.label(egui::RichText::new(display).size(val_fs).color(colors::TEXT_PRIMARY).strong().family(egui::FontFamily::Monospace));
+                                    ui.add_space(spin_gap);
+                                    if ui.add_sized(
+                                        [spin_btn_w, spin_btn_h],
+                                        egui::Button::new(egui::RichText::new("+").size(btn_fs).color(colors::TEXT_PRIMARY))
+                                            .fill(colors::BG_INPUT).corner_radius(6.0),
+                                    ).clicked() {
+                                        *val = if *val >= max { min } else { *val + 1 };
+                                    }
+                                });
+                            });
+                        };
+
+                        // Date controls — cast u32 fields through i32 temporaries
                         ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("Date").size((13.0 * scale).clamp(12.0, 32.0)).color(colors::TEXT_SECONDARY));
+                            ui.add_space(4.0 * scale);
+                            let spin_col_w = (90.0 * scale).clamp(100.0, 200.0);
+                            let mut month_i = self.faketime_month as i32;
+                            let mut day_i = self.faketime_day as i32;
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Date").size(13.0 * scale).color(colors::TEXT_SECONDARY));
-                                ui.add_space(8.0);
-                                ui.add(egui::DragValue::new(&mut self.faketime_year).speed(1).prefix("Y: "));
-                                ui.add(egui::DragValue::new(&mut self.faketime_month).range(1..=12).prefix("M: "));
-                                ui.add(egui::DragValue::new(&mut self.faketime_day).range(1..=max_days).prefix("D: "));
+                                ui.add_space((ui.available_width() - spin_col_w * 3.0).max(0.0) * 0.5);
+                                spinner(ui, "Year", &mut self.faketime_year, 1970, 2099, spin_col_w);
+                                spinner(ui, "Month", &mut month_i, 1, 12, spin_col_w);
+                                spinner(ui, "Day", &mut day_i, 1, max_days as i32, spin_col_w);
                             });
-                            ui.add_space(6.0 * scale);
+                            self.faketime_month = month_i as u32;
+                            self.faketime_day = day_i as u32;
+                            ui.add_space(10.0 * scale);
+                            ui.label(egui::RichText::new("Time").size((13.0 * scale).clamp(12.0, 32.0)).color(colors::TEXT_SECONDARY));
+                            ui.add_space(4.0 * scale);
+                            let mut hour_i = self.faketime_hour as i32;
+                            let mut min_i = self.faketime_minute as i32;
+                            let mut sec_i = self.faketime_second as i32;
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Time").size(13.0 * scale).color(colors::TEXT_SECONDARY));
-                                ui.add_space(8.0);
-                                ui.add(egui::DragValue::new(&mut self.faketime_hour).range(0..=23).prefix("H: "));
-                                ui.add(egui::DragValue::new(&mut self.faketime_minute).range(0..=59).prefix("M: "));
-                                ui.add(egui::DragValue::new(&mut self.faketime_second).range(0..=59).prefix("S: "));
+                                ui.add_space((ui.available_width() - spin_col_w * 3.0).max(0.0) * 0.5);
+                                spinner(ui, "Hour", &mut hour_i, 0, 23, spin_col_w);
+                                spinner(ui, "Min", &mut min_i, 0, 59, spin_col_w);
+                                spinner(ui, "Sec", &mut sec_i, 0, 59, spin_col_w);
                             });
+                            self.faketime_hour = hour_i as u32;
+                            self.faketime_minute = min_i as u32;
+                            self.faketime_second = sec_i as u32;
                         });
 
                         ui.add_space(16.0 * scale);
 
                         // Action buttons
+                        let act_btn_h = (36.0 * scale).clamp(40.0, 80.0);
+                        let act_btn_w = (100.0 * scale).clamp(110.0, 220.0);
                         ui.horizontal(|ui| {
-                            ui.add_space((ui.available_width() * 0.2).max(20.0));
-                            if ui.add(
-                                egui::Button::new(egui::RichText::new("Reload").size(13.0 * scale).color(colors::TEXT_SECONDARY))
+                            ui.add_space((ui.available_width() - act_btn_w * 2.0 - 16.0 * scale).max(0.0) * 0.5);
+                            if ui.add_sized(
+                                [act_btn_w, act_btn_h],
+                                egui::Button::new(egui::RichText::new("Reload").size((14.0 * scale).clamp(14.0, 34.0)).color(colors::TEXT_SECONDARY))
                                     .fill(colors::BG_CARD)
                                     .corner_radius(8.0),
                             ).clicked() {
@@ -2086,8 +2415,9 @@ impl ScreenToolGui {
                                 }
                             }
                             ui.add_space(12.0 * scale);
-                            if ui.add(
-                                egui::Button::new(egui::RichText::new("Apply").size(14.0 * scale).color(colors::BG_DEEP).strong())
+                            if ui.add_sized(
+                                [act_btn_w, act_btn_h],
+                                egui::Button::new(egui::RichText::new("Apply").size((15.0 * scale).clamp(15.0, 36.0)).color(colors::BG_DEEP).strong())
                                     .fill(colors::ACCENT_GREEN)
                                     .corner_radius(8.0),
                             ).clicked() {
@@ -2108,6 +2438,193 @@ impl ScreenToolGui {
                             ui.label(egui::RichText::new(status).size(11.0 * scale).color(colors::ACCENT_GREEN));
                         }
                     });
+                });
+        }
+
+        // ─── Gamepad Tab ─────────────────────────────────────────────────
+        if self.active_tab == ToolTab::Gamepad {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(colors::BG_DEEP))
+                .show(ctx, |ui| {
+                    let avail = ui.available_size();
+                    let gp_tab_h = (36.0 * ui_scale).clamp(44.0, 120.0);
+                    let gp_tab_pad = (8.0 * ui_scale).clamp(8.0, 24.0);
+                    let pad_w = avail.x * 0.94;
+                    let pad_h = (avail.y - gp_tab_h - gp_tab_pad - 8.0).max(200.0);
+                    let origin = ui.cursor().min + egui::vec2((avail.x - pad_w) * 0.5, 4.0);
+
+                    // Bigger buttons for touch — scale with display
+                    let unit = (pad_w.min(pad_h) * 0.085).clamp(36.0, 140.0);
+                    let btn_sz = unit;
+                    let dpad_sz = unit * 0.95;
+                    let shoulder_w = unit * 2.2;
+                    let shoulder_h = unit * 0.7;
+                    let stick_r = unit * 1.1;
+
+                    // Xbox-style asymmetric layout:
+                    // Left stick upper-left, d-pad lower-left
+                    // Face buttons upper-right, right stick lower-right
+                    let left_cx = origin.x + pad_w * 0.22;
+                    let right_cx = origin.x + pad_w * 0.78;
+                    let center_x = origin.x + pad_w * 0.5;
+                    // Shoulder/trigger row at top
+                    let trigger_y = origin.y + pad_h * 0.04;
+                    let shoulder_y = origin.y + pad_h * 0.14;
+                    // Left stick upper-left, face buttons upper-right
+                    let lstick_y = origin.y + pad_h * 0.33;
+                    let face_y   = origin.y + pad_h * 0.33;
+                    // D-pad lower-left, right stick lower-right
+                    let dpad_y   = origin.y + pad_h * 0.60;
+                    let rstick_y = origin.y + pad_h * 0.62;
+                    // L3/R3 below their respective sticks
+                    let l3_y     = origin.y + pad_h * 0.50;
+                    let r3_y     = origin.y + pad_h * 0.78;
+                    // Select/Start in the center
+                    let meta_y   = origin.y + pad_h * 0.88;
+
+                    let panel_rect = egui::Rect::from_min_size(
+                        origin - egui::vec2(6.0, 4.0),
+                        egui::vec2(pad_w + 12.0, pad_h + 8.0),
+                    );
+                    draw_glass_panel(ui.painter(), panel_rect, 14.0, true);
+
+                    let states = &mut self.gamepad_button_states;
+                    let pending = &mut self.gamepad_pending_presses;
+
+                    // Unified gamepad button helper: style = "rect", "round", or "dpad:up/down/left/right"
+                    let mut draw_btn = |ui: &mut egui::Ui, center: egui::Pos2, w: f32, h: f32,
+                                       label: &str, color: egui::Color32, btn: GamepadButton, style: &str| {
+                        let rect = egui::Rect::from_center_size(center, egui::vec2(w, h));
+                        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                        let idx = btn.index();
+                        let is_down = resp.is_pointer_button_down_on();
+                        if is_down && !states[idx] { states[idx] = true; pending.push((btn, true)); }
+                        else if !is_down && states[idx] { states[idx] = false; pending.push((btn, false)); }
+                        let fill = if is_down { color.linear_multiply(0.7) } else { colors::BG_CARD };
+                        let stroke_c = if is_down { color } else { color.linear_multiply(0.4) };
+                        let p = ui.painter();
+
+                        if style == "round" {
+                            let r = w * 0.5;
+                            p.circle_filled(center, r, fill);
+                            p.circle_stroke(center, r, egui::Stroke::new(2.5, stroke_c));
+                            if is_down { p.circle_stroke(center, r + 4.0, egui::Stroke::new(1.5, color.linear_multiply(0.3))); }
+                            let ts = (r * 0.75).clamp(14.0, 42.0);
+                            p.text(center, egui::Align2::CENTER_CENTER, label, egui::FontId::new(ts, egui::FontFamily::Proportional),
+                                if is_down { colors::TEXT_PRIMARY } else { color });
+                        } else if style.starts_with("dpad:") {
+                            let dir = &style[5..];
+                            let rnd = w.min(h) * 0.15;
+                            p.rect_filled(rect, rnd, fill);
+                            p.rect_stroke(rect, rnd, egui::Stroke::new(2.0, stroke_c), egui::StrokeKind::Inside);
+                            let a = w.min(h) * 0.3;
+                            let ac = if is_down { colors::TEXT_PRIMARY } else { color };
+                            let pts = match dir {
+                                "up"    => vec![egui::pos2(center.x, center.y - a), egui::pos2(center.x - a, center.y + a * 0.5), egui::pos2(center.x + a, center.y + a * 0.5)],
+                                "down"  => vec![egui::pos2(center.x, center.y + a), egui::pos2(center.x - a, center.y - a * 0.5), egui::pos2(center.x + a, center.y - a * 0.5)],
+                                "left"  => vec![egui::pos2(center.x - a, center.y), egui::pos2(center.x + a * 0.5, center.y - a), egui::pos2(center.x + a * 0.5, center.y + a)],
+                                "right" => vec![egui::pos2(center.x + a, center.y), egui::pos2(center.x - a * 0.5, center.y - a), egui::pos2(center.x - a * 0.5, center.y + a)],
+                                _ => vec![],
+                            };
+                            if !pts.is_empty() { p.add(egui::Shape::convex_polygon(pts, ac, egui::Stroke::NONE)); }
+                        } else {
+                            // rect style
+                            let rnd = (w.min(h) * 0.25).min(16.0);
+                            p.rect_filled(rect, rnd, fill);
+                            p.rect_stroke(rect, rnd, egui::Stroke::new(2.0, stroke_c), egui::StrokeKind::Inside);
+                            if is_down { p.rect_stroke(rect.expand(3.0), rnd + 3.0, egui::Stroke::new(1.5, color.linear_multiply(0.3)), egui::StrokeKind::Outside); }
+                            let ts = (w * 0.32).clamp(14.0, 42.0);
+                            p.text(center, egui::Align2::CENTER_CENTER, label, egui::FontId::new(ts, egui::FontFamily::Proportional),
+                                if is_down { colors::TEXT_PRIMARY } else { color });
+                        }
+                    };
+
+                    // ── L2/R2 triggers ──
+                    draw_btn(ui, egui::pos2(left_cx, trigger_y), shoulder_w, shoulder_h, "L2", colors::TEXT_DIM, GamepadButton::L2, "rect");
+                    draw_btn(ui, egui::pos2(right_cx, trigger_y), shoulder_w, shoulder_h, "R2", colors::TEXT_DIM, GamepadButton::R2, "rect");
+
+                    // ── L/R bumpers ──
+                    draw_btn(ui, egui::pos2(left_cx, shoulder_y), shoulder_w, shoulder_h, "L", colors::TEXT_SECONDARY, GamepadButton::L, "rect");
+                    draw_btn(ui, egui::pos2(right_cx, shoulder_y), shoulder_w, shoulder_h, "R", colors::TEXT_SECONDARY, GamepadButton::R, "rect");
+
+                    // ── Face buttons: upper-right (diamond layout) ──
+                    let face_gap = btn_sz * 1.15;
+                    let face_d = btn_sz * 1.08;
+                    draw_btn(ui, egui::pos2(right_cx, face_y + face_gap), face_d, face_d, "A", colors::ACCENT_GREEN, GamepadButton::A, "round");
+                    draw_btn(ui, egui::pos2(right_cx + face_gap, face_y), face_d, face_d, "B", colors::ACCENT_RED, GamepadButton::B, "round");
+                    draw_btn(ui, egui::pos2(right_cx - face_gap, face_y), face_d, face_d, "X", colors::ACCENT_BLUE, GamepadButton::X, "round");
+                    draw_btn(ui, egui::pos2(right_cx, face_y - face_gap), face_d, face_d, "Y", colors::ACCENT_AMBER, GamepadButton::Y, "round");
+
+                    // ── D-pad: lower-left (cross layout) ──
+                    let dpad_gap = dpad_sz * 1.1;
+                    draw_btn(ui, egui::pos2(left_cx, dpad_y - dpad_gap), dpad_sz, dpad_sz, "", colors::TEXT_SECONDARY, GamepadButton::DpadUp, "dpad:up");
+                    draw_btn(ui, egui::pos2(left_cx, dpad_y + dpad_gap), dpad_sz, dpad_sz, "", colors::TEXT_SECONDARY, GamepadButton::DpadDown, "dpad:down");
+                    draw_btn(ui, egui::pos2(left_cx - dpad_gap, dpad_y), dpad_sz, dpad_sz, "", colors::TEXT_SECONDARY, GamepadButton::DpadLeft, "dpad:left");
+                    draw_btn(ui, egui::pos2(left_cx + dpad_gap, dpad_y), dpad_sz, dpad_sz, "", colors::TEXT_SECONDARY, GamepadButton::DpadRight, "dpad:right");
+                    ui.painter().circle_filled(egui::pos2(left_cx, dpad_y), dpad_sz * 0.3, colors::BG_INPUT);
+
+                    // ── Analog sticks ──
+                    let axis_max = crate::gamepad::AXIS_MAX as f32;
+                    // Left stick
+                    {
+                        let sc = egui::pos2(left_cx, lstick_y);
+                        let resp = ui.allocate_rect(egui::Rect::from_center_size(sc, egui::vec2(stick_r * 2.2, stick_r * 2.2)), egui::Sense::click_and_drag());
+                        let p = ui.painter();
+                        p.circle_filled(sc, stick_r * 1.1, colors::BG_INPUT);
+                        p.circle_stroke(sc, stick_r * 1.1, egui::Stroke::new(2.0, colors::BORDER_SUBTLE));
+                        if resp.dragged() {
+                            let d = resp.drag_delta();
+                            self.gamepad_left_stick.0 = (self.gamepad_left_stick.0 + d.x / stick_r).clamp(-1.0, 1.0);
+                            self.gamepad_left_stick.1 = (self.gamepad_left_stick.1 + d.y / stick_r).clamp(-1.0, 1.0);
+                            self.gamepad_pending_axes.push((StickAxis::LeftX, (self.gamepad_left_stick.0 * axis_max) as i32));
+                            self.gamepad_pending_axes.push((StickAxis::LeftY, (self.gamepad_left_stick.1 * axis_max) as i32));
+                        } else if self.gamepad_left_stick != (0.0, 0.0) {
+                            self.gamepad_left_stick = (0.0, 0.0);
+                            self.gamepad_pending_axes.push((StickAxis::LeftX, 0));
+                            self.gamepad_pending_axes.push((StickAxis::LeftY, 0));
+                        }
+                        let thumb = sc + egui::vec2(self.gamepad_left_stick.0 * stick_r * 0.6, self.gamepad_left_stick.1 * stick_r * 0.6);
+                        let p = ui.painter();
+                        p.circle_filled(thumb, stick_r * 0.5, colors::BG_PANEL_LIGHT);
+                        p.circle_stroke(thumb, stick_r * 0.5, egui::Stroke::new(2.0, colors::ACCENT_BLUE.linear_multiply(0.5)));
+                    }
+                    // Right stick
+                    {
+                        let sc = egui::pos2(right_cx, rstick_y);
+                        let resp = ui.allocate_rect(egui::Rect::from_center_size(sc, egui::vec2(stick_r * 2.2, stick_r * 2.2)), egui::Sense::click_and_drag());
+                        let p = ui.painter();
+                        p.circle_filled(sc, stick_r * 1.1, colors::BG_INPUT);
+                        p.circle_stroke(sc, stick_r * 1.1, egui::Stroke::new(2.0, colors::BORDER_SUBTLE));
+                        if resp.dragged() {
+                            let d = resp.drag_delta();
+                            self.gamepad_right_stick.0 = (self.gamepad_right_stick.0 + d.x / stick_r).clamp(-1.0, 1.0);
+                            self.gamepad_right_stick.1 = (self.gamepad_right_stick.1 + d.y / stick_r).clamp(-1.0, 1.0);
+                            self.gamepad_pending_axes.push((StickAxis::RightX, (self.gamepad_right_stick.0 * axis_max) as i32));
+                            self.gamepad_pending_axes.push((StickAxis::RightY, (self.gamepad_right_stick.1 * axis_max) as i32));
+                        } else if self.gamepad_right_stick != (0.0, 0.0) {
+                            self.gamepad_right_stick = (0.0, 0.0);
+                            self.gamepad_pending_axes.push((StickAxis::RightX, 0));
+                            self.gamepad_pending_axes.push((StickAxis::RightY, 0));
+                        }
+                        let thumb = sc + egui::vec2(self.gamepad_right_stick.0 * stick_r * 0.6, self.gamepad_right_stick.1 * stick_r * 0.6);
+                        let p = ui.painter();
+                        p.circle_filled(thumb, stick_r * 0.5, colors::BG_PANEL_LIGHT);
+                        p.circle_stroke(thumb, stick_r * 0.5, egui::Stroke::new(2.0, colors::ACCENT_PINK.linear_multiply(0.5)));
+                    }
+
+                    // ── L3/R3 ──
+                    let l3r3_sz = btn_sz * 0.6;
+                    draw_btn(ui, egui::pos2(left_cx, l3_y), l3r3_sz, l3r3_sz, "L3", colors::TEXT_DIM, GamepadButton::L3, "rect");
+                    draw_btn(ui, egui::pos2(right_cx, r3_y), l3r3_sz, l3r3_sz, "R3", colors::TEXT_DIM, GamepadButton::R3, "rect");
+
+                    // ── Start / Select ──
+                    let meta_w = btn_sz * 1.6;
+                    let meta_h = btn_sz * 0.65;
+                    let meta_gap = meta_w * 0.7;
+                    draw_btn(ui, egui::pos2(center_x - meta_gap, meta_y), meta_w, meta_h, "SEL", colors::TEXT_DIM, GamepadButton::Select, "rect");
+                    draw_btn(ui, egui::pos2(center_x + meta_gap, meta_y), meta_w, meta_h, "START", colors::TEXT_DIM, GamepadButton::Start, "rect");
+
+                    ctx.request_repaint();
                 });
         }
 
@@ -2144,7 +2661,7 @@ impl ScreenToolGui {
 
         // Compact floating zoom controls (Crop tab only)
         if self.active_tab == ToolTab::Crop {
-            let btn_sz = (44.0 * scale).clamp(36.0, 64.0);
+            let btn_sz = (44.0 * scale).clamp(36.0, 110.0);
             egui::Area::new(egui::Id::new("quick_zoom_controls"))
                 .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-16.0, 0.0))
                 .order(egui::Order::Foreground)
@@ -2183,11 +2700,11 @@ impl ScreenToolGui {
         }
 
         // ─── Bottom Navigation Bar ─────────────────────────────────────
-        // Modern pill-shaped tab bar with icon + label, active glow indicator
-        let tab_h = (42.0 * scale).clamp(36.0, 60.0);
-        let tab_w = (64.0 * scale).clamp(52.0, 90.0);
-        let tab_gap = (4.0 * scale).clamp(2.0, 8.0);
-        let tab_pad = (16.0 * scale).clamp(12.0, 24.0);
+        // Bigger pill-shaped tab bar with drawn icons + label
+        let tab_h = (36.0 * scale).clamp(44.0, 120.0);
+        let tab_w = (44.0 * scale).clamp(52.0, 130.0);
+        let tab_gap = (2.0 * scale).clamp(2.0, 8.0);
+        let tab_pad = (8.0 * scale).clamp(8.0, 24.0);
 
         egui::Area::new(egui::Id::new("feature_tab_controls"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -tab_pad))
@@ -2201,64 +2718,147 @@ impl ScreenToolGui {
                     .inner_margin(egui::Margin::symmetric((8.0 * scale) as i8, (4.0 * scale) as i8))
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
-                            let icon_size = (16.0 * scale).clamp(14.0, 24.0);
-                            let label_size = (10.0 * scale).clamp(9.0, 14.0);
+                            let icon_sz = (18.0 * scale).clamp(16.0, 48.0);
+                            let label_size = (9.0 * scale).clamp(8.0, 22.0);
+                            let stroke_w = (1.5 * scale).clamp(1.5, 4.0);
 
-                            let tab_button = |ui: &mut egui::Ui, icon: &str, label: &str, active: bool, _tab: ToolTab| -> bool {
-                                let fill = if active { colors::TAB_ACTIVE_BG } else { egui::Color32::TRANSPARENT };
-                                let text_color = if active { colors::ACCENT_BLUE } else { colors::TEXT_SECONDARY };
-                                let response = ui.allocate_ui(egui::vec2(tab_w, tab_h), |ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add_space(2.0);
-                                        let resp = ui.add_sized(
-                                            [tab_w, tab_h - 4.0],
-                                            egui::Button::new(
-                                                egui::RichText::new(format!("{icon}\n{label}"))
-                                                    .size(icon_size)
-                                                    .color(text_color),
-                                            )
-                                            .fill(fill)
-                                            .corner_radius(10.0 * scale),
-                                        );
-                                        // Active tab glow underline
-                                        if active {
-                                            let rect = resp.rect;
-                                            let underline_y = rect.bottom() - 1.0;
-                                            let center_x = rect.center().x;
-                                            let half_w = rect.width() * 0.3;
-                                            ui.painter().line_segment(
-                                                [
-                                                    egui::pos2(center_x - half_w, underline_y),
-                                                    egui::pos2(center_x + half_w, underline_y),
-                                                ],
-                                                egui::Stroke::new(2.0, colors::ACCENT_BLUE),
-                                            );
+                            // Draw icons using painter primitives
+                            let draw_icon = |p: &egui::Painter, cx: f32, cy: f32, s: f32, which: &str, color: egui::Color32| {
+                                let sw = stroke_w;
+                                match which {
+                                    "crop" => {
+                                        // Viewfinder: 4 corner brackets
+                                        let h = s * 0.4;
+                                        let a = s * 0.15;
+                                        // top-left
+                                        p.line_segment([egui::pos2(cx - h, cy - h + a), egui::pos2(cx - h, cy - h)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx - h, cy - h), egui::pos2(cx - h + a, cy - h)], egui::Stroke::new(sw, color));
+                                        // top-right
+                                        p.line_segment([egui::pos2(cx + h - a, cy - h), egui::pos2(cx + h, cy - h)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx + h, cy - h), egui::pos2(cx + h, cy - h + a)], egui::Stroke::new(sw, color));
+                                        // bottom-left
+                                        p.line_segment([egui::pos2(cx - h, cy + h - a), egui::pos2(cx - h, cy + h)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx - h, cy + h), egui::pos2(cx - h + a, cy + h)], egui::Stroke::new(sw, color));
+                                        // bottom-right
+                                        p.line_segment([egui::pos2(cx + h - a, cy + h), egui::pos2(cx + h, cy + h)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx + h, cy + h), egui::pos2(cx + h, cy + h - a)], egui::Stroke::new(sw, color));
+                                        // center cross
+                                        let c = s * 0.1;
+                                        p.line_segment([egui::pos2(cx - c, cy), egui::pos2(cx + c, cy)], egui::Stroke::new(sw * 0.7, color));
+                                        p.line_segment([egui::pos2(cx, cy - c), egui::pos2(cx, cy + c)], egui::Stroke::new(sw * 0.7, color));
+                                    }
+                                    "perf" => {
+                                        // Bar chart: 3 bars
+                                        let bw = s * 0.18;
+                                        let gap = s * 0.08;
+                                        let base = cy + s * 0.35;
+                                        for (i, h) in [0.3, 0.55, 0.7].iter().enumerate() {
+                                            let x = cx - bw * 1.5 - gap + (bw + gap) * i as f32;
+                                            let top = base - s * h;
+                                            p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + bw, base)), 2.0, color);
                                         }
-                                        resp.clicked()
-                                    }).inner
-                                }).inner;
-                                response
+                                    }
+                                    "win" => {
+                                        // Two overlapping windows
+                                        let w = s * 0.3;
+                                        let h = s * 0.25;
+                                        p.rect_stroke(egui::Rect::from_min_size(egui::pos2(cx - w, cy - h), egui::vec2(w * 1.3, h * 1.4)),
+                                            2.0, egui::Stroke::new(sw, color), egui::StrokeKind::Inside);
+                                        p.rect_stroke(egui::Rect::from_min_size(egui::pos2(cx - w * 0.3, cy - h * 0.3), egui::vec2(w * 1.3, h * 1.4)),
+                                            2.0, egui::Stroke::new(sw, color), egui::StrokeKind::Inside);
+                                    }
+                                    "shader" => {
+                                        // Sparkle: 4-pointed star
+                                        let a = s * 0.38;
+                                        let b = s * 0.12;
+                                        p.line_segment([egui::pos2(cx, cy - a), egui::pos2(cx, cy + a)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx - a, cy), egui::pos2(cx + a, cy)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx - b, cy - b), egui::pos2(cx + b, cy + b)], egui::Stroke::new(sw * 0.7, color));
+                                        p.line_segment([egui::pos2(cx + b, cy - b), egui::pos2(cx - b, cy + b)], egui::Stroke::new(sw * 0.7, color));
+                                    }
+                                    "keys" => {
+                                        // Keyboard outline
+                                        let w = s * 0.38;
+                                        let h = s * 0.25;
+                                        let r = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(w * 2.0, h * 2.0));
+                                        p.rect_stroke(r, 3.0, egui::Stroke::new(sw, color), egui::StrokeKind::Inside);
+                                        // Key rows
+                                        p.line_segment([egui::pos2(r.left() + 3.0, cy - h * 0.3), egui::pos2(r.right() - 3.0, cy - h * 0.3)], egui::Stroke::new(sw * 0.5, color.linear_multiply(0.5)));
+                                        p.line_segment([egui::pos2(r.left() + 3.0, cy + h * 0.3), egui::pos2(r.right() - 3.0, cy + h * 0.3)], egui::Stroke::new(sw * 0.5, color.linear_multiply(0.5)));
+                                    }
+                                    "time" => {
+                                        // Clock: circle + hands
+                                        let r = s * 0.35;
+                                        p.circle_stroke(egui::pos2(cx, cy), r, egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx, cy), egui::pos2(cx, cy - r * 0.65)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx, cy), egui::pos2(cx + r * 0.45, cy + r * 0.1)], egui::Stroke::new(sw * 0.7, color));
+                                    }
+                                    "pad" => {
+                                        // Gamepad: rectangle with bumps + 2 dots
+                                        let w = s * 0.35;
+                                        let h = s * 0.22;
+                                        let r = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(w * 2.0, h * 2.0));
+                                        p.rect_stroke(r, 5.0, egui::Stroke::new(sw, color), egui::StrokeKind::Inside);
+                                        // D-pad hint (left)
+                                        p.line_segment([egui::pos2(cx - w * 0.5, cy), egui::pos2(cx - w * 0.2, cy)], egui::Stroke::new(sw, color));
+                                        p.line_segment([egui::pos2(cx - w * 0.35, cy - h * 0.4), egui::pos2(cx - w * 0.35, cy + h * 0.4)], egui::Stroke::new(sw, color));
+                                        // Face hint (right)
+                                        p.circle_filled(egui::pos2(cx + w * 0.35, cy - h * 0.25), sw, color);
+                                        p.circle_filled(egui::pos2(cx + w * 0.55, cy + h * 0.1), sw, color);
+                                    }
+                                    _ => {}
+                                }
                             };
 
-                            if tab_button(ui, "Crop", "", self.active_tab == ToolTab::Crop, ToolTab::Crop) {
-                                self.active_tab = ToolTab::Crop;
-                            }
+                            let tab_button = |ui: &mut egui::Ui, icon_name: &str, label: &str, active: bool| -> bool {
+                                let fill = if active { colors::TAB_ACTIVE_BG } else { egui::Color32::TRANSPARENT };
+                                let accent = if active { colors::ACCENT_BLUE } else { colors::TEXT_SECONDARY };
+                                let (rect, response) = ui.allocate_exact_size(egui::vec2(tab_w, tab_h), egui::Sense::click());
+
+                                if response.hovered() && !active {
+                                    ui.painter().rect_filled(rect, 10.0 * scale, colors::TAB_HOVER_BG);
+                                } else {
+                                    ui.painter().rect_filled(rect, 10.0 * scale, fill);
+                                }
+
+                                // Draw icon
+                                let icon_y = rect.top() + tab_h * 0.32;
+                                draw_icon(ui.painter(), rect.center().x, icon_y, icon_sz, icon_name, accent);
+
+                                // Label
+                                let label_y = rect.top() + tab_h * 0.78;
+                                ui.painter().text(
+                                    egui::pos2(rect.center().x, label_y),
+                                    egui::Align2::CENTER_CENTER,
+                                    label,
+                                    egui::FontId::new(label_size, egui::FontFamily::Proportional),
+                                    if active { colors::TEXT_PRIMARY } else { colors::TEXT_DIM },
+                                );
+
+                                if active {
+                                    let uy = rect.bottom() - 2.0;
+                                    let hw = rect.width() * 0.3;
+                                    ui.painter().line_segment(
+                                        [egui::pos2(rect.center().x - hw, uy), egui::pos2(rect.center().x + hw, uy)],
+                                        egui::Stroke::new(2.5, colors::ACCENT_BLUE),
+                                    );
+                                }
+                                response.clicked()
+                            };
+
+                            if tab_button(ui, "crop", "Crop", self.active_tab == ToolTab::Crop) { self.active_tab = ToolTab::Crop; }
                             ui.add_space(tab_gap);
-                            if tab_button(ui, "Perf", "", self.active_tab == ToolTab::Performance, ToolTab::Performance) {
-                                self.active_tab = ToolTab::Performance;
-                            }
+                            if tab_button(ui, "perf", "Perf", self.active_tab == ToolTab::Performance) { self.active_tab = ToolTab::Performance; }
                             ui.add_space(tab_gap);
-                            if tab_button(ui, "Shader", "", self.active_tab == ToolTab::Shaders, ToolTab::Shaders) {
-                                self.active_tab = ToolTab::Shaders;
-                            }
+                            if tab_button(ui, "win", "Win", self.active_tab == ToolTab::Windows) { self.active_tab = ToolTab::Windows; }
                             ui.add_space(tab_gap);
-                            if tab_button(ui, "Keys", "", self.active_tab == ToolTab::Hotkeys, ToolTab::Hotkeys) {
-                                self.active_tab = ToolTab::Hotkeys;
-                            }
+                            if tab_button(ui, "shader", "Shdr", self.active_tab == ToolTab::Shaders) { self.active_tab = ToolTab::Shaders; }
                             ui.add_space(tab_gap);
-                            if tab_button(ui, "Time", "", self.active_tab == ToolTab::Faketime, ToolTab::Faketime) {
-                                self.active_tab = ToolTab::Faketime;
-                            }
+                            if tab_button(ui, "keys", "Keys", self.active_tab == ToolTab::Hotkeys) { self.active_tab = ToolTab::Hotkeys; }
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "time", "Time", self.active_tab == ToolTab::Faketime) { self.active_tab = ToolTab::Faketime; }
+                            ui.add_space(tab_gap);
+                            if tab_button(ui, "pad", "Pad", self.active_tab == ToolTab::Gamepad) { self.active_tab = ToolTab::Gamepad; }
 
                             // Separator + Focus Game button
                             ui.add_space(8.0 * scale);
@@ -2276,7 +2876,7 @@ impl ScreenToolGui {
                                 .corner_radius(10.0 * scale),
                             );
                             if focus_resp.clicked() {
-                                match focus_emulator_window() {
+                                match focus_emulator_window(&self.hotkey_target) {
                                     Ok(_) => {
                                         self.hotkeys_status = Some("Focused emulator".into());
                                         self.hotkeys_status_until = Some(Instant::now() + Duration::from_secs(2));

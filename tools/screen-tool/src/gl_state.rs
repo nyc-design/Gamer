@@ -1,4 +1,8 @@
 //! OpenGL/GLX context management.
+//!
+//! Creates a GLX context for NVFBC capture and egui rendering.
+//! Supports both standalone mode (opens its own X display) and
+//! shared mode (uses an externally-provided X display, e.g. from winit).
 
 use anyhow::{bail, Result};
 use glow::HasContext;
@@ -9,9 +13,17 @@ use std::sync::Arc;
 use x11::glx;
 use x11::xlib;
 
-pub(crate) unsafe extern "C" fn x11_error_handler(_display: *mut xlib::Display, event: *mut xlib::XErrorEvent) -> c_int {
+pub(crate) unsafe extern "C" fn x11_error_handler(
+    _display: *mut xlib::Display,
+    event: *mut xlib::XErrorEvent,
+) -> c_int {
     let err = unsafe { &*event };
-    log::debug!("X11 error: request={}, error={}, minor={}", err.request_code, err.error_code, err.minor_code);
+    log::debug!(
+        "X11 error: request={}, error={}, minor={}",
+        err.request_code,
+        err.error_code,
+        err.minor_code
+    );
     0
 }
 
@@ -21,87 +33,152 @@ pub struct GlState {
     pub glx_context: glx::GLXContext,
     pub output_fb_config: glx::GLXFBConfig,
     pub helper_window: xlib::Window,
+    /// If true, we own the display/context and destroy them on drop.
+    /// When false, an external owner (e.g. the app window) manages the display.
+    owns_display: bool,
 }
 
 impl GlState {
+    /// Create a new GL context using an externally-provided X11 Display.
+    /// The caller retains ownership of the display connection.
+    pub unsafe fn new_with_display(display: *mut xlib::Display) -> Result<Self> {
+        Self::init(display, false)
+    }
+
+    /// Create a new GL context, opening our own X display connection.
+    #[allow(dead_code)]
     pub fn new() -> Result<Self> {
         unsafe {
             let display = xlib::XOpenDisplay(ptr::null());
             if display.is_null() {
                 bail!("Failed to open X display");
             }
-
-            let screen = xlib::XDefaultScreen(display);
-            let root = xlib::XRootWindow(display, screen);
-            let screen_depth = xlib::XDefaultDepth(display, screen);
-
-            let output_attribs: Vec<c_int> = vec![
-                glx::GLX_X_RENDERABLE, 1,
-                glx::GLX_DRAWABLE_TYPE, glx::GLX_WINDOW_BIT,
-                glx::GLX_RENDER_TYPE, glx::GLX_RGBA_BIT,
-                glx::GLX_RED_SIZE, 8, glx::GLX_GREEN_SIZE, 8, glx::GLX_BLUE_SIZE, 8,
-                glx::GLX_DOUBLEBUFFER, 1,
-                glx::GLX_BUFFER_SIZE, screen_depth,
-                0,
-            ];
-
-            let mut num_configs: c_int = 0;
-            let configs = glx::glXChooseFBConfig(display, screen, output_attribs.as_ptr(), &mut num_configs);
-            if configs.is_null() || num_configs == 0 {
-                bail!("No suitable GLX FBConfig found");
-            }
-
-            let mut output_fb_config = *configs;
-            for i in 0..num_configs {
-                let cfg = *configs.offset(i as isize);
-                let vis = glx::glXGetVisualFromFBConfig(display, cfg);
-                if !vis.is_null() {
-                    let depth = (*vis).depth;
-                    xlib::XFree(vis as *mut c_void);
-                    if depth == screen_depth {
-                        output_fb_config = cfg;
-                        break;
-                    }
-                }
-            }
-            xlib::XFree(configs as *mut c_void);
-
-            let visual = glx::glXGetVisualFromFBConfig(display, output_fb_config);
-            if visual.is_null() {
-                bail!("Failed to get visual from FBConfig");
-            }
-
-            let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
-            swa.colormap = xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
-            swa.override_redirect = 1;
-            let helper_window = xlib::XCreateWindow(
-                display, root, 0, 0, 1, 1, 0,
-                (*visual).depth, xlib::InputOutput as u32, (*visual).visual,
-                xlib::CWColormap | xlib::CWOverrideRedirect, &mut swa,
-            );
-            xlib::XFree(visual as *mut c_void);
-
-            let glx_context = glx::glXCreateNewContext(display, output_fb_config, glx::GLX_RGBA_TYPE, ptr::null_mut(), 1);
-            if glx_context.is_null() {
-                bail!("Failed to create GLX context");
-            }
-            glx::glXMakeCurrent(display, helper_window, glx_context);
-
-            let glow_ctx = glow::Context::from_loader_function_cstr(|name: &CStr| {
-                match glx::glXGetProcAddress(name.as_ptr() as *const u8) {
-                    Some(f) => f as *const c_void,
-                    None => ptr::null(),
-                }
-            });
-
-            let version = glow_ctx.get_parameter_string(glow::VERSION);
-            log::info!("OpenGL version: {}", version);
-
-            Ok(Self {
-                glow_ctx: Arc::new(glow_ctx),
-                display, glx_context, output_fb_config, helper_window,
-            })
+            Self::init(display, true)
         }
+    }
+
+    unsafe fn init(display: *mut xlib::Display, owns_display: bool) -> Result<Self> {
+        let screen = xlib::XDefaultScreen(display);
+        let root = xlib::XRootWindow(display, screen);
+        let screen_depth = xlib::XDefaultDepth(display, screen);
+
+        let output_attribs: Vec<c_int> = vec![
+            glx::GLX_X_RENDERABLE,
+            1,
+            glx::GLX_DRAWABLE_TYPE,
+            glx::GLX_WINDOW_BIT,
+            glx::GLX_RENDER_TYPE,
+            glx::GLX_RGBA_BIT,
+            glx::GLX_RED_SIZE,
+            8,
+            glx::GLX_GREEN_SIZE,
+            8,
+            glx::GLX_BLUE_SIZE,
+            8,
+            glx::GLX_DOUBLEBUFFER,
+            1,
+            glx::GLX_BUFFER_SIZE,
+            screen_depth,
+            0,
+        ];
+
+        let mut num_configs: c_int = 0;
+        let configs =
+            glx::glXChooseFBConfig(display, screen, output_attribs.as_ptr(), &mut num_configs);
+        if configs.is_null() || num_configs == 0 {
+            bail!("No suitable GLX FBConfig found");
+        }
+
+        let mut output_fb_config = *configs;
+        for i in 0..num_configs {
+            let cfg = *configs.offset(i as isize);
+            let vis = glx::glXGetVisualFromFBConfig(display, cfg);
+            if !vis.is_null() {
+                let depth = (*vis).depth;
+                xlib::XFree(vis as *mut c_void);
+                if depth == screen_depth {
+                    output_fb_config = cfg;
+                    break;
+                }
+            }
+        }
+        xlib::XFree(configs as *mut c_void);
+
+        let visual = glx::glXGetVisualFromFBConfig(display, output_fb_config);
+        if visual.is_null() {
+            bail!("Failed to get visual from FBConfig");
+        }
+
+        let mut swa: xlib::XSetWindowAttributes = std::mem::zeroed();
+        swa.colormap =
+            xlib::XCreateColormap(display, root, (*visual).visual, xlib::AllocNone);
+        swa.override_redirect = 1;
+        let helper_window = xlib::XCreateWindow(
+            display,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            (*visual).depth,
+            xlib::InputOutput as u32,
+            (*visual).visual,
+            xlib::CWColormap | xlib::CWOverrideRedirect,
+            &mut swa,
+        );
+        xlib::XFree(visual as *mut c_void);
+
+        let glx_context = glx::glXCreateNewContext(
+            display,
+            output_fb_config,
+            glx::GLX_RGBA_TYPE,
+            ptr::null_mut(),
+            1,
+        );
+        if glx_context.is_null() {
+            bail!("Failed to create GLX context");
+        }
+        glx::glXMakeCurrent(display, helper_window, glx_context);
+
+        let glow_ctx = glow::Context::from_loader_function_cstr(|name: &CStr| {
+            match glx::glXGetProcAddress(name.as_ptr() as *const u8) {
+                Some(f) => f as *const c_void,
+                None => ptr::null(),
+            }
+        });
+
+        let version = glow_ctx.get_parameter_string(glow::VERSION);
+        log::info!("OpenGL version: {}", version);
+
+        Ok(Self {
+            glow_ctx: Arc::new(glow_ctx),
+            display,
+            glx_context,
+            output_fb_config,
+            helper_window,
+            owns_display,
+        })
+    }
+
+    /// Get the X11 visual ID for the chosen FBConfig.
+    /// Used to create compatible windows (e.g. via winit's with_x11_visual).
+    pub fn visual_id(&self) -> u32 {
+        unsafe {
+            let visual = glx::glXGetVisualFromFBConfig(self.display, self.output_fb_config);
+            if visual.is_null() {
+                return 0;
+            }
+            let vid = (*visual).visualid as u32;
+            xlib::XFree(visual as *mut c_void);
+            vid
+        }
+    }
+
+    /// Create a GLX drawable for an X11 window (which may have been created
+    /// by winit or any other mechanism on the same X display connection).
+    pub unsafe fn create_glx_window(&self, x_window: xlib::Window) -> glx::GLXWindow {
+        glx::glXCreateWindow(self.display, self.output_fb_config, x_window, ptr::null())
     }
 
     pub unsafe fn make_current(&self, drawable: glx::GLXDrawable) {
@@ -111,6 +188,10 @@ impl GlState {
     pub unsafe fn make_current_offscreen(&self) {
         glx::glXMakeCurrent(self.display, self.helper_window, self.glx_context);
     }
+
+    pub unsafe fn swap_buffers(&self, drawable: glx::GLXDrawable) {
+        glx::glXSwapBuffers(self.display, drawable);
+    }
 }
 
 impl Drop for GlState {
@@ -119,7 +200,9 @@ impl Drop for GlState {
             glx::glXMakeCurrent(self.display, 0, ptr::null_mut());
             glx::glXDestroyContext(self.display, self.glx_context);
             xlib::XDestroyWindow(self.display, self.helper_window);
-            xlib::XCloseDisplay(self.display);
+            if self.owns_display {
+                xlib::XCloseDisplay(self.display);
+            }
         }
     }
 }

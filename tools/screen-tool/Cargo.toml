@@ -1,12 +1,11 @@
 [package]
 name = "screen-tool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Secondary screen tool: zoom/crop viewer and FPS monitor for the bottom display"
+description = "Gamer companion app: zoom/crop viewer, window manager, and system monitor"
 
 [dependencies]
 glow = "0.16"
-x11 = { version = "2.21", features = ["xlib", "glx"] }
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
@@ -15,6 +14,15 @@ signal-hook = "0.3"
 libc = "0.2"
 egui = { version = "0.31", default-features = false, features = ["default_fonts"] }
 egui_glow = { version = "0.31", default-features = false }
+
+# Cross-platform windowing + egui event translation
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
+egui-winit = { version = "0.31", default-features = false, features = ["x11"] }
+
+# Linux-only: X11 for GLX context + window management + NVFBC, evdev for virtual gamepad
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21", features = ["xlib", "glx", "xrandr"] }
+evdev = "0.12"
 
 [profile.release]
 opt-level = 3
