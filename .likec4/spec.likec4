@@ -16,7 +16,13 @@ specification {
     }
   }
 
-  element webapp {
+  element script {
+    style {
+      color primary
+    }
+  }
+
+  element client {
     style {
       shape browser
       color sky
@@ -29,7 +35,19 @@ specification {
     }
   }
 
+  element feature {
+    style {
+      color indigo
+    }
+  }
+
   element api {
+    style {
+      color blue
+    }
+  }
+
+  element route {
     style {
       color blue
     }
@@ -84,7 +102,7 @@ specification {
     }
   }
 
-  element fn {
+  element function {
     style {
       shape rectangle
       color secondary
