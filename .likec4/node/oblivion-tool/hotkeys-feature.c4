@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionTool {
+        feature HotkeysFeature {
+            title 'Hotkeys'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

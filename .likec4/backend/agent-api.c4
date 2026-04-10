@@ -1,0 +1,10 @@
+
+model {
+    extend gamerBackend {
+        api AgentAPI {
+            title 'Gamer Agent API'
+            technology 'Python'
+            description ''
+        }
+    }
+}

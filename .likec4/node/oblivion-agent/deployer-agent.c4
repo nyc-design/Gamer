@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionAgent {
+        agent DeployerAgent {
+            title 'Deployer'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

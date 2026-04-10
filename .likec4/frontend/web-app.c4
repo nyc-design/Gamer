@@ -1,0 +1,9 @@
+
+model {
+    extend gamerFrontend {
+        client WebApp {
+            title 'Gamer Web App'
+            description ''
+        }
+    }
+}

@@ -1,0 +1,9 @@
+
+model {
+    extend gamerFrontend {
+        client AndroidApp {
+            title 'Gamer Android App'
+            description ''
+        }
+    }
+}

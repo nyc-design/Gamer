@@ -1,0 +1,9 @@
+model {
+    extend gamerNode {
+        service OblivionTool {
+            title 'Gamer Tool'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

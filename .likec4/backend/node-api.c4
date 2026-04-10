@@ -1,0 +1,10 @@
+
+model {
+    extend gamerBackend {
+        api NodeAPI {
+            title 'Gamer Node API'
+            technology 'Python'
+            description ''
+        }
+    }
+}

@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionAgent {
+        agent SaveManagerAgent {
+            title 'Save Manager'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

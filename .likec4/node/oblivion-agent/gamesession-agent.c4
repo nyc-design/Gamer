@@ -1,0 +1,29 @@
+model {
+    extend gamerNode.OblivionAgent {
+        agent GameSessionAgent {
+            title 'Game Session'
+            technology 'Rust'
+            description ''
+
+            route ShaderRoute {
+            title 'Shader'
+            description ''
+            }
+
+            route PerfomanceRoute {
+            title 'Perfomance'
+            description ''
+            }
+
+            route HotkeysRoute {
+            title 'Hotkeys'
+            description ''
+            }
+
+            route TimeKeeperRoute {
+            title 'Time Keeper'
+            description ''
+            }
+        }
+    }
+}

@@ -8,7 +8,12 @@ views {
         title 'Context / System Context'
         description 'High-level view: user, platform, external services'
 
-        include *
+        include
+            user,
+            gamerFrontend.**,
+            gamerBackend.**,
+            gamerNode.**,
+            gamerDatabase.**
     }
 
 }

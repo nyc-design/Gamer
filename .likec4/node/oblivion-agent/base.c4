@@ -1,0 +1,10 @@
+
+model {
+    extend gamerNode {
+        service OblivionAgent {
+            title 'Gamer Agent'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

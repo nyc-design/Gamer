@@ -1,0 +1,33 @@
+model {
+    extend gamerDatabase {
+        collection gamerGames {
+        title 'Games'
+        description ''
+        }
+
+        collection gamerUsers {
+        title 'Users'
+        description ''
+        }
+
+        collection gamerSessions {
+        title 'Sessions'
+        description ''
+        }
+
+        collection gamerSaves {
+        title 'Saves'
+        description ''
+        }
+
+        collection gamerNodes {
+        title 'Nodes'
+        description ''
+        }
+
+        collection gamerMetadata {
+        title 'Metadata'
+        description ''
+        }
+    }
+}

@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionAgent {
+        agent OrchaestratorAgent {
+            title 'Orchestrator'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

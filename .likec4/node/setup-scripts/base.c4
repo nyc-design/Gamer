@@ -1,0 +1,8 @@
+model {
+    extend gamerNode {
+        service SetupScripts {
+            title 'Gamer Setup Scripts'
+            description ''
+        }
+    }
+}

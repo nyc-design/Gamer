@@ -1,0 +1,32 @@
+
+model {
+    actor user {
+        title 'User'
+        description 'End user playing games via browser or native Moonlight client'
+    }
+
+    system gamerFrontend {
+        title 'Gamer Frontend'
+        description ''
+    }
+
+    system gamerBackend {
+        title 'Gamer Backend'
+        technology 'Python'
+        description ''
+    }
+
+    system gamerNode {
+        title 'Gamer Node'
+        description ''
+    }
+
+    storage gamerDatabase {
+        title 'Gamer Database'
+        description ''
+    }
+
+    user -> gamerFrontend 'User accesses frontend'
+    gamerFrontend -> gamerBackend 'Frontend communicates with backend'
+    gamerBackend -> gamerNode 'Backend communicates with node'
+}

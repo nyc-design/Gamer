@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionTool {
+        feature ShaderFeature {
+            title 'Shader'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

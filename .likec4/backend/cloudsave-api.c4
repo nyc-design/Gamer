@@ -1,0 +1,20 @@
+
+model {
+    extend gamerBackend {
+        api cloudSaveAPI {
+            title 'Cloud Save API'
+            technology 'Python'
+            description ''
+
+            route CloudSaveRoute {
+                title 'Cloud Save Route'
+                description ''
+            }
+
+            route CloudSaveAgentRoute {
+                title 'Cloud Save Agent Route'
+                description ''
+            }
+        }
+    }
+}

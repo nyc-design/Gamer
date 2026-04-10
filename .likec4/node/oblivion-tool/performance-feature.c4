@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionTool {
+        feature PerfomanceFeature {
+            title 'Perfomance'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

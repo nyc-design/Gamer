@@ -1,0 +1,10 @@
+
+model {
+    extend gamerBackend {
+        api SessionAPI {
+            title 'Gamer Session API'
+            technology 'Python'
+            description ''
+        }
+    }
+}

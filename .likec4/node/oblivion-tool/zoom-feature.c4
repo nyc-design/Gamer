@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionTool {
+        feature ZoomFeature {
+            title 'Zoom'
+            technology 'Rust'
+            description ''
+        }
+    }
+}

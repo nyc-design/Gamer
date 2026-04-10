@@ -1,0 +1,39 @@
+model {
+    extend gamerNode.SetupScripts {
+        script LinuxSetupScript {
+            title 'Linux Setup Script'
+            technology 'Shell'
+            description ''
+
+            function DriverSetupFunction {
+                title 'Driver Setup Function'
+                description ''
+            }
+
+            function FileSystemSetupFunction {
+                title 'File System Setup Function'
+                description ''
+            }
+
+            function SunshineSetupFunction {
+                title 'Apollo Setup Function'
+                description ''
+            }
+
+            function VirtualDisplaySetupFunction {
+                title 'Virtual Display Setup Function'
+                description ''
+            }
+
+            function SteamSetupFunction {
+                title 'Steam Setup Function'
+                description ''
+            }
+
+            function GamerAgentSetupFunction {
+                title 'Gamer Agent Setup Function'
+                description ''
+            }
+        }
+    }
+}

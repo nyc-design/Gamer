@@ -1,0 +1,34 @@
+model {
+    extend gamerNode.SetupScripts {
+        script WindowsSetupScript {
+            title 'Windows Setup Script'
+            technology 'PowerShell'
+            description ''
+
+            function DriverSetupFunction {
+                title 'Driver Setup Function'
+                description ''
+            }
+
+            function FileSystemSetupFunction {
+                title 'File System Setup Function'
+                description ''
+            }
+
+            function ApolloSetupFunction {
+                title 'Apollo Setup Function'
+                description ''
+            }
+
+            function SteamSetupFunction {
+                title 'Steam Setup Function'
+                description ''
+            }
+
+            function GamerAgentSetupFunction {
+                title 'Gamer Agent Setup Function'
+                description ''
+            }
+        }
+    }
+}

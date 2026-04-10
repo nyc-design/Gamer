@@ -1,0 +1,9 @@
+model {
+    extend gamerNode.OblivionTool {
+        feature TimeKeeperFeature {
+            title 'Time Keeper'
+            technology 'Rust'
+            description ''
+        }
+    }
+}
