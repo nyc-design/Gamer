@@ -4,7 +4,7 @@ model {
             title 'Authentication'
             description ''
 
-            endpoint google {
+            endpoint google-login {
                 title 'Google Login Endpoint'
                 description ''
 

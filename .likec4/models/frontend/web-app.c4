@@ -10,6 +10,11 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.authentication
+                -> gamerBackend.ClientAPI.authentication.google-login
+                -> gamerBackend.ClientAPI.authentication.refresh
+                -> gamerBackend.ClientAPI.authentication.logout
+                -> gamerBackend.ClientAPI.authentication.logout-all
+                -> gamerBackend.ClientAPI.authentication.me
             }
 
             page NodePage {
@@ -17,6 +22,11 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.nodes
+                -> gamerBackend.ClientAPI.nodes.list
+                -> gamerBackend.ClientAPI.nodes.details
+                -> gamerBackend.ClientAPI.nodes.start
+                -> gamerBackend.ClientAPI.nodes.stop
+                -> gamerBackend.ClientAPI.nodes.destroy
             }
 
             page CreateNodePage {
@@ -24,6 +34,11 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.create-node
+                -> gamerBackend.ClientAPI.create-node.list
+                -> gamerBackend.ClientAPI.create-node.details
+                -> gamerBackend.ClientAPI.create-node.create
+                -> gamerBackend.ClientAPI.create-node.setup
+                -> gamerBackend.ClientAPI.create-node.status
             }
 
             page LibraryPage {
@@ -31,6 +46,7 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.library
+                -> gamerBackend.ClientAPI.library.list
             }
 
             page AddGamePage {
@@ -38,6 +54,8 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.library
+                -> gamerBackend.ClientAPI.library.search-games
+                -> gamerBackend.ClientAPI.library.add-game
             }
 
             page MetadataPage {
@@ -45,6 +63,8 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.library
+                -> gamerBackend.ClientAPI.library.find-metadata
+                -> gamerBackend.ClientAPI.library.set-metadata
             }
 
             page GamePage {
@@ -52,6 +72,8 @@ model {
                 description ''
 
                 -> gamerBackend.ClientAPI.library
+                -> gamerBackend.ClientAPI.library.details
+                -> gamerBackend.ClientAPI.library.delete
             }
 
             page SessionPage {
