@@ -1,8 +1,7 @@
-
 model {
     extend gamerBackend {
-        api AgentAPI {
-            title 'Gamer Agent API'
+        api LibraryAPI {
+            title 'Gamer Library API'
             technology 'Python'
             description ''
         }

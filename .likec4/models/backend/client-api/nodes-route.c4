@@ -1,0 +1,45 @@
+model {
+    extend gamerBackend.ClientAPI {
+        route nodes {
+            title 'Node'
+            description ''
+
+            endpoint list {
+                title 'List Nodes'
+                description ''
+
+                -> gamerBackend.NodeAPI.nodes.list
+            }
+
+            endpoint details {
+                title 'Node Details'
+                description ''
+
+                -> gamerBackend.NodeAPI.nodes.details
+            }
+
+            endpoint start {
+                title 'Start Node'
+                description ''
+
+                -> gamerBackend.NodeAPI.nodes.start
+            }
+
+            endpoint stop {
+                title 'Stop Node'
+                description ''
+
+                -> gamerBackend.NodeAPI.nodes.stop
+            }
+
+            endpoint destroy {
+                title 'Destroy Node'
+                description ''
+
+                -> gamerBackend.NodeAPI.nodes.destroy
+            }
+
+            -> gamerBackend.NodeAPI.nodes
+        }
+    }
+}

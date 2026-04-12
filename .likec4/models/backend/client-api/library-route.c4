@@ -1,0 +1,61 @@
+model {
+    extend gamerBackend.ClientAPI {
+        route library {
+            title 'Library'
+            description ''
+
+            endpoint list {
+                title 'List Games'
+                description ''
+
+                -> gamerBackend.LibraryAPI.games.list
+            }
+
+            endpoint details {
+                title 'Game Details'
+                description ''
+
+                -> gamerBackend.LibraryAPI.games.details
+            }
+
+            endpoint delete {
+                title 'Delete Game'
+                description ''
+
+                -> gamerBackend.LibraryAPI.games.delete
+            }
+
+            endpoint find-metadata {
+                title 'Find Third-Party Metadata'
+                description ''
+
+                -> gamerBackend.LibraryAPI.games-metadata.find
+            }
+
+            endpoint set-metadata {
+                title 'Set Library Metadata'
+                description ''
+
+                -> gamerBackend.LibraryAPI.games-metadata.set
+            }
+
+            endpoint search-games {
+                title 'Search Available Games'
+                description ''
+
+                -> gamerBackend.LibraryAPI.add-game.search
+            }
+
+            endpoint add-game {
+                title 'Add Game to Library'
+                description ''
+
+                -> gamerBackend.LibraryAPI.add-game.add
+            }
+
+            -> gamerBackend.LibraryAPI.games
+            -> gamerBackend.LibraryAPI.add-game
+            -> gamerBackend.LibraryAPI.games-metadata
+        }
+    }
+}

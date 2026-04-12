@@ -15,31 +15,43 @@ model {
             page NodePage {
                 title 'Node Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.nodes
             }
 
             page CreateNodePage {
                 title 'Add Node Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.create-node
             }
 
             page LibraryPage {
                 title 'Library Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.library
             }
 
             page AddGamePage {
                 title 'Add Game Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.library
             }
 
             page MetadataPage {
                 title 'Metadata Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.library
             }
 
             page GamePage {
                 title 'Game Page'
                 description ''
+
+                -> gamerBackend.ClientAPI.library
             }
 
             page SessionPage {

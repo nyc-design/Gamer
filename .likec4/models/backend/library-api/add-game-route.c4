@@ -1,0 +1,23 @@
+model {
+    extend gamerBackend.LibraryAPI {
+        route add-game {
+            title 'Add Game'
+            description ''
+
+            endpoint search {
+                title 'Search Available Games'
+                description ''
+            }
+
+            endpoint details {
+                title 'Available Game Details'
+                description ''
+            }
+
+            endpoint add {
+                title 'Add Game to Library'
+                description ''
+            }
+        }
+    }
+}

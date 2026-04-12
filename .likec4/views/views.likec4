@@ -11,6 +11,8 @@ views {
         include
             gamerFrontend.WebApp.*,
             gamerBackend.ClientAPI.*,
+            gamerBackend.NodeAPI.*,
+            gamerBackend.LibraryAPI.*
     }
 
 }

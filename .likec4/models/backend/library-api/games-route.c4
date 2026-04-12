@@ -1,0 +1,23 @@
+model {
+    extend gamerBackend.LibraryAPI {
+        route games {
+            title 'Games Library'
+            description ''
+
+            endpoint list {
+                title 'List Games'
+                description ''
+            }
+
+            endpoint details {
+                title 'Game Details'
+                description ''
+            }
+
+            endpoint delete {
+                title 'Delete Game'
+                description ''
+            }
+        }
+    }
+}

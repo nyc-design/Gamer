@@ -1,0 +1,23 @@
+model {
+    extend gamerBackend.LibraryAPI {
+        route games-metadata {
+            title 'Library Metadata'
+            description ''
+
+            endpoint get {
+                title 'Get Library Metadata'
+                description ''
+            }
+
+            endpoint set {
+                title 'Set Library Metadata'
+                description ''
+            }
+
+            endpoint find {
+                title 'Find Third-Party Metadata'
+                description ''
+            }
+        }
+    }
+}

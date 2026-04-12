@@ -1,8 +1,7 @@
-
 model {
     extend gamerBackend {
         api ClientAPI {
-            title 'Gamer API'
+            title 'Gamer Client API'
             technology 'Python'
             description ''
         }
