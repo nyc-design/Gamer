@@ -1,0 +1,45 @@
+model {
+    extend gamerBackend.ClientAPI {
+        route authentication {
+            title 'Authentication'
+            description ''
+
+            endpoint google {
+                title 'Google Login Endpoint'
+                description ''
+
+                -> gamerDatabase.Authentication.identities
+            }
+
+            endpoint refresh {
+                title 'Refresh Token Endpoint'
+                description ''
+
+                -> gamerDatabase.Authentication.users
+                -> gamerDatabase.Authentication.sessions
+            }
+
+            endpoint logout {
+                title 'Logout Endpoint'
+                description ''
+
+                -> gamerDatabase.Authentication.sessions
+            }
+
+            endpoint logout-all {
+                title 'Logout All Endpoints'
+                description ''
+
+                -> gamerDatabase.Authentication.users
+                -> gamerDatabase.Authentication.sessions
+            }
+
+            endpoint me {
+                title 'User Profile Endpoint'
+                description ''
+
+                -> gamerDatabase.Authentication.users
+            }
+        }
+    }
+}

@@ -1,0 +1,21 @@
+
+model {
+    extend gamerFrontend {
+        client iOSApp {
+            title 'Gamer iOS App'
+            description ''
+
+            page LoginView {
+                title 'Login View'
+                description ''
+
+                -> gamerBackend.ClientAPI.authentication
+            }
+
+            page LibraryView {
+                title 'Library View'
+                description ''
+            }
+        }
+    }
+}

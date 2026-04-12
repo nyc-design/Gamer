@@ -1,0 +1,24 @@
+model {
+    extend gamerDatabase {
+
+        database Authentication {
+            title 'Authentication'
+            description ''
+
+            collection users {
+                title 'Users'
+                description ''
+            }
+
+            collection sessions {            
+                title 'Sessions'
+                description ''
+            }
+
+            collection identities {
+                title 'Identities'
+                description ''
+            }
+        }
+    }
+}

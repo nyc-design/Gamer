@@ -1,9 +1,0 @@
-
-model {
-    extend gamerFrontend {
-        client iOSApp {
-            title 'Gamer iOS App'
-            description ''
-        }
-    }
-}

@@ -9,11 +9,8 @@ views {
         description 'High-level view: user, platform, external services'
 
         include
-            user,
-            gamerFrontend.**,
-            gamerBackend.**,
-            gamerNode.**,
-            gamerDatabase.**
+            gamerFrontend.WebApp.*,
+            gamerBackend.ClientAPI.*,
     }
 
 }

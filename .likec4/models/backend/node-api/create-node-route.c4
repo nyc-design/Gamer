@@ -1,0 +1,33 @@
+model {
+    extend gamerBackend.NodeAPI {
+        route create-node {
+            title 'Create Node'
+            description ''
+
+            endpoint list {
+                title 'List Available Nodes'
+            }
+
+            endpoint details {
+                title 'Available Node Details'
+                description ''
+            }
+
+            endpoint create {
+                title 'Create Node'
+                description ''
+            }
+
+            endpoint setup {
+                title 'Node Setup'
+                description ''
+            }
+
+            endpoint status {
+                title 'Node Creation Status'
+                description ''
+            }
+        }
+    }
+}
+            

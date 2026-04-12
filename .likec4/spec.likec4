@@ -53,6 +53,12 @@ specification {
     }
   }
 
+  element endpoint {
+  }
+
+  element page {
+  }
+
   element vm {
     style {
       color muted
@@ -120,8 +126,5 @@ specification {
       color sky
     }
   }
-
-  tag future
-  tag v2
 
 }

@@ -1,0 +1,51 @@
+
+model {
+    extend gamerFrontend {
+        client WebApp {
+            title 'Gamer Web App'
+            description ''
+
+            page LoginPage {
+                title 'Login Page'
+                description ''
+
+                -> gamerBackend.ClientAPI.authentication
+            }
+
+            page NodePage {
+                title 'Node Page'
+                description ''
+            }
+
+            page CreateNodePage {
+                title 'Add Node Page'
+                description ''
+            }
+
+            page LibraryPage {
+                title 'Library Page'
+                description ''
+            }
+
+            page AddGamePage {
+                title 'Add Game Page'
+                description ''
+            }
+
+            page MetadataPage {
+                title 'Metadata Page'
+                description ''
+            }
+
+            page GamePage {
+                title 'Game Page'
+                description ''
+            }
+
+            page SessionPage {
+                title 'Session Page'
+                description ''
+            }
+        }
+    }
+}

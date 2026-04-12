@@ -1,0 +1,43 @@
+model {
+    extend gamerBackend.NodeAPI {         
+        route nodes {
+            title 'Nodes'
+            description ''
+
+            endpoint list {
+                title 'List Nodes'
+                description ''
+            }
+
+            endpoint details {
+                title 'Node Details'
+                description ''
+            }
+
+            endpoint start {
+                title 'Start Node'
+                description ''
+            }
+
+            endpoint stop {
+                title 'Stop Node'
+                description ''
+            }
+
+            endpoint destroy {
+                title 'Destroy Node'
+                description ''
+            }
+
+            endpoint latency {
+                title 'Node Latency'
+                description ''
+            }
+
+            endpoint health {
+                title 'Node Health'
+                description ''
+            }
+        }
+    }
+}

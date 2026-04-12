@@ -3,6 +3,10 @@ model {
     actor user {
         title 'User'
         description 'End user playing games via browser or native Moonlight client'
+
+        -> gamerFrontend.AndroidApp
+        -> gamerFrontend.iOSApp
+        -> gamerFrontend.WebApp
     }
 
     system gamerFrontend {
