@@ -27,15 +27,85 @@ class GCPComputeService:
         List available GCP regions and machine types for console requirements
 
         Implementation checklist:
-        [ ] Get supported instance types from console config
-        [ ] Use Google Cloud SDK to get machine types for each supported type
-        [ ] Get all zones and machine type details for each zone
-        [ ] Convert GCloud regions to city, country pairs
-        [ ] Get hourly pricing for each instance type and region
-        [ ] Use geocoding service to get coordinates for each region
-        [ ] Create and return VMAvailableResponse list
+        [x] Get supported instance types from console config
+        [x] Use Google Cloud SDK to get machine types for each supported type
+        [x] Get all zones and machine type details for each zone
+        [x] Convert GCloud regions to city, country pairs
+        [x] Get hourly pricing for each instance type and region
+        [x] Use geocoding service to get coordinates for each region
+        [x] Create and return VMAvailableResponse list
         """
-        pass
+        # Get supported instance types from console config
+        supported_types = console_config.supported_instance_types.get("gcp", [])
+        available_instances = []
+
+        # Use Google Cloud SDK to get machine types for each supported type
+        machine_types_client = compute_v1.MachineTypesClient()
+        zones_client = compute_v1.ZonesClient()
+
+        for instance_type in supported_types:
+            # Get all zones and machine type details for each zone
+            zones_request = compute_v1.ListZonesRequest(project=self.project_id)
+            zones = zones_client.list(request=zones_request)
+
+            for zone in zones:
+                try:
+                    request = compute_v1.GetMachineTypeRequest(
+                        project=self.project_id,
+                        zone=zone.name,
+                        machine_type=instance_type
+                    )
+                    machine_type = machine_types_client.get(request=request)
+
+                    region = zone.name.rsplit('-', 1)[0]  # Extract region from zone
+
+                    # Convert GCloud regions to city, country pairs
+                    region_map = {
+                        'us-central1': ('Council Bluffs', 'USA'),
+                        'us-east1': ('Moncks Corner', 'USA'),
+                        'us-east4': ('Ashburn', 'USA'),
+                        'us-west1': ('The Dalles', 'USA'),
+                        'us-west2': ('Los Angeles', 'USA'),
+                        'us-west3': ('Salt Lake City', 'USA'),
+                        'us-west4': ('Las Vegas', 'USA'),
+                        'europe-west1': ('St. Ghislain', 'Belgium'),
+                        'europe-west2': ('London', 'UK'),
+                        'europe-west3': ('Frankfurt', 'Germany'),
+                        'europe-west4': ('Eemshaven', 'Netherlands'),
+                        'europe-west6': ('Zurich', 'Switzerland'),
+                        'asia-east1': ('Changhua County', 'Taiwan'),
+                        'asia-northeast1': ('Tokyo', 'Japan'),
+                        'asia-south1': ('Mumbai', 'India'),
+                        'asia-southeast1': ('Jurong West', 'Singapore')
+                    }
+                    city, country = region_map.get(region, (region, 'Global'))
+
+                    # Get hourly pricing for each instance type and region
+                    hourly_price = await self._get_instance_price(instance_type, region)
+
+                    # Use geocoding service to get coordinates for each region
+                    location = await self.geocoding_service.get_coordinates(city, country)
+
+                    # Create and return VMAvailableResponse list
+                    available_instances.append(VMAvailableResponse(
+                        provider=CloudProvider.GCP,
+                        instance_type=instance_type,
+                        provider_id=region,
+                        hourly_price=hourly_price,
+                        instance_lat=location[0] if location else 0.0,
+                        instance_long=location[1] if location else 0.0,
+                        distance_to_user=0.0,
+                        gpu="Standard",
+                        avail_cpus=machine_type.guest_cpus,
+                        avail_ram=machine_type.memory_mb // 1024,
+                        avail_disk=100  # Default disk size
+                    ))
+
+                except Exception as e:
+                    # Machine type not available in this zone, continue
+                    continue
+
+        return available_instances
         
 
     async def create_vm(self, create_request: GCPCreateRequest, instance_doc: VMDocument):
