@@ -1,4 +1,4 @@
- # User Interactions Checklist - Excalidraw
+ # User Interactions Checklist
 
  ## User Login
  - [ ] Login
