@@ -277,6 +277,20 @@ gamer/
     └── DEVELOPMENT.md
 ```
 
+## Windows deployment status (current)
+
+- Apollo + Azahar path is now managed by staged scripts in `infrastructure/windows/`:
+  - `startup-windows.ps1` (host services + audio device bootstrap)
+  - `base-windows.ps1` (rclone baseline + Apollo base config)
+  - `azahar-windows.ps1` (Azahar install + Apollo app entry)
+  - `agent-windows.ps1` (client-agent install/start)
+- Corresponding Python deploy runners:
+  - `deploy_startup.py`, `deploy_base.py`, `deploy_azahar.py`, `deploy_agent.py`
+- Agent (`services/client-agent/src/main.py`) now includes:
+  - hardcoded session-file contract for dev
+  - ROM/save pre-session copy
+  - save-file monitor loop with periodic copy-back
+
 **Note on current state**: The existing `services/provisioner-api/` has partial implementation (TensorDock/GCP service scaffolds, geocoding, gaming router). This will be consolidated into `services/main-server/` as part of the restructure. The existing `services/agent-api/` and `services/client-agent/` are skeleton-only and will be replaced by `services/gamer-agent/`.
 
 ## Component Specifications
@@ -504,3 +518,70 @@ def example_function():
 ```
 
 This guideline ensures that future agents can understand both the original intent (comments) and the implementation (code) when maintaining or modifying functions.
+
+## Windows Host Implementation (Apollo-first) — 2026-02-21
+
+Branch: `windows-gaming-server-impl`
+
+Implemented artifacts:
+- `services/client-agent/src/main.py` — Windows-capable client-agent scaffold with hardcoded session manifest loading, `/start` `/stop` `/health` APIs.
+- `services/client-agent/manifests/session_manifest.windows.dev.json` — hardcoded manifest for current server-not-ready phase.
+- `infrastructure/windows/provision-tensordock-windows.py` — create/status/delete TensorDock Windows GPU VMs.
+- `infrastructure/windows/bootstrap-windows.ps1` — bootstrap Apollo/rclone/ShaderGlass/AutoHotkey and folder layout.
+- `infrastructure/windows/install-agent-service.ps1` — install/start client-agent service on Windows.
+- `infrastructure/windows/scripts/*` — dual-screen placement helper + Apollo connect/disconnect hooks.
+- `docs/windows/*` runbooks.
+
+Design alignment with Linux side:
+- Same manifest shape and session semantics (temporary hardcoded source).
+- Same storage split assumptions (R2 ROMs + GCS saves/config/firmware/steam) via rclone.
+- Same client-agent contract intent (Windows agent still talks to same server API once ready).
+
+### Windows Bootstrap Validation Update — 2026-02-21
+
+- Added `infrastructure/windows/rdp_bootstrap.py`:
+  - Pure-Python RDP automation using `aardwolf` (no manual RDP client).
+  - Launches elevated PowerShell, enables OpenSSH + WinRM, and opens firewall.
+  - Validated on active TensorDock Windows VM (`66.172.10.81`): TCP 22 and 5985 reachable after bootstrap.
+
+- Added `infrastructure/windows/deploy_via_ssh.py`:
+  - Uploads Windows setup scripts + agent files via SFTP.
+  - Executes `bootstrap-windows.ps1` and `install-agent-service.ps1` over SSH.
+  - Validated end-to-end: scheduled task `GamerClientAgent` created and agent process listening on 8081.
+
+- Hardened Windows scripts:
+  - `bootstrap-windows.ps1` now tolerates winget/package failures and continues setup.
+  - `install-agent-service.ps1` now:
+    - resolves Python robustly,
+    - falls back to NuGet Python package extraction when winget unavailable,
+    - creates venv reliably,
+    - opens inbound firewall rule for agent port.
+
+### Windows Reliability Iteration — 2026-02-21 (continued)
+
+- Added `infrastructure/windows/orchestrate_windows_host.py`:
+  - one-shot pure-Python workflow: create/reuse VM → status/IP wait → RDP bootstrap → SSH deploy → `/health` validation.
+  - supports no-token mode when reusing an existing state file with known IP.
+
+- Added `infrastructure/windows/validate_windows_host.py`:
+  - automated smoke/reliability checks for agent APIs, connect/disconnect semantics, and optional reboot persistence.
+  - reboot verification now uses TCP down/up observation plus Win32 last-boot-time change confirmation.
+
+- `deploy_via_ssh.py` improvements:
+  - added `--skip-bootstrap` for fast script/agent iteration without reinstalling Apollo/ShaderGlass.
+  - added `--skip-agent-install` for selective deploy flows.
+
+- Agent + hooks hardening:
+  - `/client-connected` and `/client-disconnected` now handle both absolute-count payloads and edge/event payloads robustly.
+  - `/health` now returns:
+    - process liveness,
+    - started timestamp,
+    - last PowerShell hook execution details (exit code/stdout/stderr) for fast debugging.
+  - `apollo-on-client-connect.ps1` now spawns dual-window placement asynchronously so API calls return quickly.
+  - `position-dual-now` now uses retry args by default.
+  - PowerShell hook execution now records duration and supports timeout (`POWERSHELL_SCRIPT_TIMEOUT_SEC`, default 20s).
+  - Added `POST /cleanup-processes` to prune stale exited process handles from in-memory agent state.
+  - Added `POST /manifest-set` and `POST /manifest-clear` to support manifest injection before server API integration is finalized.
+
+- Boot persistence validated:
+  - startup task now runs as `SYSTEM` with restart policy and survives reboot without user logon.
