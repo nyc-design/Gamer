@@ -18,6 +18,8 @@
  - games_advanced
  - games_advanced_GB
  - operating_system
+ - os_username
+ - os_password
 
 
 ##games
